@@ -152,6 +152,12 @@ func (r *PostgresRepository) Rotate(
 		}
 		return Rotation{}, ErrSessionRevoked
 	}
+	accountStateError := error(ErrSessionRevoked)
+	if userStatus == "pending_deletion" {
+		accountStateError = ErrAccountPendingDeletion
+	} else if userStatus == "disabled" {
+		accountStateError = ErrAccountDisabled
+	}
 	if revokedAt.Valid || !now.Before(expiresAt) || userStatus != "active" || deviceStatus != "active" {
 		if _, err := tx.Exec(ctx, `
 			UPDATE sessions
@@ -163,7 +169,7 @@ func (r *PostgresRepository) Rotate(
 		if err := tx.Commit(ctx); err != nil {
 			return Rotation{}, ErrUnavailable
 		}
-		return Rotation{}, ErrSessionRevoked
+		return Rotation{}, accountStateError
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO sessions (

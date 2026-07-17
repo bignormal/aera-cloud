@@ -215,6 +215,8 @@ func TestHTTPMapsOAuthReplayDeviceLimitAndSessionRevocation(t *testing.T) {
 		{oauthErr: ErrAuthorizationReplayed, path: "/api/v1/oauth/token", body: validTokenBody(), status: http.StatusConflict, code: "authorization_replayed"},
 		{oauthErr: ErrDeviceLimitReached, path: "/api/v1/oauth/token", body: validTokenBody(), status: http.StatusConflict, code: "device_limit_reached"},
 		{sessionErr: session.ErrSessionRevoked, path: "/api/v1/oauth/refresh", body: `{"refresh_token":"opaque"}`, status: http.StatusUnauthorized, code: "session_revoked"},
+		{sessionErr: session.ErrAccountPendingDeletion, path: "/api/v1/oauth/refresh", body: `{"refresh_token":"opaque"}`, status: http.StatusForbidden, code: "account_pending_deletion"},
+		{sessionErr: session.ErrAccountDisabled, path: "/api/v1/oauth/refresh", body: `{"refresh_token":"opaque"}`, status: http.StatusForbidden, code: "account_disabled"},
 	}
 	for _, test := range tests {
 		handler := NewHandler(HTTPConfig{

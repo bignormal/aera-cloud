@@ -526,6 +526,8 @@ paths:
           $ref: '#/components/responses/InvalidRequest'
         '401':
           $ref: '#/components/responses/SessionRevoked'
+        '403':
+          $ref: '#/components/responses/AccountUnavailable'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
   /api/v1/oauth/revoke:

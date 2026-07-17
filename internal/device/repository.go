@@ -70,7 +70,14 @@ func (r *PostgresRepository) AuthorizeInTx(
 		return Device{}, err
 	}
 	if found {
-		if existing.UserID != record.UserID || !bytes.Equal(existing.PublicKey, record.PublicKey) {
+		if !bytes.Equal(existing.PublicKey, record.PublicKey) {
+			return Device{}, ErrDeviceConflict
+		}
+		// A device key may move between product accounts only after the old
+		// account has explicitly revoked it. Active/inactive installations stay
+		// pinned to their owner, and a changed key is never accepted. This keeps
+		// account switching possible without weakening installation ownership.
+		if existing.UserID != record.UserID && existing.Status != "revoked" {
 			return Device{}, ErrDeviceConflict
 		}
 		if existing.Status != "active" {
@@ -84,13 +91,14 @@ func (r *PostgresRepository) AuthorizeInTx(
 		}
 		_, err := tx.Exec(ctx, `
 			UPDATE devices
-			SET display_name = $2, platform = $3, app_version = $4, status = 'active',
-				last_seen_at = $5, revoked_at = NULL, updated_at = $5
+			SET user_id = $2, display_name = $3, platform = $4, app_version = $5,
+				status = 'active', last_seen_at = $6, revoked_at = NULL, updated_at = $6
 			WHERE id = $1
-		`, existing.ID, record.DisplayName, record.Platform, record.AppVersion, record.AuthorizedAt)
+		`, existing.ID, record.UserID, record.DisplayName, record.Platform, record.AppVersion, record.AuthorizedAt)
 		if err != nil {
 			return Device{}, ErrUnavailable
 		}
+		existing.UserID = record.UserID
 		existing.DisplayName = record.DisplayName
 		existing.Platform = record.Platform
 		existing.AppVersion = record.AppVersion

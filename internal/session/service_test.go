@@ -63,6 +63,49 @@ func TestRefreshRejectsNonCanonicalTokenAlias(t *testing.T) {
 	}
 }
 
+func TestRefreshReportsUnavailableAccountStateBeforeGenericRevocation(t *testing.T) {
+	tests := []struct {
+		name   string
+		status string
+		want   error
+	}{
+		{name: "pending deletion", status: "pending_deletion", want: ErrAccountPendingDeletion},
+		{name: "disabled", status: "disabled", want: ErrAccountDisabled},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newSessionFixture(t)
+			binding := fixture.binding(t)
+			initial, err := fixture.service.Start(fixture.ctx, binding)
+			if err != nil {
+				t.Fatalf("Start() error = %v", err)
+			}
+			if _, err := fixture.postgres.Exec(fixture.ctx, `
+				UPDATE users
+				SET status = $2::text,
+					deletion_requested_at = CASE WHEN $2::text = 'pending_deletion' THEN $3::timestamptz ELSE NULL::timestamptz END,
+					updated_at = $3
+				WHERE id = $1
+			`, binding.UserID, test.status, fixture.now); err != nil {
+				t.Fatalf("set account state: %v", err)
+			}
+			if _, err := fixture.postgres.Exec(fixture.ctx, `
+				UPDATE devices SET status = 'revoked', revoked_at = $2, updated_at = $2 WHERE id = $1
+			`, binding.DeviceID, fixture.now); err != nil {
+				t.Fatalf("revoke account device: %v", err)
+			}
+			if _, err := fixture.postgres.Exec(fixture.ctx, `
+				UPDATE sessions SET revoked_at = $2, revoked_reason = 'account_state' WHERE id = $1
+			`, initial.SessionID, fixture.now); err != nil {
+				t.Fatalf("revoke account session: %v", err)
+			}
+			if _, err := fixture.service.Refresh(fixture.ctx, initial.RefreshToken); !errors.Is(err, test.want) {
+				t.Fatalf("Refresh(%s) error = %v", test.status, err)
+			}
+		})
+	}
+}
+
 func TestRefreshReuseRevokesWholeFamily(t *testing.T) {
 	fixture := newSessionFixture(t)
 	initial, err := fixture.service.Start(fixture.ctx, fixture.binding(t))

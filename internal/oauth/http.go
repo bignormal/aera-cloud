@@ -264,6 +264,10 @@ func writeMappedOAuthError(response http.ResponseWriter, err error) {
 		writeOAuthError(response, http.StatusConflict, "device_limit_reached")
 	case errors.Is(err, session.ErrSessionRevoked):
 		writeOAuthError(response, http.StatusUnauthorized, "session_revoked")
+	case errors.Is(err, session.ErrAccountPendingDeletion):
+		writeOAuthError(response, http.StatusForbidden, "account_pending_deletion")
+	case errors.Is(err, session.ErrAccountDisabled):
+		writeOAuthError(response, http.StatusForbidden, "account_disabled")
 	default:
 		writeOAuthError(response, http.StatusServiceUnavailable, "service_unavailable")
 	}

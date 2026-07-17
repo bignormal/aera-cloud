@@ -78,6 +78,35 @@ func TestAuthorizeReusesSameInstallationForSameUserButRejectsOtherOwner(t *testi
 	}
 }
 
+func TestAuthorizeTransfersOnlyARevokedInstallationToAnotherOwnerWithTheSameKey(t *testing.T) {
+	fixture := newDeviceFixture(t)
+	firstUser := fixture.user(t)
+	secondUser := fixture.user(t)
+	command := deviceCommand(firstUser, 21)
+	first, err := fixture.service.Authorize(fixture.ctx, command)
+	if err != nil {
+		t.Fatalf("Authorize(first) error = %v", err)
+	}
+	if err := fixture.service.Revoke(fixture.ctx, firstUser, first.ID); err != nil {
+		t.Fatalf("Revoke(first) error = %v", err)
+	}
+
+	command.UserID = secondUser
+	transferred, err := fixture.service.Authorize(fixture.ctx, command)
+	if err != nil || transferred.ID != first.ID || transferred.UserID != secondUser || transferred.Status != "active" {
+		t.Fatalf("Authorize(transferred) = %+v, %v", transferred, err)
+	}
+
+	if err := fixture.service.Revoke(fixture.ctx, secondUser, transferred.ID); err != nil {
+		t.Fatalf("Revoke(transferred) error = %v", err)
+	}
+	command.UserID = firstUser
+	command.PublicKey = bytes.Repeat([]byte{99}, 32)
+	if _, err := fixture.service.Authorize(fixture.ctx, command); !errors.Is(err, ErrDeviceConflict) {
+		t.Fatalf("Authorize(changed key) error = %v", err)
+	}
+}
+
 type deviceFixture struct {
 	ctx      context.Context
 	postgres *pgxpool.Pool

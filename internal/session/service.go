@@ -17,8 +17,10 @@ import (
 const refreshLifetime = 30 * 24 * time.Hour
 
 var (
-	ErrSessionRevoked = errors.New("session is revoked")
-	ErrUnavailable    = errors.New("session service is unavailable")
+	ErrSessionRevoked         = errors.New("session is revoked")
+	ErrAccountPendingDeletion = errors.New("account is pending deletion")
+	ErrAccountDisabled        = errors.New("account is disabled")
+	ErrUnavailable            = errors.New("session service is unavailable")
 )
 
 type Binding struct {
