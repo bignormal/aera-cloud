@@ -10,3 +10,7 @@ node_modules/
 playwright-report/
 test-results/
 *.log
+/deploy/secrets/
+/backups/
+*.dump.age
+*.dump.age.sha256

@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -344,6 +345,15 @@ func Load(lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	if err := validateProductionProviders(
+		environment,
+		smtpHost,
+		smtpFromAddress,
+		smsEndpoint,
+		captchaEndpoint,
+	); err != nil {
+		return Config{}, err
+	}
 
 	return Config{
 		Environment:                 environment,
@@ -554,6 +564,31 @@ func validateDatabaseURL(raw string) error {
 		return fmt.Errorf("%s must use the dedicated aera_cloud database", envDatabaseURL)
 	}
 	return nil
+}
+
+func validateProductionProviders(environment, smtpHost, smtpFromAddress, smsEndpoint, captchaEndpoint string) error {
+	if environment != "production" {
+		return nil
+	}
+	if fakeProviderHost(smtpHost) {
+		return errors.New("production requires real providers instead of reserved SMTP hosts")
+	}
+	_, fromDomain, ok := strings.Cut(strings.ToLower(strings.TrimSpace(smtpFromAddress)), "@")
+	if !ok || fakeProviderHost(fromDomain) {
+		return errors.New("production requires real providers instead of reserved sender addresses")
+	}
+	for _, endpoint := range []string{smsEndpoint, captchaEndpoint} {
+		parsed, err := url.Parse(endpoint)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || fakeProviderHost(parsed.Hostname()) {
+			return errors.New("production requires real providers on trusted HTTPS endpoints")
+		}
+	}
+	return nil
+}
+
+func fakeProviderHost(raw string) bool {
+	host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(raw)), ".")
+	return host == "invalid" || strings.HasSuffix(host, ".invalid")
 }
 
 func isLoopbackHost(host string) bool {

@@ -2,18 +2,22 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/bignormal/aera-cloud/internal/admin"
+	"github.com/bignormal/aera-cloud/internal/secure"
 	"github.com/bignormal/aera-cloud/internal/store"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const adminCommandTimeout = 30 * time.Second
@@ -29,13 +33,25 @@ type invocation struct {
 func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), adminCommandTimeout)
 	defer cancel()
-	if err := execute(ctx, os.Args[1:], os.Getenv("AGENTERA_CLOUD_DATABASE_URL"), os.Stdout); err != nil {
+	if err := execute(
+		ctx,
+		os.Args[1:],
+		os.Getenv("AGENTERA_CLOUD_DATABASE_URL"),
+		os.Getenv("AGENTERA_CLOUD_IDENTITY_ENCRYPTION_KEYS"),
+		os.Stdout,
+	); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func execute(ctx context.Context, args []string, environmentDatabaseURL string, output io.Writer) error {
+func execute(
+	ctx context.Context,
+	args []string,
+	environmentDatabaseURL string,
+	recoveryEncryptionKeys string,
+	output io.Writer,
+) error {
 	parsed, err := parseInvocation(args, environmentDatabaseURL)
 	if err != nil {
 		return err
@@ -63,6 +79,19 @@ func execute(ctx context.Context, args []string, environmentDatabaseURL string, 
 			return json.NewEncoder(output).Encode(struct {
 				Events []admin.RedactedAuditEvent `json:"events"`
 			}{Events: events})
+		}
+	case "verify-identities":
+		var keys map[string][]byte
+		keys, err = parseRecoveryEncryptionKeys(recoveryEncryptionKeys)
+		if err == nil {
+			var count int
+			count, err = verifyEncryptedIdentities(ctx, postgres, keys)
+			if err == nil {
+				return json.NewEncoder(output).Encode(struct {
+					Status             string `json:"status"`
+					IdentitiesVerified int    `json:"identities_verified"`
+				}{Status: "ok", IdentitiesVerified: count})
+			}
 		}
 	}
 	if err != nil {
@@ -110,10 +139,78 @@ func parseInvocation(args []string, environmentDatabaseURL string) (invocation, 
 			return invocation{}, errors.New("audit target or limit is invalid")
 		}
 		parsed.TargetID, parsed.Limit = target, *limit
+	case "verify-identities":
+		if len(remaining) != 1 {
+			return invocation{}, errors.New("verify-identities arguments are invalid")
+		}
 	default:
 		return invocation{}, errors.New("unsupported restricted command")
 	}
 	return parsed, nil
+}
+
+func parseRecoveryEncryptionKeys(raw string) (map[string][]byte, error) {
+	var encoded map[string]string
+	if strings.TrimSpace(raw) == "" || json.Unmarshal([]byte(raw), &encoded) != nil || len(encoded) == 0 {
+		return nil, errors.New("identity recovery encryption key set is required")
+	}
+	keys := make(map[string][]byte, len(encoded))
+	for keyID, value := range encoded {
+		decoded, err := base64.StdEncoding.DecodeString(value)
+		if strings.TrimSpace(keyID) == "" || keyID != strings.TrimSpace(keyID) || err != nil || len(decoded) != 32 ||
+			base64.StdEncoding.EncodeToString(decoded) != value {
+			return nil, errors.New("identity recovery encryption key set is invalid")
+		}
+		keys[keyID] = append([]byte(nil), decoded...)
+	}
+	return keys, nil
+}
+
+func verifyEncryptedIdentities(ctx context.Context, postgres *pgxpool.Pool, keys map[string][]byte) (int, error) {
+	if postgres == nil || len(keys) == 0 {
+		return 0, errors.New("identity recovery verification is unavailable")
+	}
+	keyIDs := make([]string, 0, len(keys))
+	for keyID := range keys {
+		keyIDs = append(keyIDs, keyID)
+	}
+	sort.Strings(keyIDs)
+	codec, err := secure.NewIdentityCodec(secure.IdentityCodecConfig{
+		ActiveEncryptionKeyID: keyIDs[0],
+		EncryptionKeys:        keys,
+		ActiveLookupKeyID:     "restore-verification-only",
+		LookupKeys:            map[string][]byte{"restore-verification-only": make([]byte, 32)},
+	})
+	if err != nil {
+		return 0, errors.New("identity recovery verification is unavailable")
+	}
+	rows, err := postgres.Query(ctx, `
+		SELECT kind, encryption_key_id, nonce, ciphertext
+		FROM identities
+		ORDER BY id
+	`)
+	if err != nil {
+		return 0, errors.New("restored identities could not be read")
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		var kind secure.IdentityKind
+		var sealed secure.SealedIdentity
+		if rows.Scan(&kind, &sealed.EncryptionKeyID, &sealed.Nonce, &sealed.Ciphertext) != nil {
+			return 0, errors.New("restored identity record is malformed")
+		}
+		plaintext, openErr := codec.Open(kind, sealed)
+		normalized, normalizeErr := secure.NormalizeIdentity(kind, plaintext)
+		if openErr != nil || normalizeErr != nil || normalized != plaintext {
+			return 0, errors.New("restored identity decryption verification failed")
+		}
+		count++
+	}
+	if rows.Err() != nil {
+		return 0, errors.New("restored identities could not be read")
+	}
+	return count, nil
 }
 
 func parseTargetFlag(commandName string, args []string, flagName string) (uuid.UUID, error) {

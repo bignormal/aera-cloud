@@ -1,0 +1,106 @@
+name: agentera-app-cloud
+
+services:
+  postgres:
+    image: postgres:17.5-alpine3.22
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: aera_cloud
+      POSTGRES_USER: aera_cloud
+      POSTGRES_PASSWORD: ${AERA_CLOUD_POSTGRES_PASSWORD:?export a dedicated PostgreSQL password}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aera_cloud -d aera_cloud"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - agentera-cloud-postgres:/var/lib/postgresql/data
+    networks: [agentera-cloud-internal]
+    cpus: "0.50"
+    mem_limit: 384m
+    pids_limit: 128
+    security_opt: ["no-new-privileges:true"]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  redis:
+    image: redis:7.4.5-alpine3.21
+    restart: unless-stopped
+    environment:
+      AERA_CLOUD_REDIS_PASSWORD: ${AERA_CLOUD_REDIS_PASSWORD:?export a dedicated Redis password}
+      REDISCLI_AUTH: ${AERA_CLOUD_REDIS_PASSWORD:?export a dedicated Redis password}
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        umask 077
+        printf 'user default off\nuser aera_cloud on >%s ~aera-cloud:* +@all -@dangerous\n' "$${AERA_CLOUD_REDIS_PASSWORD}" > /tmp/agentera-users.acl
+        exec redis-server --appendonly yes --save 60 1000 --databases 16 --aclfile /tmp/agentera-users.acl
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --user aera_cloud ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - agentera-cloud-redis:/data
+    networks: [agentera-cloud-internal]
+    cpus: "0.25"
+    mem_limit: 128m
+    pids_limit: 96
+    security_opt: ["no-new-privileges:true"]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: agentera-cloud:${AGENTERA_CLOUD_IMAGE_TAG:-local}
+    restart: unless-stopped
+    env_file:
+      - path: ${AGENTERA_CLOUD_ENV_FILE:-./secrets/agentera-cloud.env}
+        required: true
+    environment:
+      AGENTERA_CLOUD_ENVIRONMENT: production
+      AGENTERA_CLOUD_LISTEN_ADDR: 0.0.0.0:8086
+      AGENTERA_CLOUD_DATABASE_URL: postgres://aera_cloud:${AERA_CLOUD_POSTGRES_PASSWORD}@postgres:5432/aera_cloud?sslmode=disable
+      AGENTERA_CLOUD_REDIS_ADDR: redis:6379
+      AGENTERA_CLOUD_REDIS_USERNAME: aera_cloud
+      AGENTERA_CLOUD_REDIS_PASSWORD: ${AERA_CLOUD_REDIS_PASSWORD}
+      AGENTERA_CLOUD_REDIS_DB: "9"
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    ports:
+      - "127.0.0.1:${AGENTERA_CLOUD_HTTP_PORT:-18086}:8086"
+    networks: [agentera-cloud-internal]
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=16m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    cpus: "0.75"
+    mem_limit: 384m
+    pids_limit: 128
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8086/health/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+networks:
+  agentera-cloud-internal:
+    name: agentera-cloud-internal
+    internal: false
+
+volumes:
+  agentera-cloud-postgres:
+    name: agentera-cloud-postgres
+  agentera-cloud-redis:
+    name: agentera-cloud-redis

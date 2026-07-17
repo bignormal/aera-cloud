@@ -1,0 +1,97 @@
+name: AgentEra cloud CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, "aera/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agentera-cloud-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.13.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Validate delivery and secret boundaries
+        run: |
+          bash scripts/tests/check-secrets.test.sh
+          bash scripts/tests/delivery-contract.test.sh
+          ./scripts/check-secrets.sh
+          bash -n deploy/backup.sh deploy/restore-verify.sh scripts/smoke-auth.sh
+
+      - name: Test and build Go services
+        run: |
+          go test -count=1 ./...
+          go test -race ./internal/secure ./internal/verification ./internal/account ./internal/oauth ./internal/device ./internal/session ./internal/entitlement ./internal/jobs
+          go vet ./...
+          CGO_ENABLED=0 go build -trimpath -o /tmp/aera-cloud ./cmd/aera-cloud
+          CGO_ENABLED=0 go build -trimpath -o /tmp/aera-cloud-admin ./cmd/aera-cloud-admin
+
+      - name: Test and build browser account center
+        working-directory: web
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm test -- --run
+          npm run typecheck
+          npm run build
+          npx playwright install --with-deps chromium
+          npx playwright test
+
+      - name: Start isolated development infrastructure
+        run: docker compose up -d --wait postgres redis
+
+      - name: Run service integration and auth smoke tests
+        run: |
+          set -a
+          source .env.example
+          set +a
+          AERA_INTEGRATION_TESTS=1 go test -count=1 -p 1 ./...
+          AERA_SMOKE_USE_EXISTING_STACK=1 AERA_SMOKE_ALLOW_DATABASE_RESET=1 ./scripts/smoke-auth.sh
+
+      - name: Verify encrypted backup and disposable restore
+        run: |
+          mkdir -p /tmp/agentera-backup
+          CGO_ENABLED=0 GOOS=linux go build -trimpath -o /tmp/agentera-backup/aera-cloud-admin ./cmd/aera-cloud-admin
+          docker run --rm --network host \
+            -v "$PWD:/repo:ro" -v /tmp/agentera-backup:/backup \
+            -w /repo --entrypoint /bin/sh postgres:17.5-alpine3.22 -ec '
+              apk add --no-cache age bash >/dev/null
+              set -a
+              . /repo/.env.example
+              set +a
+              age-keygen -o /backup/age-identity.txt 2>/dev/null
+              export AGENTERA_BACKUP_AGE_RECIPIENT=$(age-keygen -y /backup/age-identity.txt)
+              export AGENTERA_BACKUP_DIR=/backup
+              export AGENTERA_CLOUD_DATABASE_URL="postgres://aera_cloud:aera-cloud-dev-only@127.0.0.1:55434/aera_cloud?sslmode=disable"
+              /repo/deploy/backup.sh
+              export AGENTERA_RESTORE_BACKUP=$(find /backup -name "*.dump.age" -type f | head -n 1)
+              export AGENTERA_RESTORE_AGE_IDENTITY=/backup/age-identity.txt
+              export AGENTERA_RESTORE_ADMIN_URL="postgres://aera_cloud:aera-cloud-dev-only@127.0.0.1:55434/postgres?sslmode=disable"
+              export AGENTERA_CLOUD_ADMIN_BIN=/backup/aera-cloud-admin
+              /repo/deploy/restore-verify.sh
+            '
+
+      - name: Build application image
+        run: docker build --pull --tag agentera-cloud:ci .
+
+      - name: Stop test infrastructure
+        if: always()
+        run: docker compose down -v --remove-orphans

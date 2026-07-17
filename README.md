@@ -44,4 +44,25 @@ Run service integration tests after starting Compose and sourcing `.env.example`
 AERA_INTEGRATION_TESTS=1 go test -p 1 ./... -v
 ```
 
-Production deployment is intentionally unavailable at this stage. A filed domain, trusted HTTPS, real email/SMS providers, independent production secrets, and verified backup/restore are later release gates.
+Run the destructive auth smoke flow only against its automatically created, isolated Compose project:
+
+```bash
+./scripts/smoke-auth.sh
+```
+
+The script proves health, test-provider registration, browser login, desktop PKCE exchange, refresh rotation, revoke, post-revoke rejection, and recovery-key identity decryption, then destroys the isolated database and Redis volumes.
+
+The browser account center lives in `web/`. Its production build is embedded into the Go binary by `Dockerfile`; credentials and verification codes never enter the desktop renderer.
+
+## Delivery boundary
+
+`deploy/compose.production.yaml` defines one bounded AgentEra application container plus dedicated PostgreSQL and Redis resources. The app is loopback-published for a trusted HTTPS reverse proxy and does not share the recharge website's accounts, cookies, database, Redis namespace, or network.
+
+Before any public launch, follow:
+
+- [private staging](docs/runbooks/private-staging.md)
+- [production](docs/runbooks/production.md)
+- [key rotation](docs/runbooks/key-rotation.md)
+- [account and disaster recovery](docs/runbooks/account-recovery.md)
+
+Production remains gated on a filed domain, trusted HTTPS, real email/SMS/CAPTCHA providers, published legal documents, independent secrets, encrypted backup, and a verified disposable restore. The existence of deployment files does not authorize a push, deployment, DNS change, or public registration.

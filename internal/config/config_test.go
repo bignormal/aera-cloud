@@ -108,6 +108,27 @@ func TestLoadRejectsInsecureProductionPublicURL(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsFakeProvidersInProduction(t *testing.T) {
+	tests := []struct {
+		key   string
+		value string
+	}{
+		{key: "AGENTERA_CLOUD_SMTP_HOST", value: "smtp.agentera.invalid"},
+		{key: "AGENTERA_CLOUD_SMTP_FROM_ADDRESS", value: "accounts@agentera.invalid"},
+		{key: "AGENTERA_CLOUD_SMS_ENDPOINT", value: "https://sms.agentera.invalid/v1/messages"},
+		{key: "AGENTERA_CLOUD_CAPTCHA_ENDPOINT", value: "https://captcha.agentera.invalid/siteverify"},
+	}
+	for _, test := range tests {
+		t.Run(test.key, func(t *testing.T) {
+			env := validEnvironment("production")
+			env[test.key] = test.value
+			if _, err := Load(mapLookup(env)); err == nil || !strings.Contains(err.Error(), "real providers") {
+				t.Fatalf("Load() error = %v, want real-provider validation", err)
+			}
+		})
+	}
+}
+
 func TestLoadRejectsProductionCredentialsThatAreMissing(t *testing.T) {
 	tests := []struct {
 		name string
