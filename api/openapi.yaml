@@ -1,0 +1,357 @@
+openapi: 3.1.0
+info:
+  title: AgentEra App Cloud API
+  version: 0.1.0
+  description: Account, browser session, and identity verification contract for AgentEra Studio.
+servers:
+  - url: https://accounts.agentera.example
+paths:
+  /api/v1/verification/challenges:
+    post:
+      operationId: createVerificationChallenge
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerificationChallengeRequest'
+      responses:
+        '202':
+          description: Delivery accepted without disclosing account existence.
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/verification/challenges/verify:
+    post:
+      operationId: verifyIdentityChallenge
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerificationCodeRequest'
+      responses:
+        '200':
+          description: Short-lived, single-use verification receipt.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerificationReceipt'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/accounts/register:
+    post:
+      operationId: registerAccount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterAccountRequest'
+      responses:
+        '201':
+          description: User and personal space created atomically.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Registration'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '409':
+          $ref: '#/components/responses/IdentityConflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/browser/login:
+    post:
+      operationId: browserLogin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BrowserLoginRequest'
+      responses:
+        '200':
+          description: Host-only browser session started.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: HttpOnly, SameSite=Lax browser session cookie; Secure outside loopback development.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrowserLoginResponse'
+        '401':
+          $ref: '#/components/responses/InvalidCredentials'
+        '403':
+          $ref: '#/components/responses/AccountUnavailable'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/browser/logout:
+    post:
+      operationId: browserLogout
+      security:
+        - browserSession: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: Browser session ended.
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '403':
+          $ref: '#/components/responses/InvalidRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/accounts/password/reset:
+    post:
+      operationId: resetAccountPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordResetRequest'
+      responses:
+        '204':
+          description: Password replaced and every existing device session family revoked.
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/legal/current:
+    get:
+      operationId: getCurrentLegalDocuments
+      responses:
+        '200':
+          description: Versions that must be accepted for a new registration.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentLegalDocuments'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+components:
+  securitySchemes:
+    browserSession:
+      type: apiKey
+      in: cookie
+      name: agentera_browser_session
+  parameters:
+    CSRFToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 43
+        maxLength: 43
+  schemas:
+    IdentityKind:
+      type: string
+      enum: [email, phone]
+    VerificationPurpose:
+      type: string
+      enum: [registration, password_reset, bind_identity]
+    VerificationChallengeRequest:
+      type: object
+      additionalProperties: false
+      required: [kind, destination, purpose]
+      properties:
+        kind:
+          $ref: '#/components/schemas/IdentityKind'
+        destination:
+          type: string
+          maxLength: 254
+        purpose:
+          $ref: '#/components/schemas/VerificationPurpose'
+        captcha_token:
+          type: string
+          maxLength: 4096
+    VerificationCodeRequest:
+      type: object
+      additionalProperties: false
+      required: [kind, destination, purpose, code]
+      properties:
+        kind:
+          $ref: '#/components/schemas/IdentityKind'
+        destination:
+          type: string
+          maxLength: 254
+        purpose:
+          $ref: '#/components/schemas/VerificationPurpose'
+        code:
+          type: string
+          pattern: '^[0-9]{6}$'
+    VerificationReceipt:
+      type: object
+      additionalProperties: false
+      required: [status, receipt, expires_at]
+      properties:
+        status:
+          const: verified
+        receipt:
+          type: string
+          maxLength: 8192
+        expires_at:
+          type: string
+          format: date-time
+    RegisterAccountRequest:
+      type: object
+      additionalProperties: false
+      required: [kind, verification_receipt, password, terms_version, privacy_version]
+      properties:
+        kind:
+          $ref: '#/components/schemas/IdentityKind'
+        verification_receipt:
+          type: string
+          maxLength: 8192
+        password:
+          type: string
+          minLength: 10
+          maxLength: 128
+        nickname:
+          type: string
+          maxLength: 80
+        terms_version:
+          type: string
+          maxLength: 64
+        privacy_version:
+          type: string
+          maxLength: 64
+    Registration:
+      type: object
+      additionalProperties: false
+      required: [user_id, personal_space_id]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        personal_space_id:
+          type: string
+          format: uuid
+    BrowserLoginRequest:
+      type: object
+      additionalProperties: false
+      required: [identity, password]
+      properties:
+        identity:
+          type: string
+          maxLength: 254
+        password:
+          type: string
+          minLength: 10
+          maxLength: 128
+    BrowserLoginResponse:
+      type: object
+      additionalProperties: false
+      required: [user_id, personal_space_id, csrf_token]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        personal_space_id:
+          type: string
+          format: uuid
+        nickname:
+          type: string
+          maxLength: 80
+        csrf_token:
+          type: string
+          minLength: 43
+          maxLength: 43
+    PasswordResetRequest:
+      type: object
+      additionalProperties: false
+      required: [verification_receipt, new_password]
+      properties:
+        verification_receipt:
+          type: string
+          maxLength: 8192
+        new_password:
+          type: string
+          minLength: 10
+          maxLength: 128
+    CurrentLegalDocuments:
+      type: object
+      additionalProperties: false
+      required: [terms_version, privacy_version]
+      properties:
+        terms_version:
+          type: string
+          maxLength: 64
+        privacy_version:
+          type: string
+          maxLength: 64
+    ErrorCode:
+      type: string
+      enum:
+        - invalid_request
+        - verification_required
+        - identity_conflict
+        - invalid_credentials
+        - device_limit_reached
+        - authorization_expired
+        - authorization_replayed
+        - session_revoked
+        - account_pending_deletion
+        - account_disabled
+        - service_unavailable
+    ErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, request_id]
+          properties:
+            code:
+              $ref: '#/components/schemas/ErrorCode'
+            message:
+              const: localized by the client
+            request_id:
+              type: string
+              format: uuid
+  responses:
+    InvalidRequest:
+      description: The request or verification receipt is invalid.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    IdentityConflict:
+      description: The verified identity belongs to another account.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    InvalidCredentials:
+      description: Identity and password do not authenticate an active account.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    AccountUnavailable:
+      description: The account is disabled or pending deletion.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    SessionRevoked:
+      description: The browser session is absent, expired, or revoked.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    ServiceUnavailable:
+      description: A required account service is temporarily unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'

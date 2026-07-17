@@ -130,3 +130,25 @@ func TestVerificationRoutesAreMountedWithoutChangingHealthContract(t *testing.T)
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusAccepted)
 	}
 }
+
+func TestAccountRoutesAreMountedWithoutChangingHealthContract(t *testing.T) {
+	accountHandler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/v1/legal/current" {
+			t.Errorf("account path = %q", request.URL.Path)
+		}
+		response.WriteHeader(http.StatusOK)
+	})
+	handler := New(Dependencies{
+		PostgreSQL: &stubHealthChecker{},
+		Redis:      &stubHealthChecker{},
+		Accounts:   accountHandler,
+	})
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/legal/current", nil)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	}
+}

@@ -143,34 +143,78 @@ func TestBuildVerificationHandlerWiresVersionedRoute(t *testing.T) {
 	}
 }
 
+func TestBuildAccountHandlerWiresCurrentLegalRoute(t *testing.T) {
+	services := testkit.IntegrationServices(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	postgres, err := store.OpenPostgres(ctx, services.DatabaseURL)
+	if err != nil {
+		t.Fatalf("OpenPostgres() error = %v", err)
+	}
+	defer postgres.Close()
+	redisStore, err := store.OpenRedis(ctx, store.RedisOptions{
+		Addr: services.RedisAddr, Username: services.RedisUsername, Password: services.RedisPassword, DB: services.RedisDB,
+	})
+	if err != nil {
+		t.Fatalf("OpenRedis() error = %v", err)
+	}
+	defer func() { _ = redisStore.Close() }()
+	cfg, err := config.Load(integrationLookup(services))
+	if err != nil {
+		t.Fatalf("config.Load() error = %v", err)
+	}
+	handler, err := buildAccountHandler(cfg, postgres, redisStore.Client())
+	if err != nil {
+		t.Fatalf("buildAccountHandler() error = %v", err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/legal/current", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != `{"terms_version":"terms-2026-07","privacy_version":"privacy-2026-07"}` {
+		t.Fatalf("response = %d %q", response.Code, response.Body.String())
+	}
+}
+
 func integrationLookup(services testkit.Services) config.LookupEnv {
 	values := map[string]string{
-		"AGENTERA_CLOUD_ENVIRONMENT":                       "development",
-		"AGENTERA_CLOUD_LISTEN_ADDR":                       "127.0.0.1:0",
-		"AGENTERA_CLOUD_PUBLIC_URL":                        "http://127.0.0.1:8086",
-		"AGENTERA_CLOUD_DATABASE_URL":                      services.DatabaseURL,
-		"AGENTERA_CLOUD_REDIS_ADDR":                        services.RedisAddr,
-		"AGENTERA_CLOUD_REDIS_USERNAME":                    services.RedisUsername,
-		"AGENTERA_CLOUD_REDIS_PASSWORD":                    services.RedisPassword,
-		"AGENTERA_CLOUD_REDIS_DB":                          strconv.Itoa(services.RedisDB),
-		"AGENTERA_CLOUD_IDENTITY_ENCRYPTION_ACTIVE_KEY_ID": "enc-test-v1",
-		"AGENTERA_CLOUD_IDENTITY_ENCRYPTION_KEYS":          `{"enc-test-v1":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="}`,
-		"AGENTERA_CLOUD_IDENTITY_LOOKUP_ACTIVE_KEY_ID":     "lookup-test-v1",
-		"AGENTERA_CLOUD_IDENTITY_LOOKUP_KEYS":              `{"lookup-test-v1":"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI="}`,
-		"AGENTERA_CLOUD_VERIFICATION_CODE_ACTIVE_KEY_ID":   "code-test-v1",
-		"AGENTERA_CLOUD_VERIFICATION_CODE_KEYS":            `{"code-test-v1":"AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM="}`,
-		"AGENTERA_CLOUD_VERIFICATION_REQUEST_HMAC_KEY":     "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=",
-		"AGENTERA_CLOUD_SMTP_HOST":                         "smtp.agentera.invalid",
-		"AGENTERA_CLOUD_SMTP_PORT":                         "587",
-		"AGENTERA_CLOUD_SMTP_USERNAME":                     "smtp-user",
-		"AGENTERA_CLOUD_SMTP_PASSWORD":                     "smtp-secret",
-		"AGENTERA_CLOUD_SMTP_FROM_ADDRESS":                 "accounts@agentera.invalid",
-		"AGENTERA_CLOUD_SMTP_FROM_NAME":                    "AgentEra",
-		"AGENTERA_CLOUD_SMS_ENDPOINT":                      "https://sms.agentera.invalid/v1/messages",
-		"AGENTERA_CLOUD_SMS_API_KEY":                       "sms-secret",
-		"AGENTERA_CLOUD_SMS_SENDER_ID":                     "AgentEra",
-		"AGENTERA_CLOUD_CAPTCHA_ENDPOINT":                  "https://captcha.agentera.invalid/siteverify",
-		"AGENTERA_CLOUD_CAPTCHA_SECRET":                    "captcha-secret",
+		"AGENTERA_CLOUD_ENVIRONMENT":                        "development",
+		"AGENTERA_CLOUD_LISTEN_ADDR":                        "127.0.0.1:0",
+		"AGENTERA_CLOUD_PUBLIC_URL":                         "http://127.0.0.1:8086",
+		"AGENTERA_CLOUD_DATABASE_URL":                       services.DatabaseURL,
+		"AGENTERA_CLOUD_REDIS_ADDR":                         services.RedisAddr,
+		"AGENTERA_CLOUD_REDIS_USERNAME":                     services.RedisUsername,
+		"AGENTERA_CLOUD_REDIS_PASSWORD":                     services.RedisPassword,
+		"AGENTERA_CLOUD_REDIS_DB":                           strconv.Itoa(services.RedisDB),
+		"AGENTERA_CLOUD_IDENTITY_ENCRYPTION_ACTIVE_KEY_ID":  "enc-test-v1",
+		"AGENTERA_CLOUD_IDENTITY_ENCRYPTION_KEYS":           `{"enc-test-v1":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="}`,
+		"AGENTERA_CLOUD_IDENTITY_LOOKUP_ACTIVE_KEY_ID":      "lookup-test-v1",
+		"AGENTERA_CLOUD_IDENTITY_LOOKUP_KEYS":               `{"lookup-test-v1":"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI="}`,
+		"AGENTERA_CLOUD_VERIFICATION_CODE_ACTIVE_KEY_ID":    "code-test-v1",
+		"AGENTERA_CLOUD_VERIFICATION_CODE_KEYS":             `{"code-test-v1":"AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM="}`,
+		"AGENTERA_CLOUD_VERIFICATION_RECEIPT_ACTIVE_KEY_ID": "receipt-test-v1",
+		"AGENTERA_CLOUD_VERIFICATION_RECEIPT_KEYS":          `{"receipt-test-v1":"BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU="}`,
+		"AGENTERA_CLOUD_VERIFICATION_REQUEST_HMAC_KEY":      "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=",
+		"AGENTERA_CLOUD_BROWSER_SESSION_HMAC_KEY":           "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY=",
+		"AGENTERA_CLOUD_LOGIN_RATE_HMAC_KEY":                "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+		"AGENTERA_CLOUD_BROWSER_COOKIE_NAME":                "agentera_test_session",
+		"AGENTERA_CLOUD_BROWSER_SESSION_TTL_SECONDS":        "900",
+		"AGENTERA_CLOUD_LOGIN_IDENTITY_LIMIT":               "5",
+		"AGENTERA_CLOUD_LOGIN_IP_LIMIT":                     "20",
+		"AGENTERA_CLOUD_LOGIN_WINDOW_SECONDS":               "600",
+		"AGENTERA_CLOUD_TERMS_VERSION":                      "terms-2026-07",
+		"AGENTERA_CLOUD_PRIVACY_VERSION":                    "privacy-2026-07",
+		"AGENTERA_CLOUD_SMTP_HOST":                          "smtp.agentera.invalid",
+		"AGENTERA_CLOUD_SMTP_PORT":                          "587",
+		"AGENTERA_CLOUD_SMTP_USERNAME":                      "smtp-user",
+		"AGENTERA_CLOUD_SMTP_PASSWORD":                      "smtp-secret",
+		"AGENTERA_CLOUD_SMTP_FROM_ADDRESS":                  "accounts@agentera.invalid",
+		"AGENTERA_CLOUD_SMTP_FROM_NAME":                     "AgentEra",
+		"AGENTERA_CLOUD_SMS_ENDPOINT":                       "https://sms.agentera.invalid/v1/messages",
+		"AGENTERA_CLOUD_SMS_API_KEY":                        "sms-secret",
+		"AGENTERA_CLOUD_SMS_SENDER_ID":                      "AgentEra",
+		"AGENTERA_CLOUD_CAPTCHA_ENDPOINT":                   "https://captcha.agentera.invalid/siteverify",
+		"AGENTERA_CLOUD_CAPTCHA_SECRET":                     "captcha-secret",
 	}
 	return func(key string) (string, bool) {
 		value, ok := values[key]

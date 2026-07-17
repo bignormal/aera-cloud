@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/bignormal/aera-cloud/internal/secure"
 	"github.com/go-chi/chi/v5"
@@ -18,7 +19,7 @@ const verificationRequestBodyLimit = 64 * 1024
 
 type ServicePort interface {
 	Send(ctx context.Context, request SendRequest) error
-	Verify(ctx context.Context, request VerifyRequest) error
+	Verify(ctx context.Context, request VerifyRequest) (VerificationResult, error)
 }
 
 type handler struct {
@@ -72,7 +73,7 @@ func (h *handler) verify(response http.ResponseWriter, request *http.Request) {
 		writeError(response, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	err := h.service.Verify(request.Context(), VerifyRequest{
+	result, err := h.service.Verify(request.Context(), VerifyRequest{
 		Kind:        payload.Kind,
 		Destination: payload.Destination,
 		Purpose:     payload.Purpose,
@@ -86,7 +87,15 @@ func (h *handler) verify(response http.ResponseWriter, request *http.Request) {
 		writeError(response, http.StatusServiceUnavailable, "temporarily_unavailable")
 		return
 	}
-	writeJSON(response, http.StatusOK, map[string]string{"status": "verified"})
+	writeJSON(response, http.StatusOK, struct {
+		Status    string `json:"status"`
+		Receipt   string `json:"receipt"`
+		ExpiresAt string `json:"expires_at"`
+	}{
+		Status:    "verified",
+		Receipt:   result.Receipt,
+		ExpiresAt: result.ExpiresAt.UTC().Format(time.RFC3339),
+	})
 }
 
 func decodeJSON(response http.ResponseWriter, request *http.Request, target any) bool {

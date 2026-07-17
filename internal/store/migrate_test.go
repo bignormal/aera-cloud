@@ -59,8 +59,23 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	if err := postgres.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if applied != 1 {
-		t.Fatalf("applied migration count = %d, want 1", applied)
+	if applied != 2 {
+		t.Fatalf("applied migration count = %d, want 2", applied)
+	}
+	var receiptConsumedColumn bool
+	if err := postgres.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM information_schema.columns
+			WHERE table_schema = 'public'
+			  AND table_name = 'verification_challenges'
+			  AND column_name = 'receipt_consumed_at'
+		)
+	`).Scan(&receiptConsumedColumn); err != nil {
+		t.Fatalf("check receipt_consumed_at: %v", err)
+	}
+	if !receiptConsumedColumn {
+		t.Fatal("verification_challenges.receipt_consumed_at does not exist")
 	}
 }
 

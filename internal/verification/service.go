@@ -57,6 +57,7 @@ type ServiceConfig struct {
 	Captcha         CaptchaVerifier
 	DeliveryGuard   DeliveryGuard
 	TargetIndexer   TargetIndexer
+	Receipts        *ReceiptCodec
 	ActiveCodeKeyID string
 	CodeKeys        map[string][]byte
 	RequestHMACKey  []byte
@@ -72,6 +73,7 @@ type Service struct {
 	captcha         CaptchaVerifier
 	deliveryGuard   DeliveryGuard
 	targetIndexer   TargetIndexer
+	receipts        *ReceiptCodec
 	activeCodeKeyID string
 	codeKeys        map[string][]byte
 	requestHMACKey  []byte
@@ -82,7 +84,7 @@ type Service struct {
 
 func NewService(config ServiceConfig) (*Service, error) {
 	if config.Sender == nil || config.Repository == nil || config.Limiter == nil || config.Captcha == nil ||
-		config.DeliveryGuard == nil || config.TargetIndexer == nil {
+		config.DeliveryGuard == nil || config.TargetIndexer == nil || config.Receipts == nil {
 		return nil, errors.New("verification service dependencies are incomplete")
 	}
 	codeKeys, err := copyKeyRing(config.CodeKeys, 32)
@@ -114,6 +116,7 @@ func NewService(config ServiceConfig) (*Service, error) {
 		captcha:         config.Captcha,
 		deliveryGuard:   config.DeliveryGuard,
 		targetIndexer:   config.TargetIndexer,
+		receipts:        config.Receipts,
 		activeCodeKeyID: config.ActiveCodeKeyID,
 		codeKeys:        codeKeys,
 		requestHMACKey:  append([]byte(nil), config.RequestHMACKey...),
@@ -227,31 +230,35 @@ func (s *Service) Send(ctx context.Context, request SendRequest) error {
 	return nil
 }
 
-func (s *Service) Verify(ctx context.Context, request VerifyRequest) error {
-	_, candidates, err := s.prepareTarget(request.Kind, request.Destination, request.Purpose)
+func (s *Service) Verify(ctx context.Context, request VerifyRequest) (VerificationResult, error) {
+	normalized, candidates, err := s.prepareTarget(request.Kind, request.Destination, request.Purpose)
 	if err != nil || !validCode(request.Code) {
-		return ErrInvalidVerification
+		return VerificationResult{}, ErrInvalidVerification
 	}
 	now := s.clock().UTC()
 	challenge, found, err := s.repository.Latest(ctx, lookupHMACs(candidates), request.Purpose)
 	if err != nil {
-		return ErrTemporarilyUnavailable
+		return VerificationResult{}, ErrTemporarilyUnavailable
 	}
 	if !found || challenge.ConsumedAt != nil || challenge.InvalidatedAt != nil || !now.Before(challenge.ExpiresAt) {
-		return ErrInvalidVerification
+		return VerificationResult{}, ErrInvalidVerification
 	}
 	key, ok := s.codeKeys[challenge.CodeKeyID]
 	if !ok {
-		return ErrTemporarilyUnavailable
+		return VerificationResult{}, ErrTemporarilyUnavailable
 	}
 	candidateCodeHMAC := codeHMAC(key, request.Purpose, challenge.TargetLookupHMAC, request.Code)
 	if err := s.repository.Consume(ctx, challenge.TargetLookupHMAC, request.Purpose, candidateCodeHMAC, now); err != nil {
 		if errors.Is(err, ErrChallengeNotFound) || errors.Is(err, ErrCodeMismatch) {
-			return ErrInvalidVerification
+			return VerificationResult{}, ErrInvalidVerification
 		}
-		return ErrTemporarilyUnavailable
+		return VerificationResult{}, ErrTemporarilyUnavailable
 	}
-	return nil
+	receipt, expiresAt, err := s.receipts.Issue(challenge, normalized)
+	if err != nil {
+		return VerificationResult{}, ErrTemporarilyUnavailable
+	}
+	return VerificationResult{Receipt: receipt, ExpiresAt: expiresAt}, nil
 }
 
 func (s *Service) prepareTarget(kind secure.IdentityKind, destination string, purpose Purpose) (string, []secure.LookupIndex, error) {

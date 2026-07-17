@@ -8,12 +8,17 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/bignormal/aera-cloud/internal/abuse"
+	"github.com/bignormal/aera-cloud/internal/account"
+	"github.com/bignormal/aera-cloud/internal/audit"
+	"github.com/bignormal/aera-cloud/internal/browser"
 	"github.com/bignormal/aera-cloud/internal/config"
 	"github.com/bignormal/aera-cloud/internal/httpapi"
+	"github.com/bignormal/aera-cloud/internal/legal"
 	"github.com/bignormal/aera-cloud/internal/notification"
 	"github.com/bignormal/aera-cloud/internal/secure"
 	"github.com/bignormal/aera-cloud/internal/store"
@@ -72,6 +77,10 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 	if err != nil {
 		return err
 	}
+	accountHandler, err := buildAccountHandler(cfg, postgres, redisStore.Client())
+	if err != nil {
+		return err
+	}
 
 	listener, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
@@ -82,6 +91,7 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 		PostgreSQL:   postgres,
 		Redis:        redisStore,
 		Verification: verificationHandler,
+		Accounts:     accountHandler,
 	}))
 }
 
@@ -90,12 +100,7 @@ func buildVerificationHandler(
 	postgres *pgxpool.Pool,
 	redisClient redis.UniversalClient,
 ) (http.Handler, error) {
-	identityCodec, err := secure.NewIdentityCodec(secure.IdentityCodecConfig{
-		ActiveEncryptionKeyID: cfg.IdentityEncryptionKeyRing.ActiveKeyID,
-		EncryptionKeys:        cfg.IdentityEncryptionKeyRing.Keys,
-		ActiveLookupKeyID:     cfg.IdentityLookupKeyRing.ActiveKeyID,
-		LookupKeys:            cfg.IdentityLookupKeyRing.Keys,
-	})
+	identityCodec, receiptCodec, err := buildIdentityCodecs(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -139,6 +144,7 @@ func buildVerificationHandler(
 		Captcha:         captcha,
 		DeliveryGuard:   verification.NewRedisDeliveryGuard(redisClient),
 		TargetIndexer:   identityCodec,
+		Receipts:        receiptCodec,
 		ActiveCodeKeyID: cfg.VerificationCodeKeyRing.ActiveKeyID,
 		CodeKeys:        cfg.VerificationCodeKeyRing.Keys,
 		RequestHMACKey:  cfg.VerificationRequestHMACKey,
@@ -148,6 +154,83 @@ func buildVerificationHandler(
 		return nil, err
 	}
 	return verification.NewHandler(service), nil
+}
+
+func buildAccountHandler(
+	cfg config.Config,
+	postgres *pgxpool.Pool,
+	redisClient redis.UniversalClient,
+) (http.Handler, error) {
+	identityCodec, receiptCodec, err := buildIdentityCodecs(cfg)
+	if err != nil {
+		return nil, err
+	}
+	passwords, err := secure.DefaultPasswordHasher()
+	if err != nil {
+		return nil, err
+	}
+	legalService, err := legal.NewService(cfg.TermsVersion, cfg.PrivacyVersion)
+	if err != nil {
+		return nil, err
+	}
+	loginLimiter, err := account.NewRedisLoginLimiter(redisClient, cfg.LoginRateHMACKey, account.LoginRatePolicy{
+		IdentityLimit: cfg.LoginIdentityLimit,
+		IPLimit:       cfg.LoginIPLimit,
+		Window:        time.Duration(cfg.LoginWindowSeconds) * time.Second,
+	})
+	if err != nil {
+		return nil, err
+	}
+	auditor, err := audit.NewPostgresRecorder(postgres)
+	if err != nil {
+		return nil, err
+	}
+	accountService, err := account.NewService(account.ServiceConfig{
+		Repository:    account.NewPostgresRepository(postgres, identityCodec),
+		IdentityCodec: identityCodec,
+		Receipts:      receiptCodec,
+		Passwords:     passwords,
+		Legal:         legalService,
+		LoginLimiter:  loginLimiter,
+		Auditor:       auditor,
+	})
+	if err != nil {
+		return nil, err
+	}
+	browserSessions, err := browser.NewManager(browser.ManagerConfig{
+		Redis:         redisClient,
+		HMACKey:       cfg.BrowserSessionHMACKey,
+		TTL:           time.Duration(cfg.BrowserSessionTTLSeconds) * time.Second,
+		CookieName:    cfg.BrowserCookieName,
+		SecureCookies: cfg.Environment == "production" || strings.HasPrefix(cfg.PublicURL, "https://"),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return account.NewHandler(account.HTTPConfig{
+		Accounts: accountService, BrowserSessions: browserSessions, Legal: legalService,
+	}), nil
+}
+
+func buildIdentityCodecs(cfg config.Config) (*secure.IdentityCodec, *verification.ReceiptCodec, error) {
+	identityCodec, err := secure.NewIdentityCodec(secure.IdentityCodecConfig{
+		ActiveEncryptionKeyID: cfg.IdentityEncryptionKeyRing.ActiveKeyID,
+		EncryptionKeys:        cfg.IdentityEncryptionKeyRing.Keys,
+		ActiveLookupKeyID:     cfg.IdentityLookupKeyRing.ActiveKeyID,
+		LookupKeys:            cfg.IdentityLookupKeyRing.Keys,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	receiptCodec, err := verification.NewReceiptCodec(verification.ReceiptCodecConfig{
+		IdentityCodec:      identityCodec,
+		ActiveSigningKeyID: cfg.VerificationReceiptKeyRing.ActiveKeyID,
+		SigningKeys:        cfg.VerificationReceiptKeyRing.Keys,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return identityCodec, receiptCodec, nil
 }
 
 func serve(ctx context.Context, listener net.Listener, handler http.Handler) error {

@@ -47,8 +47,25 @@ func TestLoadAcceptsLoopbackHTTPInDevelopment(t *testing.T) {
 		!bytes.Equal(cfg.VerificationCodeKeyRing.Keys["code-dev-v1"], bytes.Repeat([]byte{3}, 32)) {
 		t.Fatal("verification code key ring was not decoded")
 	}
+	if cfg.VerificationReceiptKeyRing.ActiveKeyID != "receipt-dev-v1" ||
+		!bytes.Equal(cfg.VerificationReceiptKeyRing.Keys["receipt-dev-v1"], bytes.Repeat([]byte{5}, 32)) {
+		t.Fatal("verification receipt key ring was not decoded")
+	}
 	if !bytes.Equal(cfg.VerificationRequestHMACKey, bytes.Repeat([]byte{4}, 32)) {
 		t.Fatal("verification request HMAC key was not decoded")
+	}
+	if !bytes.Equal(cfg.BrowserSessionHMACKey, bytes.Repeat([]byte{6}, 32)) ||
+		!bytes.Equal(cfg.LoginRateHMACKey, bytes.Repeat([]byte{7}, 32)) {
+		t.Fatal("browser authentication HMAC keys were not decoded")
+	}
+	if cfg.BrowserCookieName != "agentera_test_session" || cfg.BrowserSessionTTLSeconds != 900 {
+		t.Fatalf("browser session configuration = %q / %d", cfg.BrowserCookieName, cfg.BrowserSessionTTLSeconds)
+	}
+	if cfg.LoginIdentityLimit != 5 || cfg.LoginIPLimit != 20 || cfg.LoginWindowSeconds != 600 {
+		t.Fatalf("login limits = %d / %d / %d", cfg.LoginIdentityLimit, cfg.LoginIPLimit, cfg.LoginWindowSeconds)
+	}
+	if cfg.TermsVersion != "terms-2026-07" || cfg.PrivacyVersion != "privacy-2026-07" {
+		t.Fatalf("legal versions = %q / %q", cfg.TermsVersion, cfg.PrivacyVersion)
 	}
 	if cfg.SMTPHost != "smtp.example.com" || cfg.SMTPPort != 587 || cfg.SMSAPIKey != "sms-secret" || cfg.CaptchaSecret != "captcha-secret" {
 		t.Fatalf("notification configuration was not loaded: %+v", cfg)
@@ -90,7 +107,14 @@ func TestLoadRejectsProductionCredentialsThatAreMissing(t *testing.T) {
 		{name: "lookup key ring", key: "AGENTERA_CLOUD_IDENTITY_LOOKUP_KEYS"},
 		{name: "verification active key", key: "AGENTERA_CLOUD_VERIFICATION_CODE_ACTIVE_KEY_ID"},
 		{name: "verification key ring", key: "AGENTERA_CLOUD_VERIFICATION_CODE_KEYS"},
+		{name: "verification receipt active key", key: "AGENTERA_CLOUD_VERIFICATION_RECEIPT_ACTIVE_KEY_ID"},
+		{name: "verification receipt key ring", key: "AGENTERA_CLOUD_VERIFICATION_RECEIPT_KEYS"},
 		{name: "verification request key", key: "AGENTERA_CLOUD_VERIFICATION_REQUEST_HMAC_KEY"},
+		{name: "browser session key", key: "AGENTERA_CLOUD_BROWSER_SESSION_HMAC_KEY"},
+		{name: "login rate key", key: "AGENTERA_CLOUD_LOGIN_RATE_HMAC_KEY"},
+		{name: "browser cookie", key: "AGENTERA_CLOUD_BROWSER_COOKIE_NAME"},
+		{name: "terms version", key: "AGENTERA_CLOUD_TERMS_VERSION"},
+		{name: "privacy version", key: "AGENTERA_CLOUD_PRIVACY_VERSION"},
 		{name: "SMTP password", key: "AGENTERA_CLOUD_SMTP_PASSWORD"},
 		{name: "SMS API key", key: "AGENTERA_CLOUD_SMS_API_KEY"},
 		{name: "CAPTCHA secret", key: "AGENTERA_CLOUD_CAPTCHA_SECRET"},
@@ -199,6 +223,32 @@ func TestLoadRejectsInvalidVerificationSecrets(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsInvalidBrowserAuthenticationConfiguration(t *testing.T) {
+	tests := []struct {
+		name  string
+		key   string
+		value string
+		want  string
+	}{
+		{name: "short session key", key: "AGENTERA_CLOUD_BROWSER_SESSION_HMAC_KEY", value: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{6}, 31)), want: "at least 32 bytes"},
+		{name: "short login rate key", key: "AGENTERA_CLOUD_LOGIN_RATE_HMAC_KEY", value: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 31)), want: "at least 32 bytes"},
+		{name: "invalid cookie name", key: "AGENTERA_CLOUD_BROWSER_COOKIE_NAME", value: "shared cookie", want: "invalid"},
+		{name: "long browser session", key: "AGENTERA_CLOUD_BROWSER_SESSION_TTL_SECONDS", value: "3600", want: "between 300 and 1800"},
+		{name: "IP limit below identity limit", key: "AGENTERA_CLOUD_LOGIN_IP_LIMIT", value: "4", want: "between 5 and 10000"},
+		{name: "invalid terms version", key: "AGENTERA_CLOUD_TERMS_VERSION", value: "terms 2026", want: "invalid"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			env := validEnvironment("production")
+			env[test.key] = test.value
+			_, err := Load(mapLookup(env))
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Load() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestEnvironmentExamplePreservesKeyRingJSONWhenSourced(t *testing.T) {
 	environmentFile, err := filepath.Abs(filepath.Join("..", "..", ".env.example"))
 	if err != nil {
@@ -207,7 +257,7 @@ func TestEnvironmentExamplePreservesKeyRingJSONWhenSourced(t *testing.T) {
 	command := exec.Command(
 		"sh",
 		"-c",
-		`. "$1"; printf '%s\n%s\n%s\n' "$AGENTERA_CLOUD_IDENTITY_ENCRYPTION_KEYS" "$AGENTERA_CLOUD_IDENTITY_LOOKUP_KEYS" "$AGENTERA_CLOUD_VERIFICATION_CODE_KEYS"`,
+		`. "$1"; printf '%s\n%s\n%s\n%s\n' "$AGENTERA_CLOUD_IDENTITY_ENCRYPTION_KEYS" "$AGENTERA_CLOUD_IDENTITY_LOOKUP_KEYS" "$AGENTERA_CLOUD_VERIFICATION_CODE_KEYS" "$AGENTERA_CLOUD_VERIFICATION_RECEIPT_KEYS"`,
 		"sh",
 		environmentFile,
 	)
@@ -216,8 +266,8 @@ func TestEnvironmentExamplePreservesKeyRingJSONWhenSourced(t *testing.T) {
 		t.Fatalf("source .env.example: %v", err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	if len(lines) != 3 {
-		t.Fatalf("sourced key ring lines = %d, want 3", len(lines))
+	if len(lines) != 4 {
+		t.Fatalf("sourced key ring lines = %d, want 4", len(lines))
 	}
 	for index, line := range lines {
 		var keys map[string]string
@@ -269,32 +319,43 @@ func validEnvironment(environment string) map[string]string {
 	}
 
 	return map[string]string{
-		"AGENTERA_CLOUD_ENVIRONMENT":                       environment,
-		"AGENTERA_CLOUD_LISTEN_ADDR":                       listenAddr,
-		"AGENTERA_CLOUD_PUBLIC_URL":                        publicURL,
-		"AGENTERA_CLOUD_DATABASE_URL":                      "postgres://aera_cloud:secret@postgres:5432/aera_cloud?sslmode=require",
-		"AGENTERA_CLOUD_REDIS_ADDR":                        "redis:6379",
-		"AGENTERA_CLOUD_REDIS_USERNAME":                    "aera_cloud",
-		"AGENTERA_CLOUD_REDIS_PASSWORD":                    "secret",
-		"AGENTERA_CLOUD_REDIS_DB":                          "9",
-		"AGENTERA_CLOUD_IDENTITY_ENCRYPTION_ACTIVE_KEY_ID": "enc-dev-v1",
-		"AGENTERA_CLOUD_IDENTITY_ENCRYPTION_KEYS":          encodedKeyRing("enc-dev-v1", bytes.Repeat([]byte{1}, 32)),
-		"AGENTERA_CLOUD_IDENTITY_LOOKUP_ACTIVE_KEY_ID":     "lookup-dev-v1",
-		"AGENTERA_CLOUD_IDENTITY_LOOKUP_KEYS":              encodedKeyRing("lookup-dev-v1", bytes.Repeat([]byte{2}, 32)),
-		"AGENTERA_CLOUD_VERIFICATION_CODE_ACTIVE_KEY_ID":   "code-dev-v1",
-		"AGENTERA_CLOUD_VERIFICATION_CODE_KEYS":            encodedKeyRing("code-dev-v1", bytes.Repeat([]byte{3}, 32)),
-		"AGENTERA_CLOUD_VERIFICATION_REQUEST_HMAC_KEY":     base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{4}, 32)),
-		"AGENTERA_CLOUD_SMTP_HOST":                         "smtp.example.com",
-		"AGENTERA_CLOUD_SMTP_PORT":                         "587",
-		"AGENTERA_CLOUD_SMTP_USERNAME":                     "smtp-user",
-		"AGENTERA_CLOUD_SMTP_PASSWORD":                     "smtp-secret",
-		"AGENTERA_CLOUD_SMTP_FROM_ADDRESS":                 "accounts@example.com",
-		"AGENTERA_CLOUD_SMTP_FROM_NAME":                    "AgentEra",
-		"AGENTERA_CLOUD_SMS_ENDPOINT":                      "https://sms.example.com/verify",
-		"AGENTERA_CLOUD_SMS_API_KEY":                       "sms-secret",
-		"AGENTERA_CLOUD_SMS_SENDER_ID":                     "AgentEra",
-		"AGENTERA_CLOUD_CAPTCHA_ENDPOINT":                  "https://captcha.example.com/verify",
-		"AGENTERA_CLOUD_CAPTCHA_SECRET":                    "captcha-secret",
+		"AGENTERA_CLOUD_ENVIRONMENT":                        environment,
+		"AGENTERA_CLOUD_LISTEN_ADDR":                        listenAddr,
+		"AGENTERA_CLOUD_PUBLIC_URL":                         publicURL,
+		"AGENTERA_CLOUD_DATABASE_URL":                       "postgres://aera_cloud:secret@postgres:5432/aera_cloud?sslmode=require",
+		"AGENTERA_CLOUD_REDIS_ADDR":                         "redis:6379",
+		"AGENTERA_CLOUD_REDIS_USERNAME":                     "aera_cloud",
+		"AGENTERA_CLOUD_REDIS_PASSWORD":                     "secret",
+		"AGENTERA_CLOUD_REDIS_DB":                           "9",
+		"AGENTERA_CLOUD_IDENTITY_ENCRYPTION_ACTIVE_KEY_ID":  "enc-dev-v1",
+		"AGENTERA_CLOUD_IDENTITY_ENCRYPTION_KEYS":           encodedKeyRing("enc-dev-v1", bytes.Repeat([]byte{1}, 32)),
+		"AGENTERA_CLOUD_IDENTITY_LOOKUP_ACTIVE_KEY_ID":      "lookup-dev-v1",
+		"AGENTERA_CLOUD_IDENTITY_LOOKUP_KEYS":               encodedKeyRing("lookup-dev-v1", bytes.Repeat([]byte{2}, 32)),
+		"AGENTERA_CLOUD_VERIFICATION_CODE_ACTIVE_KEY_ID":    "code-dev-v1",
+		"AGENTERA_CLOUD_VERIFICATION_CODE_KEYS":             encodedKeyRing("code-dev-v1", bytes.Repeat([]byte{3}, 32)),
+		"AGENTERA_CLOUD_VERIFICATION_RECEIPT_ACTIVE_KEY_ID": "receipt-dev-v1",
+		"AGENTERA_CLOUD_VERIFICATION_RECEIPT_KEYS":          encodedKeyRing("receipt-dev-v1", bytes.Repeat([]byte{5}, 32)),
+		"AGENTERA_CLOUD_VERIFICATION_REQUEST_HMAC_KEY":      base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{4}, 32)),
+		"AGENTERA_CLOUD_BROWSER_SESSION_HMAC_KEY":           base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{6}, 32)),
+		"AGENTERA_CLOUD_LOGIN_RATE_HMAC_KEY":                base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32)),
+		"AGENTERA_CLOUD_BROWSER_COOKIE_NAME":                "agentera_test_session",
+		"AGENTERA_CLOUD_BROWSER_SESSION_TTL_SECONDS":        "900",
+		"AGENTERA_CLOUD_LOGIN_IDENTITY_LIMIT":               "5",
+		"AGENTERA_CLOUD_LOGIN_IP_LIMIT":                     "20",
+		"AGENTERA_CLOUD_LOGIN_WINDOW_SECONDS":               "600",
+		"AGENTERA_CLOUD_TERMS_VERSION":                      "terms-2026-07",
+		"AGENTERA_CLOUD_PRIVACY_VERSION":                    "privacy-2026-07",
+		"AGENTERA_CLOUD_SMTP_HOST":                          "smtp.example.com",
+		"AGENTERA_CLOUD_SMTP_PORT":                          "587",
+		"AGENTERA_CLOUD_SMTP_USERNAME":                      "smtp-user",
+		"AGENTERA_CLOUD_SMTP_PASSWORD":                      "smtp-secret",
+		"AGENTERA_CLOUD_SMTP_FROM_ADDRESS":                  "accounts@example.com",
+		"AGENTERA_CLOUD_SMTP_FROM_NAME":                     "AgentEra",
+		"AGENTERA_CLOUD_SMS_ENDPOINT":                       "https://sms.example.com/verify",
+		"AGENTERA_CLOUD_SMS_API_KEY":                        "sms-secret",
+		"AGENTERA_CLOUD_SMS_SENDER_ID":                      "AgentEra",
+		"AGENTERA_CLOUD_CAPTCHA_ENDPOINT":                   "https://captcha.example.com/verify",
+		"AGENTERA_CLOUD_CAPTCHA_SECRET":                     "captcha-secret",
 	}
 }
 

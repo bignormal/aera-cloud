@@ -174,10 +174,15 @@ func TestServiceConsumesCodeOnceAndInvalidatesAfterFiveFailures(t *testing.T) {
 		}
 		code := fixture.sender.deliveries[0].code
 		verify := VerifyRequest{Kind: request.Kind, Destination: request.Destination, Purpose: request.Purpose, Code: code}
-		if err := fixture.service.Verify(context.Background(), verify); err != nil {
+		result, err := fixture.service.Verify(context.Background(), verify)
+		if err != nil {
 			t.Fatalf("Verify() error = %v", err)
 		}
-		if err := fixture.service.Verify(context.Background(), verify); !errors.Is(err, ErrInvalidVerification) {
+		claims, err := fixture.receiptCodec.Parse(result.Receipt, PurposeRegistration)
+		if err != nil || claims.NormalizedIdentity != "alice@example.com" || result.ExpiresAt != fixture.now.Add(10*time.Minute) {
+			t.Fatalf("verification receipt = %+v, claims = %+v, error = %v", result, claims, err)
+		}
+		if _, err := fixture.service.Verify(context.Background(), verify); !errors.Is(err, ErrInvalidVerification) {
 			t.Fatalf("second Verify() error = %v, want ErrInvalidVerification", err)
 		}
 	})
@@ -189,7 +194,7 @@ func TestServiceConsumesCodeOnceAndInvalidatesAfterFiveFailures(t *testing.T) {
 			t.Fatalf("Send() error = %v", err)
 		}
 		for attempt := 1; attempt <= 5; attempt++ {
-			err := fixture.service.Verify(context.Background(), VerifyRequest{
+			_, err := fixture.service.Verify(context.Background(), VerifyRequest{
 				Kind: request.Kind, Destination: request.Destination, Purpose: request.Purpose, Code: "000000",
 			})
 			if !errors.Is(err, ErrInvalidVerification) {
@@ -197,7 +202,7 @@ func TestServiceConsumesCodeOnceAndInvalidatesAfterFiveFailures(t *testing.T) {
 			}
 		}
 		correct := fixture.sender.deliveries[0].code
-		err := fixture.service.Verify(context.Background(), VerifyRequest{
+		_, err := fixture.service.Verify(context.Background(), VerifyRequest{
 			Kind: request.Kind, Destination: request.Destination, Purpose: request.Purpose, Code: correct,
 		})
 		if !errors.Is(err, ErrInvalidVerification) {
@@ -218,7 +223,7 @@ func TestServiceVerifiesChallengeAcrossCodeKeyRotation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService(rotated) error = %v", err)
 	}
-	if err := rotated.Verify(context.Background(), VerifyRequest{
+	if _, err := rotated.Verify(context.Background(), VerifyRequest{
 		Kind: request.Kind, Destination: request.Destination, Purpose: request.Purpose, Code: code,
 	}); err != nil {
 		t.Fatalf("rotated Verify() error = %v", err)
@@ -245,16 +250,17 @@ func TestLogsNeverContainSecrets(t *testing.T) {
 }
 
 type serviceFixture struct {
-	now        time.Time
-	sender     *fakeSender
-	repository *fakeRepository
-	limiter    *fakeLimiter
-	captcha    *fakeCaptcha
-	guard      *fakeDeliveryGuard
-	indexer    *secure.IdentityCodec
-	logger     *slog.Logger
-	service    *Service
-	events     *[]string
+	now          time.Time
+	sender       *fakeSender
+	repository   *fakeRepository
+	limiter      *fakeLimiter
+	captcha      *fakeCaptcha
+	guard        *fakeDeliveryGuard
+	indexer      *secure.IdentityCodec
+	receiptCodec *ReceiptCodec
+	logger       *slog.Logger
+	service      *Service
+	events       *[]string
 }
 
 func newServiceFixture(t *testing.T) *serviceFixture {
@@ -268,15 +274,25 @@ func newServiceFixture(t *testing.T) *serviceFixture {
 	if err != nil {
 		t.Fatalf("NewIdentityCodec() error = %v", err)
 	}
+	receiptCodec, err := NewReceiptCodec(ReceiptCodecConfig{
+		IdentityCodec:      indexer,
+		ActiveSigningKeyID: "receipt-v1",
+		SigningKeys:        map[string][]byte{"receipt-v1": bytes.Repeat([]byte{6}, 32)},
+		Clock:              func() time.Time { return time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC) },
+	})
+	if err != nil {
+		t.Fatalf("NewReceiptCodec() error = %v", err)
+	}
 	fixture := &serviceFixture{
-		now:        time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC),
-		sender:     &fakeSender{},
-		repository: &fakeRepository{},
-		limiter:    &fakeLimiter{decision: Decision{Allowed: true}},
-		captcha:    &fakeCaptcha{valid: true},
-		guard:      &fakeDeliveryGuard{acquired: true},
-		indexer:    indexer,
-		logger:     slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+		now:          time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC),
+		sender:       &fakeSender{},
+		repository:   &fakeRepository{},
+		limiter:      &fakeLimiter{decision: Decision{Allowed: true}},
+		captcha:      &fakeCaptcha{valid: true},
+		guard:        &fakeDeliveryGuard{acquired: true},
+		indexer:      indexer,
+		receiptCodec: receiptCodec,
+		logger:       slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
 	}
 	service, err := NewService(fixture.config("code-v1"))
 	if err != nil {
@@ -294,6 +310,7 @@ func (f *serviceFixture) config(activeCodeKeyID string) ServiceConfig {
 		Captcha:         f.captcha,
 		DeliveryGuard:   f.guard,
 		TargetIndexer:   f.indexer,
+		Receipts:        f.receiptCodec,
 		ActiveCodeKeyID: activeCodeKeyID,
 		CodeKeys: map[string][]byte{
 			"code-v1": bytes.Repeat([]byte{3}, 32),

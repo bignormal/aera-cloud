@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bignormal/aera-cloud/internal/secure"
 )
@@ -65,6 +66,27 @@ func TestHTTPHandlerVerifiesCodeWithEnumerationSafeFailure(t *testing.T) {
 	}
 	if service.lastVerify.Code != "123456" || service.lastVerify.Kind != secure.IdentityPhone {
 		t.Fatalf("Verify request = %+v", service.lastVerify)
+	}
+}
+
+func TestHTTPHandlerReturnsShortLivedReceiptAfterVerification(t *testing.T) {
+	expiresAt := time.Date(2026, 7, 17, 16, 10, 0, 0, time.UTC)
+	service := &stubVerificationService{verifyResult: VerificationResult{Receipt: "opaque-receipt", ExpiresAt: expiresAt}}
+	handler := NewHandler(service)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/verification/challenges/verify", strings.NewReader(`{
+		"kind":"email",
+		"destination":"alice@example.com",
+		"purpose":"registration",
+		"code":"123456"
+	}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	want := `{"status":"verified","receipt":"opaque-receipt","expires_at":"2026-07-17T16:10:00Z"}`
+	if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != want {
+		t.Fatalf("response = %d %q", response.Code, response.Body.String())
 	}
 }
 
@@ -150,12 +172,13 @@ func TestHTTPHandlerRejectsUnknownFieldsWrongMediaTypeAndLargeBodies(t *testing.
 }
 
 type stubVerificationService struct {
-	sendErr     error
-	verifyErr   error
-	sendCalls   int
-	verifyCalls int
-	lastSend    SendRequest
-	lastVerify  VerifyRequest
+	sendErr      error
+	verifyErr    error
+	verifyResult VerificationResult
+	sendCalls    int
+	verifyCalls  int
+	lastSend     SendRequest
+	lastVerify   VerifyRequest
 }
 
 func (s *stubVerificationService) Send(_ context.Context, request SendRequest) error {
@@ -164,10 +187,10 @@ func (s *stubVerificationService) Send(_ context.Context, request SendRequest) e
 	return s.sendErr
 }
 
-func (s *stubVerificationService) Verify(_ context.Context, request VerifyRequest) error {
+func (s *stubVerificationService) Verify(_ context.Context, request VerifyRequest) (VerificationResult, error) {
 	s.verifyCalls++
 	s.lastVerify = request
-	return s.verifyErr
+	return s.verifyResult, s.verifyErr
 }
 
 func validSendHTTPRequest() *http.Request {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -20,24 +21,35 @@ const (
 	envRedisPassword = "AGENTERA_CLOUD_REDIS_PASSWORD"
 	envRedisDB       = "AGENTERA_CLOUD_REDIS_DB"
 
-	envIdentityEncryptionActiveKeyID = "AGENTERA_CLOUD_IDENTITY_ENCRYPTION_ACTIVE_KEY_ID"
-	envIdentityEncryptionKeys        = "AGENTERA_CLOUD_IDENTITY_ENCRYPTION_KEYS"
-	envIdentityLookupActiveKeyID     = "AGENTERA_CLOUD_IDENTITY_LOOKUP_ACTIVE_KEY_ID"
-	envIdentityLookupKeys            = "AGENTERA_CLOUD_IDENTITY_LOOKUP_KEYS"
-	envVerificationCodeActiveKeyID   = "AGENTERA_CLOUD_VERIFICATION_CODE_ACTIVE_KEY_ID"
-	envVerificationCodeKeys          = "AGENTERA_CLOUD_VERIFICATION_CODE_KEYS"
-	envVerificationRequestHMACKey    = "AGENTERA_CLOUD_VERIFICATION_REQUEST_HMAC_KEY"
-	envSMTPHost                      = "AGENTERA_CLOUD_SMTP_HOST"
-	envSMTPPort                      = "AGENTERA_CLOUD_SMTP_PORT"
-	envSMTPUsername                  = "AGENTERA_CLOUD_SMTP_USERNAME"
-	envSMTPPassword                  = "AGENTERA_CLOUD_SMTP_PASSWORD"
-	envSMTPFromAddress               = "AGENTERA_CLOUD_SMTP_FROM_ADDRESS"
-	envSMTPFromName                  = "AGENTERA_CLOUD_SMTP_FROM_NAME"
-	envSMSEndpoint                   = "AGENTERA_CLOUD_SMS_ENDPOINT"
-	envSMSAPIKey                     = "AGENTERA_CLOUD_SMS_API_KEY"
-	envSMSSenderID                   = "AGENTERA_CLOUD_SMS_SENDER_ID"
-	envCaptchaEndpoint               = "AGENTERA_CLOUD_CAPTCHA_ENDPOINT"
-	envCaptchaSecret                 = "AGENTERA_CLOUD_CAPTCHA_SECRET"
+	envIdentityEncryptionActiveKeyID  = "AGENTERA_CLOUD_IDENTITY_ENCRYPTION_ACTIVE_KEY_ID"
+	envIdentityEncryptionKeys         = "AGENTERA_CLOUD_IDENTITY_ENCRYPTION_KEYS"
+	envIdentityLookupActiveKeyID      = "AGENTERA_CLOUD_IDENTITY_LOOKUP_ACTIVE_KEY_ID"
+	envIdentityLookupKeys             = "AGENTERA_CLOUD_IDENTITY_LOOKUP_KEYS"
+	envVerificationCodeActiveKeyID    = "AGENTERA_CLOUD_VERIFICATION_CODE_ACTIVE_KEY_ID"
+	envVerificationCodeKeys           = "AGENTERA_CLOUD_VERIFICATION_CODE_KEYS"
+	envVerificationReceiptActiveKeyID = "AGENTERA_CLOUD_VERIFICATION_RECEIPT_ACTIVE_KEY_ID"
+	envVerificationReceiptKeys        = "AGENTERA_CLOUD_VERIFICATION_RECEIPT_KEYS"
+	envVerificationRequestHMACKey     = "AGENTERA_CLOUD_VERIFICATION_REQUEST_HMAC_KEY"
+	envBrowserSessionHMACKey          = "AGENTERA_CLOUD_BROWSER_SESSION_HMAC_KEY"
+	envLoginRateHMACKey               = "AGENTERA_CLOUD_LOGIN_RATE_HMAC_KEY"
+	envBrowserCookieName              = "AGENTERA_CLOUD_BROWSER_COOKIE_NAME"
+	envBrowserSessionTTLSeconds       = "AGENTERA_CLOUD_BROWSER_SESSION_TTL_SECONDS"
+	envLoginIdentityLimit             = "AGENTERA_CLOUD_LOGIN_IDENTITY_LIMIT"
+	envLoginIPLimit                   = "AGENTERA_CLOUD_LOGIN_IP_LIMIT"
+	envLoginWindowSeconds             = "AGENTERA_CLOUD_LOGIN_WINDOW_SECONDS"
+	envTermsVersion                   = "AGENTERA_CLOUD_TERMS_VERSION"
+	envPrivacyVersion                 = "AGENTERA_CLOUD_PRIVACY_VERSION"
+	envSMTPHost                       = "AGENTERA_CLOUD_SMTP_HOST"
+	envSMTPPort                       = "AGENTERA_CLOUD_SMTP_PORT"
+	envSMTPUsername                   = "AGENTERA_CLOUD_SMTP_USERNAME"
+	envSMTPPassword                   = "AGENTERA_CLOUD_SMTP_PASSWORD"
+	envSMTPFromAddress                = "AGENTERA_CLOUD_SMTP_FROM_ADDRESS"
+	envSMTPFromName                   = "AGENTERA_CLOUD_SMTP_FROM_NAME"
+	envSMSEndpoint                    = "AGENTERA_CLOUD_SMS_ENDPOINT"
+	envSMSAPIKey                      = "AGENTERA_CLOUD_SMS_API_KEY"
+	envSMSSenderID                    = "AGENTERA_CLOUD_SMS_SENDER_ID"
+	envCaptchaEndpoint                = "AGENTERA_CLOUD_CAPTCHA_ENDPOINT"
+	envCaptchaSecret                  = "AGENTERA_CLOUD_CAPTCHA_SECRET"
 )
 
 type LookupEnv func(string) (string, bool)
@@ -59,7 +71,17 @@ type Config struct {
 	IdentityEncryptionKeyRing  KeyRing
 	IdentityLookupKeyRing      KeyRing
 	VerificationCodeKeyRing    KeyRing
+	VerificationReceiptKeyRing KeyRing
 	VerificationRequestHMACKey []byte
+	BrowserSessionHMACKey      []byte
+	LoginRateHMACKey           []byte
+	BrowserCookieName          string
+	BrowserSessionTTLSeconds   int
+	LoginIdentityLimit         int64
+	LoginIPLimit               int64
+	LoginWindowSeconds         int
+	TermsVersion               string
+	PrivacyVersion             string
 	SMTPHost                   string
 	SMTPPort                   int
 	SMTPUsername               string
@@ -152,7 +174,56 @@ func Load(lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	verificationReceiptKeyRing, err := loadKeyRing(
+		lookup,
+		envVerificationReceiptActiveKeyID,
+		envVerificationReceiptKeys,
+		32,
+		false,
+	)
+	if err != nil {
+		return Config{}, err
+	}
 	verificationRequestHMACKey, err := loadBase64Key(lookup, envVerificationRequestHMACKey, 32)
+	if err != nil {
+		return Config{}, err
+	}
+	browserSessionHMACKey, err := loadBase64Key(lookup, envBrowserSessionHMACKey, 32)
+	if err != nil {
+		return Config{}, err
+	}
+	loginRateHMACKey, err := loadBase64Key(lookup, envLoginRateHMACKey, 32)
+	if err != nil {
+		return Config{}, err
+	}
+	browserCookieName, err := required(lookup, envBrowserCookieName)
+	if err != nil {
+		return Config{}, err
+	}
+	if !regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`).MatchString(browserCookieName) {
+		return Config{}, fmt.Errorf("%s is invalid", envBrowserCookieName)
+	}
+	browserSessionTTLSeconds, err := requiredInteger(lookup, envBrowserSessionTTLSeconds, 300, 1800)
+	if err != nil {
+		return Config{}, err
+	}
+	loginIdentityLimit, err := requiredInteger(lookup, envLoginIdentityLimit, 1, 1000)
+	if err != nil {
+		return Config{}, err
+	}
+	loginIPLimit, err := requiredInteger(lookup, envLoginIPLimit, loginIdentityLimit, 10000)
+	if err != nil {
+		return Config{}, err
+	}
+	loginWindowSeconds, err := requiredInteger(lookup, envLoginWindowSeconds, 60, 86400)
+	if err != nil {
+		return Config{}, err
+	}
+	termsVersion, err := requiredVersion(lookup, envTermsVersion)
+	if err != nil {
+		return Config{}, err
+	}
+	privacyVersion, err := requiredVersion(lookup, envPrivacyVersion)
 	if err != nil {
 		return Config{}, err
 	}
@@ -217,7 +288,17 @@ func Load(lookup LookupEnv) (Config, error) {
 		IdentityEncryptionKeyRing:  identityEncryptionKeyRing,
 		IdentityLookupKeyRing:      identityLookupKeyRing,
 		VerificationCodeKeyRing:    verificationCodeKeyRing,
+		VerificationReceiptKeyRing: verificationReceiptKeyRing,
 		VerificationRequestHMACKey: verificationRequestHMACKey,
+		BrowserSessionHMACKey:      browserSessionHMACKey,
+		LoginRateHMACKey:           loginRateHMACKey,
+		BrowserCookieName:          browserCookieName,
+		BrowserSessionTTLSeconds:   browserSessionTTLSeconds,
+		LoginIdentityLimit:         int64(loginIdentityLimit),
+		LoginIPLimit:               int64(loginIPLimit),
+		LoginWindowSeconds:         loginWindowSeconds,
+		TermsVersion:               termsVersion,
+		PrivacyVersion:             privacyVersion,
 		SMTPHost:                   smtpHost,
 		SMTPPort:                   smtpPort,
 		SMTPUsername:               smtpUsername,
@@ -230,6 +311,29 @@ func Load(lookup LookupEnv) (Config, error) {
 		CaptchaEndpoint:            captchaEndpoint,
 		CaptchaSecret:              captchaSecret,
 	}, nil
+}
+
+func requiredInteger(lookup LookupEnv, key string, minimum, maximum int) (int, error) {
+	value, err := required(lookup, key)
+	if err != nil {
+		return 0, err
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < minimum || parsed > maximum {
+		return 0, fmt.Errorf("%s must be an integer between %d and %d", key, minimum, maximum)
+	}
+	return parsed, nil
+}
+
+func requiredVersion(lookup LookupEnv, key string) (string, error) {
+	value, err := required(lookup, key)
+	if err != nil {
+		return "", err
+	}
+	if !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`).MatchString(value) {
+		return "", fmt.Errorf("%s is invalid", key)
+	}
+	return value, nil
 }
 
 func loadBase64Key(lookup LookupEnv, key string, minimumBytes int) ([]byte, error) {

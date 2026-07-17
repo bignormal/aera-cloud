@@ -64,6 +64,11 @@ type VerifyRequest struct {
 	Code        string
 }
 
+type VerificationResult struct {
+	Receipt   string
+	ExpiresAt time.Time
+}
+
 func validPurpose(purpose Purpose) bool {
 	return purpose == PurposeRegistration || purpose == PurposePasswordReset || purpose == PurposeBindIdentity
 }
