@@ -59,8 +59,8 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	if err := postgres.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if applied != 2 {
-		t.Fatalf("applied migration count = %d, want 2", applied)
+	if applied != 3 {
+		t.Fatalf("applied migration count = %d, want 3", applied)
 	}
 	var receiptConsumedColumn bool
 	if err := postgres.QueryRow(ctx, `
@@ -76,6 +76,21 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	}
 	if !receiptConsumedColumn {
 		t.Fatal("verification_challenges.receipt_consumed_at does not exist")
+	}
+	var oauthMetadataColumns int
+	if err := postgres.QueryRow(ctx, `
+		SELECT count(*)
+		FROM information_schema.columns
+		WHERE table_schema = 'public'
+		  AND table_name = 'oauth_requests'
+		  AND column_name IN (
+			'state_encryption_key_id', 'state_nonce', 'device_display_name', 'device_platform', 'app_version'
+		  )
+	`).Scan(&oauthMetadataColumns); err != nil {
+		t.Fatalf("check OAuth metadata columns: %v", err)
+	}
+	if oauthMetadataColumns != 5 {
+		t.Fatalf("OAuth metadata column count = %d, want 5", oauthMetadataColumns)
 	}
 }
 

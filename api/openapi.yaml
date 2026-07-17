@@ -135,6 +135,194 @@ paths:
                 $ref: '#/components/schemas/CurrentLegalDocuments'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+  /oauth/authorize:
+    get:
+      operationId: beginDesktopAuthorization
+      parameters:
+        - name: client_id
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [agentera-studio]
+        - name: redirect_uri
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uri
+            pattern: '^http://127\.0\.0\.1:[1-9][0-9]{0,4}/agentera/oauth/callback$'
+        - name: code_challenge
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{43}$'
+        - name: code_challenge_method
+          in: query
+          required: true
+          schema:
+            type: string
+            const: S256
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 1024
+        - name: installation_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: device_public_key
+          in: query
+          required: true
+          description: Raw Ed25519 public key encoded as unpadded base64url.
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{43}$'
+        - name: device_name
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+        - name: platform
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [darwin, windows, linux]
+        - name: app_version
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+      responses:
+        '303':
+          description: Sensitive request values were persisted and removed from the browser URL.
+          headers:
+            Location:
+              required: true
+              schema:
+                type: string
+                pattern: '^/authorize\?request_id='
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/oauth/authorize/approve:
+    post:
+      operationId: approveDesktopAuthorization
+      security:
+        - browserSession: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthorizationApprovalRequest'
+      responses:
+        '200':
+          description: Exact loopback callback URL containing a one-time code and the original state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthorizationApprovalResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '403':
+          $ref: '#/components/responses/InvalidRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/oauth/token:
+    post:
+      operationId: exchangeDesktopAuthorizationCode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthorizationCodeExchangeRequest'
+      responses:
+        '200':
+          description: Device-bound product session and a new seven-day offline entitlement.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '409':
+          description: The code was replayed or the five-active-device limit was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/oauth/refresh:
+    post:
+      operationId: refreshDesktopSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshTokenRequest'
+      responses:
+        '200':
+          description: Rotated refresh token, short-lived access token, and renewed offline entitlement.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/oauth/revoke:
+    post:
+      operationId: revokeDesktopSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshTokenRequest'
+      responses:
+        '204':
+          description: The refresh-token family was revoked.
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /.well-known/agentera-signing-keys.json:
+    get:
+      operationId: getAgentEraSigningKeys
+      responses:
+        '200':
+          description: Public Ed25519 access and offline-entitlement verification keys.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SigningKeySet'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 components:
   securitySchemes:
     browserSession:
@@ -287,6 +475,123 @@ components:
         privacy_version:
           type: string
           maxLength: 64
+    AuthorizationApprovalRequest:
+      type: object
+      additionalProperties: false
+      required: [request_id]
+      properties:
+        request_id:
+          type: string
+          format: uuid
+    AuthorizationApprovalResponse:
+      type: object
+      additionalProperties: false
+      required: [redirect_uri]
+      properties:
+        redirect_uri:
+          type: string
+          format: uri
+          pattern: '^http://127\.0\.0\.1:[1-9][0-9]{0,4}/agentera/oauth/callback\?'
+    AuthorizationCodeExchangeRequest:
+      type: object
+      additionalProperties: false
+      required: [authorization_code, code_verifier, installation_id, device_proof]
+      properties:
+        authorization_code:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{43}$'
+        code_verifier:
+          type: string
+          minLength: 43
+          maxLength: 128
+          pattern: '^[A-Za-z0-9._~-]+$'
+        installation_id:
+          type: string
+          format: uuid
+        device_proof:
+          type: string
+          description: Ed25519 signature over the documented device-proof digest, encoded as unpadded base64url.
+          pattern: '^[A-Za-z0-9_-]{86}$'
+    RefreshTokenRequest:
+      type: object
+      additionalProperties: false
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{43}$'
+    TokenResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - access_token
+        - access_expires_at
+        - refresh_token
+        - refresh_expires_at
+        - offline_entitlement
+        - offline_expires_at
+        - user_id
+        - personal_space_id
+        - device_id
+      properties:
+        access_token:
+          type: string
+          maxLength: 8192
+        access_expires_at:
+          type: string
+          format: date-time
+        refresh_token:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{43}$'
+        refresh_expires_at:
+          type: string
+          format: date-time
+        offline_entitlement:
+          type: string
+          maxLength: 8192
+        offline_expires_at:
+          type: string
+          format: date-time
+        user_id:
+          type: string
+          format: uuid
+        personal_space_id:
+          type: string
+          format: uuid
+        device_id:
+          type: string
+          format: uuid
+    SigningKeySet:
+      type: object
+      additionalProperties: false
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          minItems: 2
+          items:
+            $ref: '#/components/schemas/SigningKey'
+    SigningKey:
+      type: object
+      additionalProperties: false
+      required: [kid, kty, crv, alg, use, purpose, x]
+      properties:
+        kid:
+          type: string
+        kty:
+          const: OKP
+        crv:
+          const: Ed25519
+        alg:
+          const: EdDSA
+        use:
+          const: sig
+        purpose:
+          type: string
+          enum: [access, offline_entitlement]
+        x:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{43}$'
     ErrorCode:
       type: string
       enum:

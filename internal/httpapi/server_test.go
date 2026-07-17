@@ -152,3 +152,35 @@ func TestAccountRoutesAreMountedWithoutChangingHealthContract(t *testing.T) {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
 	}
 }
+
+func TestDesktopOAuthRoutesAreMountedWithoutChangingHealthContract(t *testing.T) {
+	paths := []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodGet, path: "/oauth/authorize"},
+		{method: http.MethodPost, path: "/api/v1/oauth/token"},
+		{method: http.MethodGet, path: "/.well-known/agentera-signing-keys.json"},
+	}
+	for _, route := range paths {
+		t.Run(route.path, func(t *testing.T) {
+			oauthHandler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				if request.URL.Path != route.path {
+					t.Errorf("OAuth path = %q", request.URL.Path)
+				}
+				response.WriteHeader(http.StatusTeapot)
+			})
+			handler := New(Dependencies{
+				PostgreSQL: &stubHealthChecker{}, Redis: &stubHealthChecker{}, OAuth: oauthHandler,
+			})
+			request := httptest.NewRequest(route.method, route.path, nil)
+			response := httptest.NewRecorder()
+
+			handler.ServeHTTP(response, request)
+
+			if response.Code != http.StatusTeapot {
+				t.Fatalf("status = %d, want %d", response.Code, http.StatusTeapot)
+			}
+		})
+	}
+}

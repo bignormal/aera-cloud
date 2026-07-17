@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -58,6 +59,21 @@ func TestLoadAcceptsLoopbackHTTPInDevelopment(t *testing.T) {
 		!bytes.Equal(cfg.LoginRateHMACKey, bytes.Repeat([]byte{7}, 32)) {
 		t.Fatal("browser authentication HMAC keys were not decoded")
 	}
+	if cfg.OAuthStateEncryptionKeyRing.ActiveKeyID != "oauth-state-dev-v1" ||
+		!bytes.Equal(cfg.OAuthStateEncryptionKeyRing.Keys["oauth-state-dev-v1"], bytes.Repeat([]byte{8}, 32)) ||
+		!bytes.Equal(cfg.OAuthStateHMACKey, bytes.Repeat([]byte{9}, 32)) ||
+		!bytes.Equal(cfg.RefreshTokenHMACKey, bytes.Repeat([]byte{10}, 32)) {
+		t.Fatal("desktop OAuth key material was not decoded")
+	}
+	if cfg.AccessSigningKeyRing.ActiveKeyID != "access-dev-v1" ||
+		len(cfg.AccessSigningKeyRing.Keys["access-dev-v1"]) != ed25519.PrivateKeySize ||
+		cfg.OfflineSigningKeyRing.ActiveKeyID != "offline-dev-v1" ||
+		len(cfg.OfflineSigningKeyRing.Keys["offline-dev-v1"]) != ed25519.PrivateKeySize {
+		t.Fatal("desktop signing key rings were not decoded")
+	}
+	if cfg.OfflinePolicyVersion != 1 || cfg.ActiveDeviceLimit != 5 {
+		t.Fatalf("desktop authorization policy = %d / %d", cfg.OfflinePolicyVersion, cfg.ActiveDeviceLimit)
+	}
 	if cfg.BrowserCookieName != "agentera_test_session" || cfg.BrowserSessionTTLSeconds != 900 {
 		t.Fatalf("browser session configuration = %q / %d", cfg.BrowserCookieName, cfg.BrowserSessionTTLSeconds)
 	}
@@ -112,6 +128,16 @@ func TestLoadRejectsProductionCredentialsThatAreMissing(t *testing.T) {
 		{name: "verification request key", key: "AGENTERA_CLOUD_VERIFICATION_REQUEST_HMAC_KEY"},
 		{name: "browser session key", key: "AGENTERA_CLOUD_BROWSER_SESSION_HMAC_KEY"},
 		{name: "login rate key", key: "AGENTERA_CLOUD_LOGIN_RATE_HMAC_KEY"},
+		{name: "OAuth state encryption active key", key: "AGENTERA_CLOUD_OAUTH_STATE_ENCRYPTION_ACTIVE_KEY_ID"},
+		{name: "OAuth state encryption keys", key: "AGENTERA_CLOUD_OAUTH_STATE_ENCRYPTION_KEYS"},
+		{name: "OAuth state HMAC key", key: "AGENTERA_CLOUD_OAUTH_STATE_HMAC_KEY"},
+		{name: "refresh token HMAC key", key: "AGENTERA_CLOUD_REFRESH_TOKEN_HMAC_KEY"},
+		{name: "access signing active key", key: "AGENTERA_CLOUD_ACCESS_SIGNING_ACTIVE_KEY_ID"},
+		{name: "access signing keys", key: "AGENTERA_CLOUD_ACCESS_SIGNING_KEYS"},
+		{name: "offline signing active key", key: "AGENTERA_CLOUD_OFFLINE_SIGNING_ACTIVE_KEY_ID"},
+		{name: "offline signing keys", key: "AGENTERA_CLOUD_OFFLINE_SIGNING_KEYS"},
+		{name: "offline policy version", key: "AGENTERA_CLOUD_OFFLINE_POLICY_VERSION"},
+		{name: "active device limit", key: "AGENTERA_CLOUD_ACTIVE_DEVICE_LIMIT"},
 		{name: "browser cookie", key: "AGENTERA_CLOUD_BROWSER_COOKIE_NAME"},
 		{name: "terms version", key: "AGENTERA_CLOUD_TERMS_VERSION"},
 		{name: "privacy version", key: "AGENTERA_CLOUD_PRIVACY_VERSION"},
@@ -130,6 +156,36 @@ func TestLoadRejectsProductionCredentialsThatAreMissing(t *testing.T) {
 				t.Fatalf("Load() error = %v, want missing %s", err, tt.key)
 			}
 		})
+	}
+}
+
+func TestLoadRejectsReusedDesktopAuthorizationKeys(t *testing.T) {
+	env := validEnvironment("production")
+	env["AGENTERA_CLOUD_REFRESH_TOKEN_HMAC_KEY"] = env["AGENTERA_CLOUD_OAUTH_STATE_HMAC_KEY"]
+
+	_, err := Load(mapLookup(env))
+	if err == nil || !strings.Contains(err.Error(), "independent") {
+		t.Fatalf("Load() error = %v, want independent-key validation", err)
+	}
+
+	env = validEnvironment("production")
+	env["AGENTERA_CLOUD_OFFLINE_SIGNING_KEYS"] = encodedKeyRing(
+		"offline-dev-v1",
+		ed25519.NewKeyFromSeed(bytes.Repeat([]byte{11}, ed25519.SeedSize)),
+	)
+	_, err = Load(mapLookup(env))
+	if err == nil || !strings.Contains(err.Error(), "independent") {
+		t.Fatalf("Load() signing error = %v, want independent-key validation", err)
+	}
+}
+
+func TestLoadRejectsChangingTheFiveDeviceProductLimit(t *testing.T) {
+	env := validEnvironment("production")
+	env["AGENTERA_CLOUD_ACTIVE_DEVICE_LIMIT"] = "6"
+
+	_, err := Load(mapLookup(env))
+	if err == nil || !strings.Contains(err.Error(), "AGENTERA_CLOUD_ACTIVE_DEVICE_LIMIT") {
+		t.Fatalf("Load() error = %v, want fixed five-device validation", err)
 	}
 }
 
@@ -318,44 +374,56 @@ func validEnvironment(environment string) map[string]string {
 		listenAddr = "127.0.0.1:8086"
 	}
 
+	accessPrivateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{11}, ed25519.SeedSize))
+	offlinePrivateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{12}, ed25519.SeedSize))
 	return map[string]string{
-		"AGENTERA_CLOUD_ENVIRONMENT":                        environment,
-		"AGENTERA_CLOUD_LISTEN_ADDR":                        listenAddr,
-		"AGENTERA_CLOUD_PUBLIC_URL":                         publicURL,
-		"AGENTERA_CLOUD_DATABASE_URL":                       "postgres://aera_cloud:secret@postgres:5432/aera_cloud?sslmode=require",
-		"AGENTERA_CLOUD_REDIS_ADDR":                         "redis:6379",
-		"AGENTERA_CLOUD_REDIS_USERNAME":                     "aera_cloud",
-		"AGENTERA_CLOUD_REDIS_PASSWORD":                     "secret",
-		"AGENTERA_CLOUD_REDIS_DB":                           "9",
-		"AGENTERA_CLOUD_IDENTITY_ENCRYPTION_ACTIVE_KEY_ID":  "enc-dev-v1",
-		"AGENTERA_CLOUD_IDENTITY_ENCRYPTION_KEYS":           encodedKeyRing("enc-dev-v1", bytes.Repeat([]byte{1}, 32)),
-		"AGENTERA_CLOUD_IDENTITY_LOOKUP_ACTIVE_KEY_ID":      "lookup-dev-v1",
-		"AGENTERA_CLOUD_IDENTITY_LOOKUP_KEYS":               encodedKeyRing("lookup-dev-v1", bytes.Repeat([]byte{2}, 32)),
-		"AGENTERA_CLOUD_VERIFICATION_CODE_ACTIVE_KEY_ID":    "code-dev-v1",
-		"AGENTERA_CLOUD_VERIFICATION_CODE_KEYS":             encodedKeyRing("code-dev-v1", bytes.Repeat([]byte{3}, 32)),
-		"AGENTERA_CLOUD_VERIFICATION_RECEIPT_ACTIVE_KEY_ID": "receipt-dev-v1",
-		"AGENTERA_CLOUD_VERIFICATION_RECEIPT_KEYS":          encodedKeyRing("receipt-dev-v1", bytes.Repeat([]byte{5}, 32)),
-		"AGENTERA_CLOUD_VERIFICATION_REQUEST_HMAC_KEY":      base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{4}, 32)),
-		"AGENTERA_CLOUD_BROWSER_SESSION_HMAC_KEY":           base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{6}, 32)),
-		"AGENTERA_CLOUD_LOGIN_RATE_HMAC_KEY":                base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32)),
-		"AGENTERA_CLOUD_BROWSER_COOKIE_NAME":                "agentera_test_session",
-		"AGENTERA_CLOUD_BROWSER_SESSION_TTL_SECONDS":        "900",
-		"AGENTERA_CLOUD_LOGIN_IDENTITY_LIMIT":               "5",
-		"AGENTERA_CLOUD_LOGIN_IP_LIMIT":                     "20",
-		"AGENTERA_CLOUD_LOGIN_WINDOW_SECONDS":               "600",
-		"AGENTERA_CLOUD_TERMS_VERSION":                      "terms-2026-07",
-		"AGENTERA_CLOUD_PRIVACY_VERSION":                    "privacy-2026-07",
-		"AGENTERA_CLOUD_SMTP_HOST":                          "smtp.example.com",
-		"AGENTERA_CLOUD_SMTP_PORT":                          "587",
-		"AGENTERA_CLOUD_SMTP_USERNAME":                      "smtp-user",
-		"AGENTERA_CLOUD_SMTP_PASSWORD":                      "smtp-secret",
-		"AGENTERA_CLOUD_SMTP_FROM_ADDRESS":                  "accounts@example.com",
-		"AGENTERA_CLOUD_SMTP_FROM_NAME":                     "AgentEra",
-		"AGENTERA_CLOUD_SMS_ENDPOINT":                       "https://sms.example.com/verify",
-		"AGENTERA_CLOUD_SMS_API_KEY":                        "sms-secret",
-		"AGENTERA_CLOUD_SMS_SENDER_ID":                      "AgentEra",
-		"AGENTERA_CLOUD_CAPTCHA_ENDPOINT":                   "https://captcha.example.com/verify",
-		"AGENTERA_CLOUD_CAPTCHA_SECRET":                     "captcha-secret",
+		"AGENTERA_CLOUD_ENVIRONMENT":                          environment,
+		"AGENTERA_CLOUD_LISTEN_ADDR":                          listenAddr,
+		"AGENTERA_CLOUD_PUBLIC_URL":                           publicURL,
+		"AGENTERA_CLOUD_DATABASE_URL":                         "postgres://aera_cloud:secret@postgres:5432/aera_cloud?sslmode=require",
+		"AGENTERA_CLOUD_REDIS_ADDR":                           "redis:6379",
+		"AGENTERA_CLOUD_REDIS_USERNAME":                       "aera_cloud",
+		"AGENTERA_CLOUD_REDIS_PASSWORD":                       "secret",
+		"AGENTERA_CLOUD_REDIS_DB":                             "9",
+		"AGENTERA_CLOUD_IDENTITY_ENCRYPTION_ACTIVE_KEY_ID":    "enc-dev-v1",
+		"AGENTERA_CLOUD_IDENTITY_ENCRYPTION_KEYS":             encodedKeyRing("enc-dev-v1", bytes.Repeat([]byte{1}, 32)),
+		"AGENTERA_CLOUD_IDENTITY_LOOKUP_ACTIVE_KEY_ID":        "lookup-dev-v1",
+		"AGENTERA_CLOUD_IDENTITY_LOOKUP_KEYS":                 encodedKeyRing("lookup-dev-v1", bytes.Repeat([]byte{2}, 32)),
+		"AGENTERA_CLOUD_VERIFICATION_CODE_ACTIVE_KEY_ID":      "code-dev-v1",
+		"AGENTERA_CLOUD_VERIFICATION_CODE_KEYS":               encodedKeyRing("code-dev-v1", bytes.Repeat([]byte{3}, 32)),
+		"AGENTERA_CLOUD_VERIFICATION_RECEIPT_ACTIVE_KEY_ID":   "receipt-dev-v1",
+		"AGENTERA_CLOUD_VERIFICATION_RECEIPT_KEYS":            encodedKeyRing("receipt-dev-v1", bytes.Repeat([]byte{5}, 32)),
+		"AGENTERA_CLOUD_VERIFICATION_REQUEST_HMAC_KEY":        base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{4}, 32)),
+		"AGENTERA_CLOUD_BROWSER_SESSION_HMAC_KEY":             base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{6}, 32)),
+		"AGENTERA_CLOUD_LOGIN_RATE_HMAC_KEY":                  base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32)),
+		"AGENTERA_CLOUD_OAUTH_STATE_ENCRYPTION_ACTIVE_KEY_ID": "oauth-state-dev-v1",
+		"AGENTERA_CLOUD_OAUTH_STATE_ENCRYPTION_KEYS":          encodedKeyRing("oauth-state-dev-v1", bytes.Repeat([]byte{8}, 32)),
+		"AGENTERA_CLOUD_OAUTH_STATE_HMAC_KEY":                 base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32)),
+		"AGENTERA_CLOUD_REFRESH_TOKEN_HMAC_KEY":               base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{10}, 32)),
+		"AGENTERA_CLOUD_ACCESS_SIGNING_ACTIVE_KEY_ID":         "access-dev-v1",
+		"AGENTERA_CLOUD_ACCESS_SIGNING_KEYS":                  encodedKeyRing("access-dev-v1", accessPrivateKey),
+		"AGENTERA_CLOUD_OFFLINE_SIGNING_ACTIVE_KEY_ID":        "offline-dev-v1",
+		"AGENTERA_CLOUD_OFFLINE_SIGNING_KEYS":                 encodedKeyRing("offline-dev-v1", offlinePrivateKey),
+		"AGENTERA_CLOUD_OFFLINE_POLICY_VERSION":               "1",
+		"AGENTERA_CLOUD_ACTIVE_DEVICE_LIMIT":                  "5",
+		"AGENTERA_CLOUD_BROWSER_COOKIE_NAME":                  "agentera_test_session",
+		"AGENTERA_CLOUD_BROWSER_SESSION_TTL_SECONDS":          "900",
+		"AGENTERA_CLOUD_LOGIN_IDENTITY_LIMIT":                 "5",
+		"AGENTERA_CLOUD_LOGIN_IP_LIMIT":                       "20",
+		"AGENTERA_CLOUD_LOGIN_WINDOW_SECONDS":                 "600",
+		"AGENTERA_CLOUD_TERMS_VERSION":                        "terms-2026-07",
+		"AGENTERA_CLOUD_PRIVACY_VERSION":                      "privacy-2026-07",
+		"AGENTERA_CLOUD_SMTP_HOST":                            "smtp.example.com",
+		"AGENTERA_CLOUD_SMTP_PORT":                            "587",
+		"AGENTERA_CLOUD_SMTP_USERNAME":                        "smtp-user",
+		"AGENTERA_CLOUD_SMTP_PASSWORD":                        "smtp-secret",
+		"AGENTERA_CLOUD_SMTP_FROM_ADDRESS":                    "accounts@example.com",
+		"AGENTERA_CLOUD_SMTP_FROM_NAME":                       "AgentEra",
+		"AGENTERA_CLOUD_SMS_ENDPOINT":                         "https://sms.example.com/verify",
+		"AGENTERA_CLOUD_SMS_API_KEY":                          "sms-secret",
+		"AGENTERA_CLOUD_SMS_SENDER_ID":                        "AgentEra",
+		"AGENTERA_CLOUD_CAPTCHA_ENDPOINT":                     "https://captcha.example.com/verify",
+		"AGENTERA_CLOUD_CAPTCHA_SECRET":                       "captcha-secret",
 	}
 }
 

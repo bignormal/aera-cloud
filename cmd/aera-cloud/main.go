@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"log/slog"
 	"net"
@@ -17,10 +18,14 @@ import (
 	"github.com/bignormal/aera-cloud/internal/audit"
 	"github.com/bignormal/aera-cloud/internal/browser"
 	"github.com/bignormal/aera-cloud/internal/config"
+	"github.com/bignormal/aera-cloud/internal/device"
+	"github.com/bignormal/aera-cloud/internal/entitlement"
 	"github.com/bignormal/aera-cloud/internal/httpapi"
 	"github.com/bignormal/aera-cloud/internal/legal"
 	"github.com/bignormal/aera-cloud/internal/notification"
+	"github.com/bignormal/aera-cloud/internal/oauth"
 	"github.com/bignormal/aera-cloud/internal/secure"
+	"github.com/bignormal/aera-cloud/internal/session"
 	"github.com/bignormal/aera-cloud/internal/store"
 	"github.com/bignormal/aera-cloud/internal/verification"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -81,6 +86,10 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 	if err != nil {
 		return err
 	}
+	oauthHandler, err := buildOAuthHandler(cfg, postgres, redisStore.Client())
+	if err != nil {
+		return err
+	}
 
 	listener, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
@@ -92,6 +101,7 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 		Redis:        redisStore,
 		Verification: verificationHandler,
 		Accounts:     accountHandler,
+		OAuth:        oauthHandler,
 	}))
 }
 
@@ -197,19 +207,101 @@ func buildAccountHandler(
 	if err != nil {
 		return nil, err
 	}
-	browserSessions, err := browser.NewManager(browser.ManagerConfig{
-		Redis:         redisClient,
-		HMACKey:       cfg.BrowserSessionHMACKey,
-		TTL:           time.Duration(cfg.BrowserSessionTTLSeconds) * time.Second,
-		CookieName:    cfg.BrowserCookieName,
-		SecureCookies: cfg.Environment == "production" || strings.HasPrefix(cfg.PublicURL, "https://"),
-	})
+	browserSessions, err := buildBrowserSessionManager(cfg, redisClient)
 	if err != nil {
 		return nil, err
 	}
 	return account.NewHandler(account.HTTPConfig{
 		Accounts: accountService, BrowserSessions: browserSessions, Legal: legalService,
 	}), nil
+}
+
+func buildOAuthHandler(
+	cfg config.Config,
+	postgres *pgxpool.Pool,
+	redisClient redis.UniversalClient,
+) (http.Handler, error) {
+	accessSigner, err := session.NewAccessSigner(session.AccessSignerConfig{
+		Issuer: cfg.PublicURL, Audience: oauth.DesktopClientID,
+		ActiveKeyID: cfg.AccessSigningKeyRing.ActiveKeyID,
+		SigningKeys: privateSigningKeys(cfg.AccessSigningKeyRing),
+	})
+	if err != nil {
+		return nil, err
+	}
+	offlineEntitlements, err := entitlement.NewService(entitlement.ServiceConfig{
+		Repository: entitlement.NewPostgresRepository(postgres),
+		Issuer:     cfg.PublicURL, Audience: oauth.DesktopClientID,
+		ActiveKeyID:   cfg.OfflineSigningKeyRing.ActiveKeyID,
+		SigningKeys:   privateSigningKeys(cfg.OfflineSigningKeyRing),
+		PolicyVersion: cfg.OfflinePolicyVersion,
+	})
+	if err != nil {
+		return nil, err
+	}
+	sessions, err := session.NewService(session.ServiceConfig{
+		Repository: session.NewPostgresRepository(postgres), AccessTokens: accessSigner,
+		OfflineEntitlements: offlineEntitlements, RefreshHMACKey: cfg.RefreshTokenHMACKey,
+	})
+	if err != nil {
+		return nil, err
+	}
+	devices, err := device.NewService(device.ServiceConfig{
+		Repository: device.NewPostgresRepository(postgres), ActiveLimit: cfg.ActiveDeviceLimit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	oauthService, err := oauth.NewService(oauth.ServiceConfig{
+		Repository: oauth.NewPostgresRepository(postgres), Devices: devices, Sessions: sessions,
+		ActiveStateKeyID:    cfg.OAuthStateEncryptionKeyRing.ActiveKeyID,
+		StateEncryptionKeys: cfg.OAuthStateEncryptionKeyRing.Keys,
+		StateHMACKey:        cfg.OAuthStateHMACKey,
+	})
+	if err != nil {
+		return nil, err
+	}
+	browserSessions, err := buildBrowserSessionManager(cfg, redisClient)
+	if err != nil {
+		return nil, err
+	}
+	return oauth.NewHandler(oauth.HTTPConfig{
+		OAuth: oauthService, Sessions: sessions, BrowserSessions: browserSessions,
+		SigningKeys: func() []oauth.PublishedKey {
+			published := make([]oauth.PublishedKey, 0, len(accessSigner.PublicKeys())+len(offlineEntitlements.PublicKeys()))
+			for _, key := range accessSigner.PublicKeys() {
+				published = append(published, oauth.PublishedKey{
+					KeyID: key.KeyID, KeyType: key.KeyType, Curve: key.Curve,
+					Algorithm: key.Algorithm, Use: key.Use, Purpose: "access", X: key.X,
+				})
+			}
+			for _, key := range offlineEntitlements.PublicKeys() {
+				published = append(published, oauth.PublishedKey{
+					KeyID: key.KeyID, KeyType: key.KeyType, Curve: key.Curve,
+					Algorithm: key.Algorithm, Use: key.Use, Purpose: "offline_entitlement", X: key.X,
+				})
+			}
+			return published
+		},
+	}), nil
+}
+
+func buildBrowserSessionManager(cfg config.Config, redisClient redis.UniversalClient) (*browser.Manager, error) {
+	return browser.NewManager(browser.ManagerConfig{
+		Redis:         redisClient,
+		HMACKey:       cfg.BrowserSessionHMACKey,
+		TTL:           time.Duration(cfg.BrowserSessionTTLSeconds) * time.Second,
+		CookieName:    cfg.BrowserCookieName,
+		SecureCookies: cfg.Environment == "production" || strings.HasPrefix(cfg.PublicURL, "https://"),
+	})
+}
+
+func privateSigningKeys(keyRing config.KeyRing) map[string]ed25519.PrivateKey {
+	keys := make(map[string]ed25519.PrivateKey, len(keyRing.Keys))
+	for keyID, material := range keyRing.Keys {
+		keys[keyID] = append(ed25519.PrivateKey(nil), material...)
+	}
+	return keys
 }
 
 func buildIdentityCodecs(cfg config.Config) (*secure.IdentityCodec, *verification.ReceiptCodec, error) {

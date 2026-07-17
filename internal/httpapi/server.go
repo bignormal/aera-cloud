@@ -20,6 +20,7 @@ type Dependencies struct {
 	Redis        HealthChecker
 	Verification http.Handler
 	Accounts     http.Handler
+	OAuth        http.Handler
 }
 
 func New(dependencies Dependencies) http.Handler {
@@ -48,6 +49,11 @@ func New(dependencies Dependencies) http.Handler {
 		router.Handle("/api/v1/accounts/*", dependencies.Accounts)
 		router.Handle("/api/v1/browser/*", dependencies.Accounts)
 		router.Handle("/api/v1/legal/*", dependencies.Accounts)
+	}
+	if dependencies.OAuth != nil {
+		router.Handle("/oauth/*", dependencies.OAuth)
+		router.Handle("/api/v1/oauth/*", dependencies.OAuth)
+		router.Handle("/.well-known/agentera-signing-keys.json", dependencies.OAuth)
 	}
 	return router
 }

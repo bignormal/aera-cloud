@@ -1,6 +1,8 @@
 package config
 
 import (
+	"bytes"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -21,35 +23,45 @@ const (
 	envRedisPassword = "AGENTERA_CLOUD_REDIS_PASSWORD"
 	envRedisDB       = "AGENTERA_CLOUD_REDIS_DB"
 
-	envIdentityEncryptionActiveKeyID  = "AGENTERA_CLOUD_IDENTITY_ENCRYPTION_ACTIVE_KEY_ID"
-	envIdentityEncryptionKeys         = "AGENTERA_CLOUD_IDENTITY_ENCRYPTION_KEYS"
-	envIdentityLookupActiveKeyID      = "AGENTERA_CLOUD_IDENTITY_LOOKUP_ACTIVE_KEY_ID"
-	envIdentityLookupKeys             = "AGENTERA_CLOUD_IDENTITY_LOOKUP_KEYS"
-	envVerificationCodeActiveKeyID    = "AGENTERA_CLOUD_VERIFICATION_CODE_ACTIVE_KEY_ID"
-	envVerificationCodeKeys           = "AGENTERA_CLOUD_VERIFICATION_CODE_KEYS"
-	envVerificationReceiptActiveKeyID = "AGENTERA_CLOUD_VERIFICATION_RECEIPT_ACTIVE_KEY_ID"
-	envVerificationReceiptKeys        = "AGENTERA_CLOUD_VERIFICATION_RECEIPT_KEYS"
-	envVerificationRequestHMACKey     = "AGENTERA_CLOUD_VERIFICATION_REQUEST_HMAC_KEY"
-	envBrowserSessionHMACKey          = "AGENTERA_CLOUD_BROWSER_SESSION_HMAC_KEY"
-	envLoginRateHMACKey               = "AGENTERA_CLOUD_LOGIN_RATE_HMAC_KEY"
-	envBrowserCookieName              = "AGENTERA_CLOUD_BROWSER_COOKIE_NAME"
-	envBrowserSessionTTLSeconds       = "AGENTERA_CLOUD_BROWSER_SESSION_TTL_SECONDS"
-	envLoginIdentityLimit             = "AGENTERA_CLOUD_LOGIN_IDENTITY_LIMIT"
-	envLoginIPLimit                   = "AGENTERA_CLOUD_LOGIN_IP_LIMIT"
-	envLoginWindowSeconds             = "AGENTERA_CLOUD_LOGIN_WINDOW_SECONDS"
-	envTermsVersion                   = "AGENTERA_CLOUD_TERMS_VERSION"
-	envPrivacyVersion                 = "AGENTERA_CLOUD_PRIVACY_VERSION"
-	envSMTPHost                       = "AGENTERA_CLOUD_SMTP_HOST"
-	envSMTPPort                       = "AGENTERA_CLOUD_SMTP_PORT"
-	envSMTPUsername                   = "AGENTERA_CLOUD_SMTP_USERNAME"
-	envSMTPPassword                   = "AGENTERA_CLOUD_SMTP_PASSWORD"
-	envSMTPFromAddress                = "AGENTERA_CLOUD_SMTP_FROM_ADDRESS"
-	envSMTPFromName                   = "AGENTERA_CLOUD_SMTP_FROM_NAME"
-	envSMSEndpoint                    = "AGENTERA_CLOUD_SMS_ENDPOINT"
-	envSMSAPIKey                      = "AGENTERA_CLOUD_SMS_API_KEY"
-	envSMSSenderID                    = "AGENTERA_CLOUD_SMS_SENDER_ID"
-	envCaptchaEndpoint                = "AGENTERA_CLOUD_CAPTCHA_ENDPOINT"
-	envCaptchaSecret                  = "AGENTERA_CLOUD_CAPTCHA_SECRET"
+	envIdentityEncryptionActiveKeyID   = "AGENTERA_CLOUD_IDENTITY_ENCRYPTION_ACTIVE_KEY_ID"
+	envIdentityEncryptionKeys          = "AGENTERA_CLOUD_IDENTITY_ENCRYPTION_KEYS"
+	envIdentityLookupActiveKeyID       = "AGENTERA_CLOUD_IDENTITY_LOOKUP_ACTIVE_KEY_ID"
+	envIdentityLookupKeys              = "AGENTERA_CLOUD_IDENTITY_LOOKUP_KEYS"
+	envVerificationCodeActiveKeyID     = "AGENTERA_CLOUD_VERIFICATION_CODE_ACTIVE_KEY_ID"
+	envVerificationCodeKeys            = "AGENTERA_CLOUD_VERIFICATION_CODE_KEYS"
+	envVerificationReceiptActiveKeyID  = "AGENTERA_CLOUD_VERIFICATION_RECEIPT_ACTIVE_KEY_ID"
+	envVerificationReceiptKeys         = "AGENTERA_CLOUD_VERIFICATION_RECEIPT_KEYS"
+	envVerificationRequestHMACKey      = "AGENTERA_CLOUD_VERIFICATION_REQUEST_HMAC_KEY"
+	envBrowserSessionHMACKey           = "AGENTERA_CLOUD_BROWSER_SESSION_HMAC_KEY"
+	envLoginRateHMACKey                = "AGENTERA_CLOUD_LOGIN_RATE_HMAC_KEY"
+	envOAuthStateEncryptionActiveKeyID = "AGENTERA_CLOUD_OAUTH_STATE_ENCRYPTION_ACTIVE_KEY_ID"
+	envOAuthStateEncryptionKeys        = "AGENTERA_CLOUD_OAUTH_STATE_ENCRYPTION_KEYS"
+	envOAuthStateHMACKey               = "AGENTERA_CLOUD_OAUTH_STATE_HMAC_KEY"
+	envRefreshTokenHMACKey             = "AGENTERA_CLOUD_REFRESH_TOKEN_HMAC_KEY"
+	envAccessSigningActiveKeyID        = "AGENTERA_CLOUD_ACCESS_SIGNING_ACTIVE_KEY_ID"
+	envAccessSigningKeys               = "AGENTERA_CLOUD_ACCESS_SIGNING_KEYS"
+	envOfflineSigningActiveKeyID       = "AGENTERA_CLOUD_OFFLINE_SIGNING_ACTIVE_KEY_ID"
+	envOfflineSigningKeys              = "AGENTERA_CLOUD_OFFLINE_SIGNING_KEYS"
+	envOfflinePolicyVersion            = "AGENTERA_CLOUD_OFFLINE_POLICY_VERSION"
+	envActiveDeviceLimit               = "AGENTERA_CLOUD_ACTIVE_DEVICE_LIMIT"
+	envBrowserCookieName               = "AGENTERA_CLOUD_BROWSER_COOKIE_NAME"
+	envBrowserSessionTTLSeconds        = "AGENTERA_CLOUD_BROWSER_SESSION_TTL_SECONDS"
+	envLoginIdentityLimit              = "AGENTERA_CLOUD_LOGIN_IDENTITY_LIMIT"
+	envLoginIPLimit                    = "AGENTERA_CLOUD_LOGIN_IP_LIMIT"
+	envLoginWindowSeconds              = "AGENTERA_CLOUD_LOGIN_WINDOW_SECONDS"
+	envTermsVersion                    = "AGENTERA_CLOUD_TERMS_VERSION"
+	envPrivacyVersion                  = "AGENTERA_CLOUD_PRIVACY_VERSION"
+	envSMTPHost                        = "AGENTERA_CLOUD_SMTP_HOST"
+	envSMTPPort                        = "AGENTERA_CLOUD_SMTP_PORT"
+	envSMTPUsername                    = "AGENTERA_CLOUD_SMTP_USERNAME"
+	envSMTPPassword                    = "AGENTERA_CLOUD_SMTP_PASSWORD"
+	envSMTPFromAddress                 = "AGENTERA_CLOUD_SMTP_FROM_ADDRESS"
+	envSMTPFromName                    = "AGENTERA_CLOUD_SMTP_FROM_NAME"
+	envSMSEndpoint                     = "AGENTERA_CLOUD_SMS_ENDPOINT"
+	envSMSAPIKey                       = "AGENTERA_CLOUD_SMS_API_KEY"
+	envSMSSenderID                     = "AGENTERA_CLOUD_SMS_SENDER_ID"
+	envCaptchaEndpoint                 = "AGENTERA_CLOUD_CAPTCHA_ENDPOINT"
+	envCaptchaSecret                   = "AGENTERA_CLOUD_CAPTCHA_SECRET"
 )
 
 type LookupEnv func(string) (string, bool)
@@ -60,39 +72,46 @@ type KeyRing struct {
 }
 
 type Config struct {
-	Environment                string
-	ListenAddr                 string
-	PublicURL                  string
-	DatabaseURL                string
-	RedisAddr                  string
-	RedisUsername              string
-	RedisPassword              string
-	RedisDB                    int
-	IdentityEncryptionKeyRing  KeyRing
-	IdentityLookupKeyRing      KeyRing
-	VerificationCodeKeyRing    KeyRing
-	VerificationReceiptKeyRing KeyRing
-	VerificationRequestHMACKey []byte
-	BrowserSessionHMACKey      []byte
-	LoginRateHMACKey           []byte
-	BrowserCookieName          string
-	BrowserSessionTTLSeconds   int
-	LoginIdentityLimit         int64
-	LoginIPLimit               int64
-	LoginWindowSeconds         int
-	TermsVersion               string
-	PrivacyVersion             string
-	SMTPHost                   string
-	SMTPPort                   int
-	SMTPUsername               string
-	SMTPPassword               string
-	SMTPFromAddress            string
-	SMTPFromName               string
-	SMSEndpoint                string
-	SMSAPIKey                  string
-	SMSSenderID                string
-	CaptchaEndpoint            string
-	CaptchaSecret              string
+	Environment                 string
+	ListenAddr                  string
+	PublicURL                   string
+	DatabaseURL                 string
+	RedisAddr                   string
+	RedisUsername               string
+	RedisPassword               string
+	RedisDB                     int
+	IdentityEncryptionKeyRing   KeyRing
+	IdentityLookupKeyRing       KeyRing
+	VerificationCodeKeyRing     KeyRing
+	VerificationReceiptKeyRing  KeyRing
+	VerificationRequestHMACKey  []byte
+	BrowserSessionHMACKey       []byte
+	LoginRateHMACKey            []byte
+	OAuthStateEncryptionKeyRing KeyRing
+	OAuthStateHMACKey           []byte
+	RefreshTokenHMACKey         []byte
+	AccessSigningKeyRing        KeyRing
+	OfflineSigningKeyRing       KeyRing
+	OfflinePolicyVersion        int
+	ActiveDeviceLimit           int
+	BrowserCookieName           string
+	BrowserSessionTTLSeconds    int
+	LoginIdentityLimit          int64
+	LoginIPLimit                int64
+	LoginWindowSeconds          int
+	TermsVersion                string
+	PrivacyVersion              string
+	SMTPHost                    string
+	SMTPPort                    int
+	SMTPUsername                string
+	SMTPPassword                string
+	SMTPFromAddress             string
+	SMTPFromName                string
+	SMSEndpoint                 string
+	SMSAPIKey                   string
+	SMSSenderID                 string
+	CaptchaEndpoint             string
+	CaptchaSecret               string
 }
 
 func Load(lookup LookupEnv) (Config, error) {
@@ -196,6 +215,56 @@ func Load(lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	oauthStateEncryptionKeyRing, err := loadKeyRing(
+		lookup,
+		envOAuthStateEncryptionActiveKeyID,
+		envOAuthStateEncryptionKeys,
+		32,
+		true,
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	oauthStateHMACKey, err := loadBase64Key(lookup, envOAuthStateHMACKey, 32)
+	if err != nil {
+		return Config{}, err
+	}
+	refreshTokenHMACKey, err := loadBase64Key(lookup, envRefreshTokenHMACKey, 32)
+	if err != nil {
+		return Config{}, err
+	}
+	accessSigningKeyRing, err := loadPrivateSigningKeyRing(lookup, envAccessSigningActiveKeyID, envAccessSigningKeys)
+	if err != nil {
+		return Config{}, err
+	}
+	offlineSigningKeyRing, err := loadPrivateSigningKeyRing(lookup, envOfflineSigningActiveKeyID, envOfflineSigningKeys)
+	if err != nil {
+		return Config{}, err
+	}
+	offlinePolicyVersion, err := requiredInteger(lookup, envOfflinePolicyVersion, 1, 1_000_000)
+	if err != nil {
+		return Config{}, err
+	}
+	activeDeviceLimit, err := requiredInteger(lookup, envActiveDeviceLimit, 5, 5)
+	if err != nil {
+		return Config{}, err
+	}
+	if err := requireIndependentKeys(map[string][]byte{
+		"identity encryption":    identityEncryptionKeyRing.Keys[identityEncryptionKeyRing.ActiveKeyID],
+		"identity lookup":        identityLookupKeyRing.Keys[identityLookupKeyRing.ActiveKeyID],
+		"verification code":      verificationCodeKeyRing.Keys[verificationCodeKeyRing.ActiveKeyID],
+		"verification receipt":   verificationReceiptKeyRing.Keys[verificationReceiptKeyRing.ActiveKeyID],
+		"verification request":   verificationRequestHMACKey,
+		"browser session":        browserSessionHMACKey,
+		"login rate":             loginRateHMACKey,
+		"OAuth state encryption": oauthStateEncryptionKeyRing.Keys[oauthStateEncryptionKeyRing.ActiveKeyID],
+		"OAuth state HMAC":       oauthStateHMACKey,
+		"refresh token HMAC":     refreshTokenHMACKey,
+		"access signing":         accessSigningKeyRing.Keys[accessSigningKeyRing.ActiveKeyID],
+		"offline signing":        offlineSigningKeyRing.Keys[offlineSigningKeyRing.ActiveKeyID],
+	}); err != nil {
+		return Config{}, err
+	}
 	browserCookieName, err := required(lookup, envBrowserCookieName)
 	if err != nil {
 		return Config{}, err
@@ -277,40 +346,78 @@ func Load(lookup LookupEnv) (Config, error) {
 	}
 
 	return Config{
-		Environment:                environment,
-		ListenAddr:                 listenAddr,
-		PublicURL:                  publicURL,
-		DatabaseURL:                databaseURL,
-		RedisAddr:                  redisAddr,
-		RedisUsername:              redisUsername,
-		RedisPassword:              redisPassword,
-		RedisDB:                    redisDB,
-		IdentityEncryptionKeyRing:  identityEncryptionKeyRing,
-		IdentityLookupKeyRing:      identityLookupKeyRing,
-		VerificationCodeKeyRing:    verificationCodeKeyRing,
-		VerificationReceiptKeyRing: verificationReceiptKeyRing,
-		VerificationRequestHMACKey: verificationRequestHMACKey,
-		BrowserSessionHMACKey:      browserSessionHMACKey,
-		LoginRateHMACKey:           loginRateHMACKey,
-		BrowserCookieName:          browserCookieName,
-		BrowserSessionTTLSeconds:   browserSessionTTLSeconds,
-		LoginIdentityLimit:         int64(loginIdentityLimit),
-		LoginIPLimit:               int64(loginIPLimit),
-		LoginWindowSeconds:         loginWindowSeconds,
-		TermsVersion:               termsVersion,
-		PrivacyVersion:             privacyVersion,
-		SMTPHost:                   smtpHost,
-		SMTPPort:                   smtpPort,
-		SMTPUsername:               smtpUsername,
-		SMTPPassword:               smtpPassword,
-		SMTPFromAddress:            smtpFromAddress,
-		SMTPFromName:               smtpFromName,
-		SMSEndpoint:                smsEndpoint,
-		SMSAPIKey:                  smsAPIKey,
-		SMSSenderID:                smsSenderID,
-		CaptchaEndpoint:            captchaEndpoint,
-		CaptchaSecret:              captchaSecret,
+		Environment:                 environment,
+		ListenAddr:                  listenAddr,
+		PublicURL:                   publicURL,
+		DatabaseURL:                 databaseURL,
+		RedisAddr:                   redisAddr,
+		RedisUsername:               redisUsername,
+		RedisPassword:               redisPassword,
+		RedisDB:                     redisDB,
+		IdentityEncryptionKeyRing:   identityEncryptionKeyRing,
+		IdentityLookupKeyRing:       identityLookupKeyRing,
+		VerificationCodeKeyRing:     verificationCodeKeyRing,
+		VerificationReceiptKeyRing:  verificationReceiptKeyRing,
+		VerificationRequestHMACKey:  verificationRequestHMACKey,
+		BrowserSessionHMACKey:       browserSessionHMACKey,
+		LoginRateHMACKey:            loginRateHMACKey,
+		OAuthStateEncryptionKeyRing: oauthStateEncryptionKeyRing,
+		OAuthStateHMACKey:           oauthStateHMACKey,
+		RefreshTokenHMACKey:         refreshTokenHMACKey,
+		AccessSigningKeyRing:        accessSigningKeyRing,
+		OfflineSigningKeyRing:       offlineSigningKeyRing,
+		OfflinePolicyVersion:        offlinePolicyVersion,
+		ActiveDeviceLimit:           activeDeviceLimit,
+		BrowserCookieName:           browserCookieName,
+		BrowserSessionTTLSeconds:    browserSessionTTLSeconds,
+		LoginIdentityLimit:          int64(loginIdentityLimit),
+		LoginIPLimit:                int64(loginIPLimit),
+		LoginWindowSeconds:          loginWindowSeconds,
+		TermsVersion:                termsVersion,
+		PrivacyVersion:              privacyVersion,
+		SMTPHost:                    smtpHost,
+		SMTPPort:                    smtpPort,
+		SMTPUsername:                smtpUsername,
+		SMTPPassword:                smtpPassword,
+		SMTPFromAddress:             smtpFromAddress,
+		SMTPFromName:                smtpFromName,
+		SMSEndpoint:                 smsEndpoint,
+		SMSAPIKey:                   smsAPIKey,
+		SMSSenderID:                 smsSenderID,
+		CaptchaEndpoint:             captchaEndpoint,
+		CaptchaSecret:               captchaSecret,
 	}, nil
+}
+
+func loadPrivateSigningKeyRing(lookup LookupEnv, activeKeyEnv, keysEnv string) (KeyRing, error) {
+	keyRing, err := loadKeyRing(lookup, activeKeyEnv, keysEnv, ed25519.PrivateKeySize, true)
+	if err != nil {
+		return KeyRing{}, err
+	}
+	for keyID, material := range keyRing.Keys {
+		canonical := ed25519.NewKeyFromSeed(material[:ed25519.SeedSize])
+		if !bytes.Equal(material, canonical) {
+			return KeyRing{}, fmt.Errorf("%s value for key %q is not a canonical Ed25519 private key", keysEnv, keyID)
+		}
+	}
+	return keyRing, nil
+}
+
+func requireIndependentKeys(materials map[string][]byte) error {
+	names := make([]string, 0, len(materials))
+	for name := range materials {
+		names = append(names, name)
+	}
+	for index, name := range names {
+		for _, otherName := range names[index+1:] {
+			material := materials[name]
+			other := materials[otherName]
+			if len(material) == len(other) && bytes.Equal(material, other) {
+				return fmt.Errorf("%s and %s keys must be independent", name, otherName)
+			}
+		}
+	}
+	return nil
 }
 
 func requiredInteger(lookup LookupEnv, key string, minimum, maximum int) (int, error) {
