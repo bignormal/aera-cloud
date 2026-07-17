@@ -72,3 +72,45 @@ func TestOpenAPIContainsDesktopOAuthAndTokenContract(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenAPIContainsAccountLifecycleAndDeviceContractWithoutAdminHTTP(t *testing.T) {
+	contents, err := os.ReadFile("openapi.yaml")
+	if err != nil {
+		t.Fatalf("read openapi.yaml: %v", err)
+	}
+	document := string(contents)
+	for _, path := range []string{
+		"/api/v1/accounts/me:",
+		"/api/v1/accounts/identities/bind:",
+		"/api/v1/accounts/identities/{kind}:",
+		"/api/v1/accounts/password/change:",
+		"/api/v1/accounts/deletion:",
+		"/api/v1/accounts/deletion/recover:",
+		"/api/v1/devices:",
+		"/api/v1/devices/{device_id}:",
+		"/api/v1/devices/current/logout:",
+		"/api/v1/devices/self-revoke:",
+	} {
+		if !strings.Contains(document, path) {
+			t.Fatalf("OpenAPI is missing %s", path)
+		}
+	}
+	for _, field := range []string{
+		"identity_kinds:", "current_password:", "new_password:", "verification_receipt:",
+		"display_name:", "last_seen_at:", "installation_id:", "signature:", "nonce:",
+	} {
+		if !strings.Contains(document, field) {
+			t.Fatalf("OpenAPI is missing lifecycle field %q", field)
+		}
+	}
+	for _, code := range []string{"last_identity", "deletion_window_expired", "device_not_found", "self_revoke_replayed"} {
+		if !strings.Contains(document, "- "+code) {
+			t.Fatalf("OpenAPI is missing lifecycle error code %q", code)
+		}
+	}
+	for _, forbidden := range []string{"/api/v1/admin", "/admin/disable", "/admin/audit"} {
+		if strings.Contains(document, forbidden) {
+			t.Fatalf("OpenAPI exposed restricted administration route %q", forbidden)
+		}
+	}
+}

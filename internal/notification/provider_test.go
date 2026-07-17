@@ -167,6 +167,20 @@ func TestNotificationProvidersRejectIncompleteOrInsecureConfiguration(t *testing
 	}
 }
 
+func TestNotificationProvidersAcceptEveryPublicVerificationPurpose(t *testing.T) {
+	for _, purpose := range []verification.Purpose{
+		verification.PurposeRegistration,
+		verification.PurposePasswordReset,
+		verification.PurposeBindIdentity,
+		verification.PurposeAccountDeletion,
+		verification.PurposeDeletionRecovery,
+	} {
+		if !validPurpose(purpose) {
+			t.Errorf("validPurpose(%q) = false", purpose)
+		}
+	}
+}
+
 type recordedDelivery struct {
 	destination string
 	code        string

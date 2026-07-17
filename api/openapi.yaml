@@ -123,6 +123,233 @@ paths:
           $ref: '#/components/responses/InvalidRequest'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/accounts/me:
+    get:
+      operationId: getAccountProfile
+      security:
+        - browserSession: []
+      responses:
+        '200':
+          description: Account and identity-kind metadata without email or phone values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountProfile'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '404':
+          $ref: '#/components/responses/InvalidRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/accounts/identities/bind:
+    post:
+      operationId: bindAccountIdentity
+      security:
+        - browserSession: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IdentityBindingRequest'
+      responses:
+        '204':
+          description: Verified secondary identity bound after password reauthentication.
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/InvalidCredentials'
+        '409':
+          $ref: '#/components/responses/IdentityConflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/accounts/identities/{kind}:
+    delete:
+      operationId: removeAccountIdentity
+      security:
+        - browserSession: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - name: kind
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/IdentityKind'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CurrentPasswordRequest'
+      responses:
+        '204':
+          description: Secondary login identity removed.
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/InvalidCredentials'
+        '409':
+          description: The only remaining login identity cannot be removed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/accounts/password/change:
+    post:
+      operationId: changeAccountPassword
+      security:
+        - desktopAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordChangeRequest'
+      responses:
+        '204':
+          description: Password changed; the calling product session is preserved and every other device is revoked.
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/accounts/deletion:
+    post:
+      operationId: requestAccountDeletion
+      security:
+        - browserSession: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountDeletionRequest'
+      responses:
+        '204':
+          description: Account entered pending deletion and all cloud sessions, devices, and offline entitlements were revoked.
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/InvalidCredentials'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/accounts/deletion/recover:
+    post:
+      operationId: recoverAccountDeletion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountDeletionRecoveryRequest'
+      responses:
+        '204':
+          description: Pending deletion recovered within seven days; old device sessions stay revoked.
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/InvalidCredentials'
+        '410':
+          description: The seven-day recovery window expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/devices:
+    get:
+      operationId: listDevices
+      security:
+        - browserSession: []
+        - desktopAccessToken: []
+      responses:
+        '200':
+          description: Redacted active-device list without installation IDs or public keys.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceList'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/devices/{device_id}:
+    delete:
+      operationId: revokeDevice
+      security:
+        - browserSession: []
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OptionalCSRFToken'
+        - name: device_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Device and its cloud sessions and offline entitlements revoked.
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '404':
+          description: Device is not owned by the account or does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/devices/current/logout:
+    post:
+      operationId: logoutCurrentDevice
+      security:
+        - desktopAccessToken: []
+      responses:
+        '204':
+          description: Calling device and all of its product sessions revoked.
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/devices/self-revoke:
+    post:
+      operationId: selfRevokeDevice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceSelfRevokeRequest'
+      responses:
+        '204':
+          description: Device revoked after Ed25519 proof, nonce, and timestamp validation.
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          description: Signed device target is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '409':
+          description: Self-revocation nonce was already consumed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /api/v1/legal/current:
     get:
       operationId: getCurrentLegalDocuments
@@ -329,11 +556,24 @@ components:
       type: apiKey
       in: cookie
       name: agentera_browser_session
+    desktopAccessToken:
+      type: http
+      scheme: bearer
+      bearerFormat: AgentEra access JWT
   parameters:
     CSRFToken:
       name: X-CSRF-Token
       in: header
       required: true
+      schema:
+        type: string
+        minLength: 43
+        maxLength: 43
+    OptionalCSRFToken:
+      name: X-CSRF-Token
+      in: header
+      required: false
+      description: Required when browserSession is used; omitted for desktopAccessToken.
       schema:
         type: string
         minLength: 43
@@ -344,7 +584,7 @@ components:
       enum: [email, phone]
     VerificationPurpose:
       type: string
-      enum: [registration, password_reset, bind_identity]
+      enum: [registration, password_reset, bind_identity, account_deletion, deletion_recovery]
     VerificationChallengeRequest:
       type: object
       additionalProperties: false
@@ -464,6 +704,147 @@ components:
           type: string
           minLength: 10
           maxLength: 128
+    AccountProfile:
+      type: object
+      additionalProperties: false
+      required: [user_id, personal_space_id, status, identity_kinds]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        personal_space_id:
+          type: string
+          format: uuid
+        nickname:
+          type: string
+          maxLength: 80
+        status:
+          const: active
+        identity_kinds:
+          type: array
+          minItems: 1
+          maxItems: 2
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/IdentityKind'
+    CurrentPasswordRequest:
+      type: object
+      additionalProperties: false
+      required: [current_password]
+      properties:
+        current_password:
+          type: string
+          minLength: 10
+          maxLength: 128
+    IdentityBindingRequest:
+      type: object
+      additionalProperties: false
+      required: [current_password, verification_receipt]
+      properties:
+        current_password:
+          type: string
+          minLength: 10
+          maxLength: 128
+        verification_receipt:
+          type: string
+          maxLength: 8192
+    PasswordChangeRequest:
+      type: object
+      additionalProperties: false
+      required: [current_password, new_password]
+      properties:
+        current_password:
+          type: string
+          minLength: 10
+          maxLength: 128
+        new_password:
+          type: string
+          minLength: 10
+          maxLength: 128
+    AccountDeletionRequest:
+      type: object
+      additionalProperties: false
+      required: [current_password, verification_receipt]
+      properties:
+        current_password:
+          type: string
+          minLength: 10
+          maxLength: 128
+        verification_receipt:
+          type: string
+          maxLength: 8192
+    AccountDeletionRecoveryRequest:
+      type: object
+      additionalProperties: false
+      required: [identity, password, verification_receipt]
+      properties:
+        identity:
+          type: string
+          maxLength: 254
+        password:
+          type: string
+          minLength: 10
+          maxLength: 128
+        verification_receipt:
+          type: string
+          maxLength: 8192
+    DeviceList:
+      type: object
+      additionalProperties: false
+      required: [devices]
+      properties:
+        devices:
+          type: array
+          maxItems: 5
+          items:
+            $ref: '#/components/schemas/Device'
+    Device:
+      type: object
+      additionalProperties: false
+      required: [device_id, display_name, platform, app_version, status, last_seen_at, current]
+      properties:
+        device_id:
+          type: string
+          format: uuid
+        display_name:
+          type: string
+          maxLength: 100
+        platform:
+          type: string
+          enum: [darwin, windows, linux]
+        app_version:
+          type: string
+          maxLength: 64
+        status:
+          type: string
+          enum: [active, inactive, revoked]
+        last_seen_at:
+          type: string
+          format: date-time
+        current:
+          type: boolean
+    DeviceSelfRevokeRequest:
+      type: object
+      additionalProperties: false
+      required: [device_id, installation_id, timestamp, nonce, signature]
+      properties:
+        device_id:
+          type: string
+          format: uuid
+        installation_id:
+          type: string
+          format: uuid
+        timestamp:
+          type: integer
+          format: int64
+        nonce:
+          type: string
+          description: 32 random bytes encoded as canonical unpadded base64url.
+          pattern: '^[A-Za-z0-9_-]{43}$'
+        signature:
+          type: string
+          description: Ed25519 signature of the AgentEra self-revocation digest, encoded as canonical unpadded base64url.
+          pattern: '^[A-Za-z0-9_-]{86}$'
     CurrentLegalDocuments:
       type: object
       additionalProperties: false
@@ -605,6 +986,11 @@ components:
         - session_revoked
         - account_pending_deletion
         - account_disabled
+        - last_identity
+        - deletion_window_expired
+        - account_not_found
+        - device_not_found
+        - self_revoke_replayed
         - service_unavailable
     ErrorEnvelope:
       type: object

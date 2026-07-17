@@ -21,6 +21,7 @@ import (
 	"github.com/bignormal/aera-cloud/internal/device"
 	"github.com/bignormal/aera-cloud/internal/entitlement"
 	"github.com/bignormal/aera-cloud/internal/httpapi"
+	"github.com/bignormal/aera-cloud/internal/jobs"
 	"github.com/bignormal/aera-cloud/internal/legal"
 	"github.com/bignormal/aera-cloud/internal/notification"
 	"github.com/bignormal/aera-cloud/internal/oauth"
@@ -33,8 +34,10 @@ import (
 )
 
 const (
-	startupTimeout  = 10 * time.Second
-	shutdownTimeout = 10 * time.Second
+	startupTimeout      = 10 * time.Second
+	shutdownTimeout     = 10 * time.Second
+	maintenanceInterval = time.Minute
+	maintenanceLeaseTTL = 10 * time.Minute
 )
 
 func main() {
@@ -90,19 +93,56 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 	if err != nil {
 		return err
 	}
+	deviceHandler, err := buildDeviceHandler(cfg, postgres, redisStore.Client())
+	if err != nil {
+		return err
+	}
+	maintenanceRunner, err := buildMaintenanceRunner(cfg, postgres, redisStore.Client())
+	if err != nil {
+		return err
+	}
 
 	listener, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
 		return errors.New("HTTP listener could not be opened")
 	}
 	slog.Info("AgentEra cloud started", "address", cfg.ListenAddr, "environment", cfg.Environment)
+	maintenanceCtx, stopMaintenance := context.WithCancel(ctx)
+	defer stopMaintenance()
+	go maintenanceRunner.Run(maintenanceCtx)
 	return serve(ctx, listener, httpapi.New(httpapi.Dependencies{
 		PostgreSQL:   postgres,
 		Redis:        redisStore,
 		Verification: verificationHandler,
 		Accounts:     accountHandler,
 		OAuth:        oauthHandler,
+		Devices:      deviceHandler,
 	}))
+}
+
+func buildMaintenanceRunner(
+	cfg config.Config,
+	postgres *pgxpool.Pool,
+	redisClient redis.UniversalClient,
+) (*jobs.Runner, error) {
+	identityCodec, _, err := buildIdentityCodecs(cfg)
+	if err != nil {
+		return nil, err
+	}
+	maintenance, err := jobs.NewPostgresMaintenance(
+		postgres, account.NewPostgresRepository(postgres, identityCodec),
+	)
+	if err != nil {
+		return nil, err
+	}
+	owner, err := secure.RandomUUID()
+	if err != nil {
+		return nil, err
+	}
+	return jobs.NewRunner(jobs.RunnerConfig{
+		Lease: jobs.NewRedisLease(redisClient), Maintenance: maintenance, Owner: owner.String(),
+		LeaseTTL: maintenanceLeaseTTL, Interval: maintenanceInterval, Logger: slog.Default(),
+	})
 }
 
 func buildVerificationHandler(
@@ -211,8 +251,13 @@ func buildAccountHandler(
 	if err != nil {
 		return nil, err
 	}
+	accessAuthenticator, err := buildAccessAuthenticator(cfg, postgres, redisClient)
+	if err != nil {
+		return nil, err
+	}
 	return account.NewHandler(account.HTTPConfig{
 		Accounts: accountService, BrowserSessions: browserSessions, Legal: legalService,
+		AccessTokens: accessAuthenticator,
 	}), nil
 }
 
@@ -284,6 +329,49 @@ func buildOAuthHandler(
 			return published
 		},
 	}), nil
+}
+
+func buildDeviceHandler(
+	cfg config.Config,
+	postgres *pgxpool.Pool,
+	redisClient redis.UniversalClient,
+) (http.Handler, error) {
+	accessAuthenticator, err := buildAccessAuthenticator(cfg, postgres, redisClient)
+	if err != nil {
+		return nil, err
+	}
+	devices, err := device.NewService(device.ServiceConfig{
+		Repository: device.NewPostgresRepository(postgres), ActiveLimit: cfg.ActiveDeviceLimit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	browserSessions, err := buildBrowserSessionManager(cfg, redisClient)
+	if err != nil {
+		return nil, err
+	}
+	return device.NewHandler(device.HTTPConfig{
+		Devices: devices, AccessTokens: accessAuthenticator, BrowserSessions: browserSessions,
+	}), nil
+}
+
+func buildAccessAuthenticator(
+	cfg config.Config,
+	postgres *pgxpool.Pool,
+	redisClient redis.UniversalClient,
+) (*session.AccessAuthenticator, error) {
+	accessSigner, err := session.NewAccessSigner(session.AccessSignerConfig{
+		Issuer: cfg.PublicURL, Audience: oauth.DesktopClientID,
+		ActiveKeyID: cfg.AccessSigningKeyRing.ActiveKeyID,
+		SigningKeys: privateSigningKeys(cfg.AccessSigningKeyRing),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return session.NewAccessAuthenticator(session.AccessAuthenticatorConfig{
+		Tokens: accessSigner, Repository: session.NewPostgresRepository(postgres),
+		Cache: session.NewRedisAccessStatusCache(redisClient),
+	})
 }
 
 func buildBrowserSessionManager(cfg config.Config, redisClient redis.UniversalClient) (*browser.Manager, error) {

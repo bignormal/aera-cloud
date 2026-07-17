@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/bignormal/aera-cloud/internal/secure"
+	"github.com/bignormal/aera-cloud/internal/testkit"
 )
 
 func TestReceiptCodecEncryptsIdentityAndRoundTripsClaims(t *testing.T) {
@@ -45,13 +46,20 @@ func TestReceiptCodecRejectsTamperingWrongPurposeAndExpiry(t *testing.T) {
 		t.Fatalf("Issue() error = %v", err)
 	}
 
-	replacement := "A"
-	if strings.HasSuffix(token, replacement) {
-		replacement = "B"
+	parts := strings.Split(token, ".")
+	if parts[1][0] == 'A' {
+		parts[1] = "B" + parts[1][1:]
+	} else {
+		parts[1] = "A" + parts[1][1:]
 	}
-	tampered := token[:len(token)-1] + replacement
+	tampered := strings.Join(parts, ".")
 	if _, err := codec.Parse(tampered, PurposeRegistration); err == nil {
 		t.Fatal("Parse() accepted tampered receipt")
+	}
+	parts = strings.Split(token, ".")
+	parts[1] = testkit.NonCanonicalBase64URLAlias(t, parts[1])
+	if _, err := codec.Parse(strings.Join(parts, "."), PurposeRegistration); err == nil {
+		t.Fatal("Parse() accepted a noncanonical signature alias")
 	}
 	if _, err := codec.Parse(token, PurposePasswordReset); err == nil {
 		t.Fatal("Parse() accepted receipt for a different purpose")

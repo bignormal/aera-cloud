@@ -24,11 +24,17 @@ type Passwords interface {
 }
 
 type Repository interface {
+	Profile(context.Context, uuid.UUID) (Profile, bool, error)
 	Register(context.Context, RegistrationRecord) (Registration, error)
 	FindCredential(context.Context, secure.IdentityKind, []secure.LookupIndex) (Credential, bool, error)
+	FindCredentialByUserID(context.Context, uuid.UUID) (Credential, bool, error)
 	UpdatePasswordHash(context.Context, uuid.UUID, string, int, time.Time) error
 	ResetPassword(context.Context, PasswordResetRecord) error
 	BindIdentity(context.Context, IdentityBindingRecord) error
+	RemoveIdentity(context.Context, IdentityRemovalRecord) error
+	ChangePassword(context.Context, PasswordChangeRecord) error
+	RequestDeletion(context.Context, DeletionRequestRecord) error
+	RecoverDeletion(context.Context, DeletionRecoveryRecord) error
 }
 
 type LoginLimiter interface {
@@ -204,9 +210,12 @@ func (s *Service) ResetPassword(ctx context.Context, verificationReceipt, passwo
 	}
 }
 
-func (s *Service) BindIdentity(ctx context.Context, userID uuid.UUID, verificationReceipt string) error {
+func (s *Service) BindIdentity(ctx context.Context, userID uuid.UUID, currentPassword, verificationReceipt string) error {
 	if userID == uuid.Nil {
 		return ErrInvalidRequest
+	}
+	if _, err := s.reauthenticateUser(ctx, userID, currentPassword, "active"); err != nil {
+		return err
 	}
 	claims, err := s.receipts.Parse(verificationReceipt, verification.PurposeBindIdentity)
 	if err != nil {

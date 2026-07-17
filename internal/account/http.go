@@ -13,6 +13,7 @@ import (
 	"github.com/bignormal/aera-cloud/internal/browser"
 	"github.com/bignormal/aera-cloud/internal/legal"
 	"github.com/bignormal/aera-cloud/internal/secure"
+	"github.com/bignormal/aera-cloud/internal/session"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
@@ -20,9 +21,19 @@ import (
 const accountRequestBodyLimit = 64 * 1024
 
 type ServicePort interface {
+	Profile(context.Context, uuid.UUID) (Profile, error)
 	Register(context.Context, RegisterCommand) (Registration, error)
 	AuthenticatePassword(context.Context, string, string) (Principal, error)
 	ResetPassword(context.Context, string, string) error
+	BindIdentity(context.Context, uuid.UUID, string, string) error
+	RemoveIdentity(context.Context, uuid.UUID, secure.IdentityKind, string) error
+	ChangePassword(context.Context, uuid.UUID, uuid.UUID, string, string) error
+	RequestDeletion(context.Context, uuid.UUID, string, string) error
+	RecoverDeletion(context.Context, string, string, string) error
+}
+
+type AccessAuthenticator interface {
+	Authenticate(context.Context, string) (session.AccessClaims, error)
 }
 
 type BrowserSessionPort interface {
@@ -40,25 +51,203 @@ type HTTPConfig struct {
 	Accounts        ServicePort
 	BrowserSessions BrowserSessionPort
 	Legal           LegalPort
+	AccessTokens    AccessAuthenticator
 }
 
 type httpHandler struct {
 	accounts        ServicePort
 	browserSessions BrowserSessionPort
 	legal           LegalPort
+	accessTokens    AccessAuthenticator
 }
 
 func NewHandler(config HTTPConfig) http.Handler {
 	handler := &httpHandler{
 		accounts: config.Accounts, browserSessions: config.BrowserSessions, legal: config.Legal,
+		accessTokens: config.AccessTokens,
 	}
 	router := chi.NewRouter()
 	router.Post("/api/v1/accounts/register", handler.register)
 	router.Post("/api/v1/browser/login", handler.login)
 	router.Post("/api/v1/browser/logout", handler.logout)
 	router.Post("/api/v1/accounts/password/reset", handler.resetPassword)
+	router.Get("/api/v1/accounts/me", handler.profile)
+	router.Post("/api/v1/accounts/identities/bind", handler.bindIdentity)
+	router.Delete("/api/v1/accounts/identities/{kind}", handler.removeIdentity)
+	router.Post("/api/v1/accounts/password/change", handler.changePassword)
+	router.Post("/api/v1/accounts/deletion", handler.requestDeletion)
+	router.Post("/api/v1/accounts/deletion/recover", handler.recoverDeletion)
 	router.Get("/api/v1/legal/current", handler.currentLegal)
 	return router
+}
+
+func (h *httpHandler) profile(response http.ResponseWriter, request *http.Request) {
+	browserSession, ok := h.authorizeBrowser(response, request, false)
+	if !ok {
+		return
+	}
+	profile, err := h.accounts.Profile(request.Context(), browserSession.Principal.UserID)
+	if err != nil {
+		writeMappedAccountError(response, err)
+		return
+	}
+	writeAccountJSON(response, http.StatusOK, profile)
+}
+
+func (h *httpHandler) bindIdentity(response http.ResponseWriter, request *http.Request) {
+	browserSession, ok := h.authorizeBrowser(response, request, true)
+	if !ok {
+		return
+	}
+	var payload struct {
+		CurrentPassword     string `json:"current_password"`
+		VerificationReceipt string `json:"verification_receipt"`
+	}
+	if !decodeAccountJSON(response, request, &payload) {
+		writeAccountError(response, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	if err := h.accounts.BindIdentity(
+		request.Context(), browserSession.Principal.UserID, payload.CurrentPassword, payload.VerificationReceipt,
+	); err != nil {
+		writeMappedAccountError(response, err)
+		return
+	}
+	writeAccountNoContent(response)
+}
+
+func (h *httpHandler) removeIdentity(response http.ResponseWriter, request *http.Request) {
+	browserSession, ok := h.authorizeBrowser(response, request, true)
+	if !ok {
+		return
+	}
+	kind := secure.IdentityKind(chi.URLParam(request, "kind"))
+	var payload struct {
+		CurrentPassword string `json:"current_password"`
+	}
+	if !decodeAccountJSON(response, request, &payload) {
+		writeAccountError(response, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	if err := h.accounts.RemoveIdentity(request.Context(), browserSession.Principal.UserID, kind, payload.CurrentPassword); err != nil {
+		writeMappedAccountError(response, err)
+		return
+	}
+	writeAccountNoContent(response)
+}
+
+func (h *httpHandler) changePassword(response http.ResponseWriter, request *http.Request) {
+	claims, ok := h.authorizeAccess(response, request)
+	if !ok {
+		return
+	}
+	var payload struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if !decodeAccountJSON(response, request, &payload) {
+		writeAccountError(response, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	if err := h.accounts.ChangePassword(
+		request.Context(), claims.UserID, claims.SessionID, payload.CurrentPassword, payload.NewPassword,
+	); err != nil {
+		writeMappedAccountError(response, err)
+		return
+	}
+	writeAccountNoContent(response)
+}
+
+func (h *httpHandler) requestDeletion(response http.ResponseWriter, request *http.Request) {
+	browserSession, ok := h.authorizeBrowser(response, request, true)
+	if !ok {
+		return
+	}
+	var payload struct {
+		CurrentPassword     string `json:"current_password"`
+		VerificationReceipt string `json:"verification_receipt"`
+	}
+	if !decodeAccountJSON(response, request, &payload) {
+		writeAccountError(response, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	if err := h.accounts.RequestDeletion(
+		request.Context(), browserSession.Principal.UserID, payload.CurrentPassword, payload.VerificationReceipt,
+	); err != nil {
+		writeMappedAccountError(response, err)
+		return
+	}
+	// The authoritative account state is already pending deletion. End also
+	// expires the browser cookie; a Redis delete failure cannot reactivate it.
+	_ = h.browserSessions.End(request.Context(), response, request)
+	writeAccountNoContent(response)
+}
+
+func (h *httpHandler) recoverDeletion(response http.ResponseWriter, request *http.Request) {
+	var payload struct {
+		Identity            string `json:"identity"`
+		Password            string `json:"password"`
+		VerificationReceipt string `json:"verification_receipt"`
+	}
+	if h.accounts == nil || !decodeAccountJSON(response, request, &payload) {
+		writeAccountError(response, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	if err := h.accounts.RecoverDeletion(
+		request.Context(), payload.Identity, payload.Password, payload.VerificationReceipt,
+	); err != nil {
+		writeMappedAccountError(response, err)
+		return
+	}
+	writeAccountNoContent(response)
+}
+
+func (h *httpHandler) authorizeBrowser(
+	response http.ResponseWriter,
+	request *http.Request,
+	requireCSRF bool,
+) (browser.Session, bool) {
+	if h.accounts == nil || h.browserSessions == nil {
+		writeAccountError(response, http.StatusServiceUnavailable, "service_unavailable")
+		return browser.Session{}, false
+	}
+	browserSession, err := h.browserSessions.Read(request.Context(), request)
+	if err != nil {
+		if errors.Is(err, browser.ErrUnauthenticated) {
+			writeAccountError(response, http.StatusUnauthorized, "session_revoked")
+		} else {
+			writeAccountError(response, http.StatusServiceUnavailable, "service_unavailable")
+		}
+		return browser.Session{}, false
+	}
+	if requireCSRF && h.browserSessions.RequireCSRF(request, browserSession) != nil {
+		writeAccountError(response, http.StatusForbidden, "invalid_request")
+		return browser.Session{}, false
+	}
+	return browserSession, true
+}
+
+func (h *httpHandler) authorizeAccess(response http.ResponseWriter, request *http.Request) (session.AccessClaims, bool) {
+	values := request.Header.Values("Authorization")
+	if h.accounts == nil || h.accessTokens == nil || len(values) != 1 || !strings.HasPrefix(values[0], "Bearer ") {
+		writeAccountError(response, http.StatusUnauthorized, "session_revoked")
+		return session.AccessClaims{}, false
+	}
+	token := strings.TrimSpace(strings.TrimPrefix(values[0], "Bearer "))
+	if token == "" || strings.ContainsAny(token, " \t\r\n") {
+		writeAccountError(response, http.StatusUnauthorized, "session_revoked")
+		return session.AccessClaims{}, false
+	}
+	claims, err := h.accessTokens.Authenticate(request.Context(), token)
+	if err != nil {
+		if errors.Is(err, session.ErrInvalidAccessToken) || errors.Is(err, session.ErrSessionRevoked) {
+			writeAccountError(response, http.StatusUnauthorized, "session_revoked")
+		} else {
+			writeAccountError(response, http.StatusServiceUnavailable, "service_unavailable")
+		}
+		return session.AccessClaims{}, false
+	}
+	return claims, true
 }
 
 func (h *httpHandler) register(response http.ResponseWriter, request *http.Request) {
@@ -197,9 +386,20 @@ func writeMappedAccountError(response http.ResponseWriter, err error) {
 		writeAccountError(response, http.StatusForbidden, "account_pending_deletion")
 	case errors.Is(err, ErrAccountDisabled):
 		writeAccountError(response, http.StatusForbidden, "account_disabled")
+	case errors.Is(err, ErrLastIdentity):
+		writeAccountError(response, http.StatusConflict, "last_identity")
+	case errors.Is(err, ErrDeletionWindowExpired):
+		writeAccountError(response, http.StatusGone, "deletion_window_expired")
+	case errors.Is(err, ErrAccountNotFound):
+		writeAccountError(response, http.StatusNotFound, "account_not_found")
 	default:
 		writeAccountError(response, http.StatusServiceUnavailable, "service_unavailable")
 	}
+}
+
+func writeAccountNoContent(response http.ResponseWriter) {
+	response.Header().Set("Cache-Control", "no-store")
+	response.WriteHeader(http.StatusNoContent)
 }
 
 func writeAccountError(response http.ResponseWriter, status int, code string) {

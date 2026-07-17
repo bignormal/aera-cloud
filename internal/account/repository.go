@@ -161,14 +161,31 @@ func (r *PostgresRepository) ResetPassword(ctx context.Context, record PasswordR
 		return ErrServiceUnavailable
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	if err := r.lockAvailableReceipt(ctx, tx, record.ReceiptClaims); err != nil {
-		return err
-	}
 	userID, found, err := r.findUserByClaims(ctx, tx, record.ReceiptClaims)
 	if err != nil {
 		return err
 	}
 	if !found {
+		return ErrAccountNotFound
+	}
+	if err := lockAccountUser(ctx, tx, userID); err != nil {
+		return err
+	}
+	status, err := accountStatusForUpdate(ctx, tx, userID)
+	if err != nil {
+		return err
+	}
+	if status != "active" && status != "pending_deletion" {
+		return ErrAccountNotFound
+	}
+	if err := r.lockAvailableReceipt(ctx, tx, record.ReceiptClaims); err != nil {
+		return err
+	}
+	ownerID, stillBound, err := r.findUserByClaims(ctx, tx, record.ReceiptClaims)
+	if err != nil {
+		return err
+	}
+	if !stillBound || ownerID != userID {
 		return ErrAccountNotFound
 	}
 	result, err := tx.Exec(ctx, `
@@ -216,6 +233,16 @@ func (r *PostgresRepository) BindIdentity(ctx context.Context, record IdentityBi
 		return ErrServiceUnavailable
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
+	if err := lockAccountUser(ctx, tx, record.UserID); err != nil {
+		return err
+	}
+	status, err := accountStatusForUpdate(ctx, tx, record.UserID)
+	if err != nil {
+		return err
+	}
+	if status != "active" {
+		return ErrAccountNotFound
+	}
 	if err := r.lockAvailableReceipt(ctx, tx, record.ReceiptClaims); err != nil {
 		return err
 	}
@@ -227,12 +254,14 @@ func (r *PostgresRepository) BindIdentity(ctx context.Context, record IdentityBi
 	} else if bound {
 		return ErrIdentityConflict
 	}
-	var exists bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE id = $1)`, record.UserID).Scan(&exists); err != nil {
+	var kindAlreadyBound bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM identities WHERE user_id = $1 AND kind = $2)
+	`, record.UserID, record.ReceiptClaims.Kind).Scan(&kindAlreadyBound); err != nil {
 		return ErrServiceUnavailable
 	}
-	if !exists {
-		return ErrAccountNotFound
+	if kindAlreadyBound {
+		return ErrIdentityConflict
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO identities (

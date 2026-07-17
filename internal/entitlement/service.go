@@ -213,8 +213,8 @@ func (s *Service) Verify(serialized string) (Claims, error) {
 		return Claims{}, ErrInvalidEntitlement
 	}
 	parts := strings.Split(serialized, ".")
-	headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
-	if err != nil {
+	headerJSON, ok := secure.DecodeCanonicalBase64URL(parts[0])
+	if !ok {
 		return Claims{}, ErrInvalidEntitlement
 	}
 	var header tokenHeader
@@ -225,13 +225,13 @@ func (s *Service) Verify(serialized string) (Claims, error) {
 	if !ok {
 		return Claims{}, ErrInvalidEntitlement
 	}
-	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil || len(signature) != ed25519.SignatureSize ||
+	signature, ok := secure.DecodeCanonicalBase64URL(parts[2])
+	if !ok || len(signature) != ed25519.SignatureSize ||
 		!ed25519.Verify(publicKey, []byte(parts[0]+"."+parts[1]), signature) {
 		return Claims{}, ErrInvalidEntitlement
 	}
-	payloadJSON, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
+	payloadJSON, ok := secure.DecodeCanonicalBase64URL(parts[1])
+	if !ok {
 		return Claims{}, ErrInvalidEntitlement
 	}
 	var payload tokenPayload

@@ -224,6 +224,66 @@ func TestBuildOAuthHandlerWiresProtocolAndPublicSigningKeys(t *testing.T) {
 	}
 }
 
+func TestBuildDeviceHandlerWiresPublicSelfRevocationRoute(t *testing.T) {
+	services := testkit.Services{
+		DatabaseURL:   "postgres://aera_cloud:secret@127.0.0.1:55434/aera_cloud?sslmode=disable",
+		RedisAddr:     "127.0.0.1:56381",
+		RedisUsername: "aera_cloud",
+		RedisPassword: "secret",
+		RedisDB:       9,
+	}
+	cfg, err := config.Load(integrationLookup(services))
+	if err != nil {
+		t.Fatalf("config.Load() error = %v", err)
+	}
+	redisClient := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
+	defer func() { _ = redisClient.Close() }()
+	handler, err := buildDeviceHandler(cfg, nil, redisClient)
+	if err != nil {
+		t.Fatalf("buildDeviceHandler() error = %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/devices/self-revoke", strings.NewReader(`{}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"invalid_request"`) {
+		t.Fatalf("response = %d %q", response.Code, response.Body.String())
+	}
+}
+
+func TestBuildMaintenanceRunnerUsesConfiguredStores(t *testing.T) {
+	services := testkit.IntegrationServices(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	postgres, err := store.OpenPostgres(ctx, services.DatabaseURL)
+	if err != nil {
+		t.Fatalf("OpenPostgres() error = %v", err)
+	}
+	defer postgres.Close()
+	if err := store.ApplyMigrations(ctx, postgres); err != nil {
+		t.Fatalf("ApplyMigrations() error = %v", err)
+	}
+	redisStore, err := store.OpenRedis(ctx, store.RedisOptions{
+		Addr: services.RedisAddr, Username: services.RedisUsername, Password: services.RedisPassword, DB: services.RedisDB,
+	})
+	if err != nil {
+		t.Fatalf("OpenRedis() error = %v", err)
+	}
+	defer func() { _ = redisStore.Close() }()
+	cfg, err := config.Load(integrationLookup(services))
+	if err != nil {
+		t.Fatalf("config.Load() error = %v", err)
+	}
+
+	runner, err := buildMaintenanceRunner(cfg, postgres, redisStore.Client())
+
+	if err != nil || runner == nil {
+		t.Fatalf("buildMaintenanceRunner() = %v, %v", runner, err)
+	}
+}
+
 func integrationLookup(services testkit.Services) config.LookupEnv {
 	values := map[string]string{
 		"AGENTERA_CLOUD_ENVIRONMENT":                          "development",

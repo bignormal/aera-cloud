@@ -119,8 +119,8 @@ func (c *ReceiptCodec) Parse(token string, expectedPurpose Purpose) (ReceiptClai
 		return ReceiptClaims{}, ErrInvalidReceipt
 	}
 	encodedPayload, encodedSignature, _ := strings.Cut(token, ".")
-	payloadJSON, err := base64.RawURLEncoding.DecodeString(encodedPayload)
-	if err != nil || len(payloadJSON) == 0 || len(payloadJSON) > maximumReceiptTokenLength {
+	payloadJSON, ok := secure.DecodeCanonicalBase64URL(encodedPayload)
+	if !ok || len(payloadJSON) == 0 || len(payloadJSON) > maximumReceiptTokenLength {
 		return ReceiptClaims{}, ErrInvalidReceipt
 	}
 	var payload receiptPayload
@@ -131,8 +131,8 @@ func (c *ReceiptCodec) Parse(token string, expectedPurpose Purpose) (ReceiptClai
 	if !ok {
 		return ReceiptClaims{}, ErrInvalidReceipt
 	}
-	signature, err := base64.RawURLEncoding.DecodeString(encodedSignature)
-	if err != nil || len(signature) != sha256.Size || !hmac.Equal(signature, receiptSignature(key, encodedPayload)) {
+	signature, ok := secure.DecodeCanonicalBase64URL(encodedSignature)
+	if !ok || len(signature) != sha256.Size || !hmac.Equal(signature, receiptSignature(key, encodedPayload)) {
 		return ReceiptClaims{}, ErrInvalidReceipt
 	}
 	issuedAt := time.Unix(payload.IssuedAtUnix, 0).UTC()

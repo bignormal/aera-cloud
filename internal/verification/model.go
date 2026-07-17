@@ -11,9 +11,11 @@ import (
 type Purpose string
 
 const (
-	PurposeRegistration  Purpose = "registration"
-	PurposePasswordReset Purpose = "password_reset"
-	PurposeBindIdentity  Purpose = "bind_identity"
+	PurposeRegistration     Purpose = "registration"
+	PurposePasswordReset    Purpose = "password_reset"
+	PurposeBindIdentity     Purpose = "bind_identity"
+	PurposeAccountDeletion  Purpose = "account_deletion"
+	PurposeDeletionRecovery Purpose = "deletion_recovery"
 )
 
 var (
@@ -70,5 +72,6 @@ type VerificationResult struct {
 }
 
 func validPurpose(purpose Purpose) bool {
-	return purpose == PurposeRegistration || purpose == PurposePasswordReset || purpose == PurposeBindIdentity
+	return purpose == PurposeRegistration || purpose == PurposePasswordReset || purpose == PurposeBindIdentity ||
+		purpose == PurposeAccountDeletion || purpose == PurposeDeletionRecovery
 }

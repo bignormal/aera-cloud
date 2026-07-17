@@ -164,8 +164,8 @@ func (s *Service) prepareStart(binding Binding) (Rotation, string, time.Time, Cr
 }
 
 func (s *Service) Refresh(ctx context.Context, refreshToken string) (TokenSet, error) {
-	secret, err := base64.RawURLEncoding.DecodeString(refreshToken)
-	if err != nil || len(secret) != 32 {
+	secret, ok := secure.DecodeCanonicalBase64URL(refreshToken)
+	if s == nil || !ok || len(secret) != 32 {
 		return TokenSet{}, ErrSessionRevoked
 	}
 	successorToken, successorHash, err := s.newRefreshToken()
@@ -188,8 +188,8 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (TokenSet, e
 }
 
 func (s *Service) Revoke(ctx context.Context, refreshToken string) error {
-	secret, err := base64.RawURLEncoding.DecodeString(refreshToken)
-	if s == nil || err != nil || len(secret) != 32 || base64.RawURLEncoding.EncodeToString(secret) != refreshToken {
+	secret, ok := secure.DecodeCanonicalBase64URL(refreshToken)
+	if s == nil || !ok || len(secret) != 32 {
 		return ErrSessionRevoked
 	}
 	return s.repository.RevokeByToken(ctx, s.refreshHash(secret), s.clock().UTC())

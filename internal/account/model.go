@@ -19,6 +19,8 @@ var (
 	ErrServiceUnavailable     = errors.New("account service is unavailable")
 	ErrReceiptUnavailable     = errors.New("verification receipt is unavailable")
 	ErrAccountNotFound        = errors.New("account was not found")
+	ErrLastIdentity           = errors.New("the last login identity cannot be removed")
+	ErrDeletionWindowExpired  = errors.New("account deletion recovery window expired")
 )
 
 type RegisterCommand struct {
@@ -39,6 +41,16 @@ type Principal struct {
 	UserID          uuid.UUID
 	PersonalSpaceID uuid.UUID
 	Nickname        string
+}
+
+// Profile contains only account-center metadata. Login identity values remain
+// encrypted in storage and are never returned by this API.
+type Profile struct {
+	UserID          uuid.UUID             `json:"user_id"`
+	PersonalSpaceID uuid.UUID             `json:"personal_space_id"`
+	Nickname        string                `json:"nickname,omitempty"`
+	Status          string                `json:"status"`
+	IdentityKinds   []secure.IdentityKind `json:"identity_kinds"`
 }
 
 type RegistrationRecord struct {
@@ -82,4 +94,34 @@ type IdentityBindingRecord struct {
 	AuditEventID   uuid.UUID
 	SealedIdentity secure.SealedIdentity
 	CreatedAt      time.Time
+}
+
+type IdentityRemovalRecord struct {
+	UserID       uuid.UUID
+	Kind         secure.IdentityKind
+	AuditEventID uuid.UUID
+	RemovedAt    time.Time
+}
+
+type PasswordChangeRecord struct {
+	UserID                uuid.UUID
+	CurrentSessionID      uuid.UUID
+	PasswordHash          string
+	PasswordParamsVersion int
+	AuditEventID          uuid.UUID
+	ChangedAt             time.Time
+}
+
+type DeletionRequestRecord struct {
+	ReceiptClaims verification.ReceiptClaims
+	UserID        uuid.UUID
+	AuditEventID  uuid.UUID
+	RequestedAt   time.Time
+}
+
+type DeletionRecoveryRecord struct {
+	ReceiptClaims verification.ReceiptClaims
+	UserID        uuid.UUID
+	AuditEventID  uuid.UUID
+	RecoveredAt   time.Time
 }

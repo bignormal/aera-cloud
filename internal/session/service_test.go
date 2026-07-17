@@ -51,6 +51,18 @@ func TestRefreshRotationExtendsThirtyDaysAndStoresOnlyHash(t *testing.T) {
 	}
 }
 
+func TestRefreshRejectsNonCanonicalTokenAlias(t *testing.T) {
+	fixture := newSessionFixture(t)
+	initial, err := fixture.service.Start(fixture.ctx, fixture.binding(t))
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	alias := testkit.NonCanonicalBase64URLAlias(t, initial.RefreshToken)
+	if _, err := fixture.service.Refresh(fixture.ctx, alias); !errors.Is(err, ErrSessionRevoked) {
+		t.Fatalf("Refresh(noncanonical alias) error = %v", err)
+	}
+}
+
 func TestRefreshReuseRevokesWholeFamily(t *testing.T) {
 	fixture := newSessionFixture(t)
 	initial, err := fixture.service.Start(fixture.ctx, fixture.binding(t))

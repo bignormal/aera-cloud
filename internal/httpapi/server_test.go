@@ -184,3 +184,23 @@ func TestDesktopOAuthRoutesAreMountedWithoutChangingHealthContract(t *testing.T)
 		})
 	}
 }
+
+func TestDeviceRoutesAreMountedWithoutChangingHealthContract(t *testing.T) {
+	deviceHandler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/v1/devices/current/logout" {
+			t.Errorf("device path = %q", request.URL.Path)
+		}
+		response.WriteHeader(http.StatusNoContent)
+	})
+	handler := New(Dependencies{
+		PostgreSQL: &stubHealthChecker{}, Redis: &stubHealthChecker{}, Devices: deviceHandler,
+	})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/devices/current/logout", nil)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusNoContent)
+	}
+}

@@ -2,7 +2,6 @@ package oauth
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -85,8 +84,8 @@ func (h *httpHandler) begin(response http.ResponseWriter, request *http.Request)
 		writeOAuthError(response, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	devicePublicKey, err := base64.RawURLEncoding.DecodeString(request.URL.Query().Get("device_public_key"))
-	if err != nil || len(devicePublicKey) != 32 {
+	devicePublicKey, ok := secure.DecodeCanonicalBase64URL(request.URL.Query().Get("device_public_key"))
+	if !ok || len(devicePublicKey) != 32 {
 		writeOAuthError(response, http.StatusBadRequest, "invalid_request")
 		return
 	}
@@ -155,8 +154,8 @@ func (h *httpHandler) exchange(response http.ResponseWriter, request *http.Reque
 		writeOAuthError(response, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	deviceProof, err := base64.RawURLEncoding.DecodeString(payload.DeviceProof)
-	if err != nil || len(deviceProof) != 64 {
+	deviceProof, ok := secure.DecodeCanonicalBase64URL(payload.DeviceProof)
+	if !ok || len(deviceProof) != 64 {
 		writeOAuthError(response, http.StatusBadRequest, "invalid_request")
 		return
 	}

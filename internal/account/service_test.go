@@ -219,13 +219,24 @@ func (f *fakePasswords) Verify(password, encoded string) (bool, bool, error) {
 }
 
 type fakeAccountRepository struct {
-	registrations  []RegistrationRecord
-	resets         []PasswordResetRecord
-	credential     Credential
-	found          bool
-	lookupKinds    []secure.IdentityKind
-	receiptsUsed   map[uuid.UUID]bool
-	revokeSessions bool
+	registrations      []RegistrationRecord
+	resets             []PasswordResetRecord
+	credential         Credential
+	found              bool
+	lookupKinds        []secure.IdentityKind
+	receiptsUsed       map[uuid.UUID]bool
+	revokeSessions     bool
+	bindings           []IdentityBindingRecord
+	removeIdentityErr  error
+	passwordChanges    []PasswordChangeRecord
+	deletionRequests   []DeletionRequestRecord
+	deletionRecoveries []DeletionRecoveryRecord
+	profile            Profile
+	profileFound       bool
+}
+
+func (f *fakeAccountRepository) Profile(context.Context, uuid.UUID) (Profile, bool, error) {
+	return f.profile, f.profileFound, nil
 }
 
 func (f *fakeAccountRepository) Register(_ context.Context, record RegistrationRecord) (Registration, error) {
@@ -245,6 +256,13 @@ func (f *fakeAccountRepository) FindCredential(_ context.Context, kind secure.Id
 	return f.credential, f.found, nil
 }
 
+func (f *fakeAccountRepository) FindCredentialByUserID(_ context.Context, userID uuid.UUID) (Credential, bool, error) {
+	if !f.found || f.credential.UserID != userID {
+		return Credential{}, false, nil
+	}
+	return f.credential, true, nil
+}
+
 func (f *fakeAccountRepository) UpdatePasswordHash(context.Context, uuid.UUID, string, int, time.Time) error {
 	return nil
 }
@@ -262,7 +280,27 @@ func (f *fakeAccountRepository) ResetPassword(_ context.Context, record Password
 	return nil
 }
 
-func (f *fakeAccountRepository) BindIdentity(context.Context, IdentityBindingRecord) error {
+func (f *fakeAccountRepository) BindIdentity(_ context.Context, record IdentityBindingRecord) error {
+	f.bindings = append(f.bindings, record)
+	return nil
+}
+
+func (f *fakeAccountRepository) RemoveIdentity(context.Context, IdentityRemovalRecord) error {
+	return f.removeIdentityErr
+}
+
+func (f *fakeAccountRepository) ChangePassword(_ context.Context, record PasswordChangeRecord) error {
+	f.passwordChanges = append(f.passwordChanges, record)
+	return nil
+}
+
+func (f *fakeAccountRepository) RequestDeletion(_ context.Context, record DeletionRequestRecord) error {
+	f.deletionRequests = append(f.deletionRequests, record)
+	return nil
+}
+
+func (f *fakeAccountRepository) RecoverDeletion(_ context.Context, record DeletionRecoveryRecord) error {
+	f.deletionRecoveries = append(f.deletionRecoveries, record)
 	return nil
 }
 

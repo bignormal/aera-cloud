@@ -41,6 +41,7 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 		"offline_entitlement_issuances",
 		"audit_events",
 		"legal_acceptances",
+		"device_self_revocation_nonces",
 	}
 	for _, table := range tables {
 		var exists bool
@@ -54,13 +55,14 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 
 	assertUniqueConstraint(t, ctx, postgres, "identities", "identities_kind_lookup_hmac_key", []string{"kind", "lookup_hmac"})
 	assertUniqueConstraint(t, ctx, postgres, "devices", "devices_installation_id_key", []string{"installation_id"})
+	assertUniqueConstraint(t, ctx, postgres, "identities", "identities_user_id_kind_key", []string{"user_id", "kind"})
 
 	var applied int
 	if err := postgres.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if applied != 3 {
-		t.Fatalf("applied migration count = %d, want 3", applied)
+	if applied != 6 {
+		t.Fatalf("applied migration count = %d, want 6", applied)
 	}
 	var receiptConsumedColumn bool
 	if err := postgres.QueryRow(ctx, `
@@ -91,6 +93,30 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	}
 	if oauthMetadataColumns != 5 {
 		t.Fatalf("OAuth metadata column count = %d, want 5", oauthMetadataColumns)
+	}
+	var administrativeDisableColumn bool
+	if err := postgres.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'users'
+			  AND column_name = 'administratively_disabled'
+		)
+	`).Scan(&administrativeDisableColumn); err != nil {
+		t.Fatalf("check administratively_disabled: %v", err)
+	}
+	if !administrativeDisableColumn {
+		t.Fatal("users.administratively_disabled does not exist")
+	}
+	var adminAuditColumns int
+	if err := postgres.QueryRow(ctx, `
+		SELECT count(*) FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = 'audit_events'
+		  AND column_name IN ('operator_identity', 'subject_user_id')
+	`).Scan(&adminAuditColumns); err != nil {
+		t.Fatalf("check restricted audit columns: %v", err)
+	}
+	if adminAuditColumns != 2 {
+		t.Fatalf("restricted audit column count = %d, want 2", adminAuditColumns)
 	}
 }
 

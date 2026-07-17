@@ -49,7 +49,11 @@ func validVerificationCode(code string) bool {
 
 func validPurpose(purpose verification.Purpose) bool {
 	switch purpose {
-	case verification.PurposeRegistration, verification.PurposePasswordReset, verification.PurposeBindIdentity:
+	case verification.PurposeRegistration,
+		verification.PurposePasswordReset,
+		verification.PurposeBindIdentity,
+		verification.PurposeAccountDeletion,
+		verification.PurposeDeletionRecovery:
 		return true
 	default:
 		return false

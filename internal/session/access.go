@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bignormal/aera-cloud/internal/secure"
 	"github.com/google/uuid"
 )
 
@@ -153,8 +154,8 @@ func (s *AccessSigner) Verify(serialized string) (AccessClaims, error) {
 		return AccessClaims{}, ErrInvalidAccessToken
 	}
 	parts := strings.Split(serialized, ".")
-	headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
-	if err != nil {
+	headerJSON, ok := secure.DecodeCanonicalBase64URL(parts[0])
+	if !ok {
 		return AccessClaims{}, ErrInvalidAccessToken
 	}
 	var header accessHeader
@@ -165,13 +166,13 @@ func (s *AccessSigner) Verify(serialized string) (AccessClaims, error) {
 	if !ok {
 		return AccessClaims{}, ErrInvalidAccessToken
 	}
-	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil || len(signature) != ed25519.SignatureSize ||
+	signature, ok := secure.DecodeCanonicalBase64URL(parts[2])
+	if !ok || len(signature) != ed25519.SignatureSize ||
 		!ed25519.Verify(publicKey, []byte(parts[0]+"."+parts[1]), signature) {
 		return AccessClaims{}, ErrInvalidAccessToken
 	}
-	payloadJSON, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
+	payloadJSON, ok := secure.DecodeCanonicalBase64URL(parts[1])
+	if !ok {
 		return AccessClaims{}, ErrInvalidAccessToken
 	}
 	var payload accessPayload

@@ -21,6 +21,7 @@ type Dependencies struct {
 	Verification http.Handler
 	Accounts     http.Handler
 	OAuth        http.Handler
+	Devices      http.Handler
 }
 
 func New(dependencies Dependencies) http.Handler {
@@ -54,6 +55,10 @@ func New(dependencies Dependencies) http.Handler {
 		router.Handle("/oauth/*", dependencies.OAuth)
 		router.Handle("/api/v1/oauth/*", dependencies.OAuth)
 		router.Handle("/.well-known/agentera-signing-keys.json", dependencies.OAuth)
+	}
+	if dependencies.Devices != nil {
+		router.Handle("/api/v1/devices", dependencies.Devices)
+		router.Handle("/api/v1/devices/*", dependencies.Devices)
 	}
 	return router
 }

@@ -210,8 +210,8 @@ func (m *Manager) cookie(value string, expires time.Time, maxAge int) *http.Cook
 }
 
 func decodeSecret(encoded string) ([]byte, bool) {
-	decoded, err := base64.RawURLEncoding.DecodeString(encoded)
-	if err != nil || len(decoded) != secretLength {
+	decoded, ok := secure.DecodeCanonicalBase64URL(encoded)
+	if !ok || len(decoded) != secretLength {
 		return nil, false
 	}
 	return decoded, true

@@ -161,9 +161,8 @@ func (s *Service) Approve(ctx context.Context, requestID, userID uuid.UUID) (App
 }
 
 func (s *Service) Exchange(ctx context.Context, request ExchangeRequest) (session.TokenSet, error) {
-	codeSecret, err := base64.RawURLEncoding.DecodeString(request.AuthorizationCode)
-	if s == nil || err != nil || len(codeSecret) != 32 ||
-		base64.RawURLEncoding.EncodeToString(codeSecret) != request.AuthorizationCode || request.InstallationID == uuid.Nil {
+	codeSecret, ok := secure.DecodeCanonicalBase64URL(request.AuthorizationCode)
+	if s == nil || !ok || len(codeSecret) != 32 || request.InstallationID == uuid.Nil {
 		return session.TokenSet{}, ErrInvalidAuthorization
 	}
 	return s.repository.Exchange(ctx, authorizationCodeHash(codeSecret), s.clock().UTC(), func(ctx context.Context, tx pgx.Tx, grant Grant) (session.TokenSet, error) {
@@ -227,8 +226,8 @@ func validOpaqueState(state string) bool {
 }
 
 func validCodeChallenge(challenge string) bool {
-	decoded, err := base64.RawURLEncoding.DecodeString(challenge)
-	return err == nil && len(decoded) == sha256.Size && base64.RawURLEncoding.EncodeToString(decoded) == challenge
+	decoded, ok := secure.DecodeCanonicalBase64URL(challenge)
+	return ok && len(decoded) == sha256.Size
 }
 
 func validVerifier(verifier string) bool {

@@ -8,10 +8,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bignormal/aera-cloud/internal/browser"
 	"github.com/bignormal/aera-cloud/internal/legal"
 	"github.com/bignormal/aera-cloud/internal/secure"
+	"github.com/bignormal/aera-cloud/internal/session"
 	"github.com/google/uuid"
 )
 
@@ -160,17 +162,115 @@ func TestHTTPHandlerRejectsUnknownFieldsAndWrongMediaType(t *testing.T) {
 	}
 }
 
+func TestHTTPHandlerServesRedactedProfileForBrowserSession(t *testing.T) {
+	userID := uuid.New()
+	service := &stubAccountService{profile: Profile{
+		UserID: userID, PersonalSpaceID: uuid.New(), Nickname: "Alice", Status: "active",
+		IdentityKinds: []secure.IdentityKind{secure.IdentityEmail, secure.IdentityPhone},
+	}}
+	sessions := &stubBrowserSessions{readSession: browser.Session{Principal: browser.Principal{UserID: userID, PersonalSpaceID: uuid.New()}}}
+	handler := NewHandler(HTTPConfig{Accounts: service, BrowserSessions: sessions, Legal: currentLegal(t)})
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/accounts/me", nil))
+
+	body := response.Body.String()
+	if response.Code != http.StatusOK || service.profileUserID != userID || !strings.Contains(body, `"identity_kinds":["email","phone"]`) {
+		t.Fatalf("profile response = %d %q, user=%s", response.Code, body, service.profileUserID)
+	}
+	if strings.Contains(body, "alice@example.com") || strings.Contains(body, "+861") {
+		t.Fatalf("profile response leaked identity value: %s", body)
+	}
+}
+
+func TestHTTPHandlerIdentityLifecycleRequiresBrowserCSRF(t *testing.T) {
+	userID := uuid.New()
+	service := &stubAccountService{}
+	sessions := &stubBrowserSessions{readSession: browser.Session{Principal: browser.Principal{UserID: userID, PersonalSpaceID: uuid.New()}}, csrfErr: browser.ErrCSRF}
+	handler := NewHandler(HTTPConfig{Accounts: service, BrowserSessions: sessions, Legal: currentLegal(t)})
+	request := accountJSONRequest(http.MethodPost, "/api/v1/accounts/identities/bind", `{"current_password":"current","verification_receipt":"receipt"}`)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	assertErrorEnvelope(t, response, http.StatusForbidden, "invalid_request")
+	if service.bindCalls != 0 {
+		t.Fatalf("BindIdentity() calls = %d", service.bindCalls)
+	}
+	sessions.csrfErr = nil
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent || service.bindUserID != userID || service.bindPassword != "current" || service.bindReceipt != "receipt" {
+		t.Fatalf("bind response=%d %q command=%s/%q/%q", response.Code, response.Body.String(), service.bindUserID, service.bindPassword, service.bindReceipt)
+	}
+}
+
+func TestHTTPHandlerChangesPasswordOnlyForCurrentAccessSession(t *testing.T) {
+	userID := uuid.New()
+	sessionID := uuid.New()
+	service := &stubAccountService{}
+	authenticator := &stubAccountAccessAuthenticator{claims: session.AccessClaims{AccessBinding: session.AccessBinding{
+		UserID: userID, SessionID: sessionID, DeviceID: uuid.New(), PersonalSpaceID: uuid.New(),
+	}, IssuedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(15 * time.Minute)}}
+	handler := NewHandler(HTTPConfig{
+		Accounts: service, BrowserSessions: &stubBrowserSessions{}, Legal: currentLegal(t), AccessTokens: authenticator,
+	})
+	request := accountJSONRequest(http.MethodPost, "/api/v1/accounts/password/change", `{"current_password":"current","new_password":"new correct horse battery"}`)
+	request.Header.Set("Authorization", "Bearer signed-access-token")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNoContent || service.changeUserID != userID || service.changeSessionID != sessionID {
+		t.Fatalf("change response=%d %q command=%s/%s", response.Code, response.Body.String(), service.changeUserID, service.changeSessionID)
+	}
+}
+
+func TestHTTPHandlerDeletionEndsBrowserSessionAndRecoveryIsPublic(t *testing.T) {
+	userID := uuid.New()
+	service := &stubAccountService{}
+	sessions := &stubBrowserSessions{readSession: browser.Session{Principal: browser.Principal{UserID: userID, PersonalSpaceID: uuid.New()}}}
+	handler := NewHandler(HTTPConfig{Accounts: service, BrowserSessions: sessions, Legal: currentLegal(t)})
+	request := accountJSONRequest(http.MethodPost, "/api/v1/accounts/deletion", `{"current_password":"current","verification_receipt":"delete-receipt"}`)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNoContent || service.deleteUserID != userID || sessions.endCalls != 1 {
+		t.Fatalf("deletion response=%d %q user=%s end=%d", response.Code, response.Body.String(), service.deleteUserID, sessions.endCalls)
+	}
+	recoverRequest := accountJSONRequest(http.MethodPost, "/api/v1/accounts/deletion/recover", `{"identity":"alice@example.com","password":"current","verification_receipt":"recover-receipt"}`)
+	recoverResponse := httptest.NewRecorder()
+	handler.ServeHTTP(recoverResponse, recoverRequest)
+	if recoverResponse.Code != http.StatusNoContent || service.recoverIdentity != "alice@example.com" || service.recoverReceipt != "recover-receipt" {
+		t.Fatalf("recovery response=%d %q", recoverResponse.Code, recoverResponse.Body.String())
+	}
+}
+
 type stubAccountService struct {
-	registration  Registration
-	registerErr   error
-	registerCalls int
-	lastRegister  RegisterCommand
-	principal     Principal
-	loginErr      error
-	loginCalls    int
-	loginIP       string
-	resetErr      error
-	resetReceipt  string
+	registration    Registration
+	registerErr     error
+	registerCalls   int
+	lastRegister    RegisterCommand
+	principal       Principal
+	loginErr        error
+	loginCalls      int
+	loginIP         string
+	resetErr        error
+	resetReceipt    string
+	profile         Profile
+	profileUserID   uuid.UUID
+	bindCalls       int
+	bindUserID      uuid.UUID
+	bindPassword    string
+	bindReceipt     string
+	removeUserID    uuid.UUID
+	removeKind      secure.IdentityKind
+	changeUserID    uuid.UUID
+	changeSessionID uuid.UUID
+	deleteUserID    uuid.UUID
+	recoverIdentity string
+	recoverReceipt  string
 }
 
 func (s *stubAccountService) Register(_ context.Context, command RegisterCommand) (Registration, error) {
@@ -188,6 +288,46 @@ func (s *stubAccountService) AuthenticatePassword(ctx context.Context, _, _ stri
 func (s *stubAccountService) ResetPassword(_ context.Context, receipt, _ string) error {
 	s.resetReceipt = receipt
 	return s.resetErr
+}
+
+func (s *stubAccountService) Profile(_ context.Context, userID uuid.UUID) (Profile, error) {
+	s.profileUserID = userID
+	return s.profile, nil
+}
+
+func (s *stubAccountService) BindIdentity(_ context.Context, userID uuid.UUID, password, receipt string) error {
+	s.bindCalls++
+	s.bindUserID, s.bindPassword, s.bindReceipt = userID, password, receipt
+	return nil
+}
+
+func (s *stubAccountService) RemoveIdentity(_ context.Context, userID uuid.UUID, kind secure.IdentityKind, _ string) error {
+	s.removeUserID, s.removeKind = userID, kind
+	return nil
+}
+
+func (s *stubAccountService) ChangePassword(_ context.Context, userID, sessionID uuid.UUID, _, _ string) error {
+	s.changeUserID, s.changeSessionID = userID, sessionID
+	return nil
+}
+
+func (s *stubAccountService) RequestDeletion(_ context.Context, userID uuid.UUID, _, _ string) error {
+	s.deleteUserID = userID
+	return nil
+}
+
+func (s *stubAccountService) RecoverDeletion(_ context.Context, identity, _ string, receipt string) error {
+	s.recoverIdentity, s.recoverReceipt = identity, receipt
+	return nil
+}
+
+type stubAccountAccessAuthenticator struct {
+	claims session.AccessClaims
+	err    error
+}
+
+func (s *stubAccountAccessAuthenticator) Authenticate(context.Context, string) (session.AccessClaims, error) {
+	return s.claims, s.err
 }
 
 type stubBrowserSessions struct {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/bignormal/aera-cloud/internal/browser"
 	"github.com/bignormal/aera-cloud/internal/session"
+	"github.com/bignormal/aera-cloud/internal/testkit"
 	"github.com/google/uuid"
 )
 
@@ -45,6 +46,41 @@ func TestHTTPAuthorizeStartsRequestThenRemovesProtocolSecretsFromBrowserURL(t *t
 	}
 	if service.beginRequest.ClientID != DesktopClientID || service.beginRequest.InstallationID == uuid.Nil {
 		t.Fatalf("Begin request = %+v", service.beginRequest)
+	}
+}
+
+func TestHTTPRejectsNonCanonicalDeviceKeyAndProofEncodings(t *testing.T) {
+	service := &stubOAuthService{}
+	handler := NewHandler(HTTPConfig{OAuth: service})
+	publicKey := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	query := url.Values{
+		"client_id":             {DesktopClientID},
+		"redirect_uri":          {"http://127.0.0.1:43123/agentera/oauth/callback"},
+		"code_challenge":        {base64.RawURLEncoding.EncodeToString(make([]byte, 32))},
+		"code_challenge_method": {"S256"},
+		"state":                 {strings.Repeat("s", 48)},
+		"installation_id":       {uuid.NewString()},
+		"device_public_key":     {testkit.NonCanonicalBase64URLAlias(t, publicKey)},
+		"device_name":           {"Alice Mac"},
+		"platform":              {"darwin"},
+		"app_version":           {"0.1.0"},
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+query.Encode(), nil))
+	assertOAuthError(t, response, http.StatusBadRequest, "invalid_request")
+	if service.beginRequest.InstallationID != uuid.Nil {
+		t.Fatal("Begin() received a noncanonical device public key")
+	}
+
+	proof := base64.RawURLEncoding.EncodeToString(make([]byte, 64))
+	body := `{"authorization_code":"opaque-code","code_verifier":"` + strings.Repeat("v", 64) +
+		`","installation_id":"` + uuid.NewString() + `","device_proof":"` +
+		testkit.NonCanonicalBase64URLAlias(t, proof) + `"}`
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, oauthJSONRequest(http.MethodPost, "/api/v1/oauth/token", body))
+	assertOAuthError(t, response, http.StatusBadRequest, "invalid_request")
+	if service.exchange.InstallationID != uuid.Nil {
+		t.Fatal("Exchange() received a noncanonical device proof")
 	}
 }
 

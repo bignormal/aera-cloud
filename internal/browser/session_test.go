@@ -121,6 +121,16 @@ func TestManagerRejectsExpiredAndMalformedSessions(t *testing.T) {
 	if _, err := fixture.manager.Read(fixture.ctx, malformed); !errors.Is(err, ErrUnauthenticated) {
 		t.Fatalf("Read(malformed) error = %v", err)
 	}
+
+	fixture.now = fixture.now.Add(-16 * time.Minute)
+	alias := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8086/account", nil)
+	alias.AddCookie(&http.Cookie{
+		Name:  DefaultCookieName,
+		Value: testkit.NonCanonicalBase64URLAlias(t, cookie.Value),
+	})
+	if _, err := fixture.manager.Read(fixture.ctx, alias); !errors.Is(err, ErrUnauthenticated) {
+		t.Fatalf("Read(noncanonical alias) error = %v", err)
+	}
 }
 
 func TestNewManagerRejectsMissingOrWeakSecrets(t *testing.T) {

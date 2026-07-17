@@ -73,9 +73,18 @@ func TestServiceRejectsTamperingWrongKeyAndExpiry(t *testing.T) {
 		t.Fatalf("Issue() error = %v", err)
 	}
 	parts := strings.Split(issued.Serialized, ".")
-	parts[1] = parts[1][:len(parts[1])-1] + "A"
+	if parts[1][0] == 'A' {
+		parts[1] = "B" + parts[1][1:]
+	} else {
+		parts[1] = "A" + parts[1][1:]
+	}
 	if _, err := fixture.service.Verify(strings.Join(parts, ".")); !errors.Is(err, ErrInvalidEntitlement) {
 		t.Fatalf("Verify(tampered) error = %v", err)
+	}
+	parts = strings.Split(issued.Serialized, ".")
+	parts[2] = testkit.NonCanonicalBase64URLAlias(t, parts[2])
+	if _, err := fixture.service.Verify(strings.Join(parts, ".")); !errors.Is(err, ErrInvalidEntitlement) {
+		t.Fatalf("Verify(noncanonical signature) error = %v", err)
 	}
 
 	_, unrelatedPrivate, err := ed25519.GenerateKey(rand.Reader)

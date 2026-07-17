@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bignormal/aera-cloud/internal/testkit"
 	"github.com/google/uuid"
 )
 
@@ -73,6 +74,11 @@ func TestAccessTokensRejectTamperingUnknownKeysAndExpiry(t *testing.T) {
 	}
 	if _, err := fixture.signer.Verify(strings.Join(parts, ".")); !errors.Is(err, ErrInvalidAccessToken) {
 		t.Fatalf("Verify(tampered) error = %v", err)
+	}
+	parts = strings.Split(issued.Serialized, ".")
+	parts[2] = testkit.NonCanonicalBase64URLAlias(t, parts[2])
+	if _, err := fixture.signer.Verify(strings.Join(parts, ".")); !errors.Is(err, ErrInvalidAccessToken) {
+		t.Fatalf("Verify(noncanonical signature) error = %v", err)
 	}
 
 	_, otherPrivate, err := ed25519.GenerateKey(rand.Reader)
