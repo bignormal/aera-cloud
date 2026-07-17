@@ -1,0 +1,110 @@
+package httpapi
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+type stubHealthChecker struct {
+	err   error
+	calls int
+}
+
+func (s *stubHealthChecker) Ping(context.Context) error {
+	s.calls++
+	return s.err
+}
+
+func TestLiveDoesNotProbeDependencies(t *testing.T) {
+	postgres := &stubHealthChecker{err: errors.New("postgres secret should not leak")}
+	redis := &stubHealthChecker{err: errors.New("redis secret should not leak")}
+	handler := New(Dependencies{PostgreSQL: postgres, Redis: redis})
+
+	request := httptest.NewRequest(http.MethodGet, "/health/live", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	}
+	if response.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("Content-Type = %q", response.Header().Get("Content-Type"))
+	}
+	if strings.TrimSpace(response.Body.String()) != `{"status":"ok"}` {
+		t.Fatalf("body = %q", response.Body.String())
+	}
+	if postgres.calls != 0 || redis.calls != 0 {
+		t.Fatalf("live endpoint probed dependencies: postgres=%d redis=%d", postgres.calls, redis.calls)
+	}
+}
+
+func TestReadyReturnsOKWhenDependenciesRespond(t *testing.T) {
+	postgres := &stubHealthChecker{}
+	redis := &stubHealthChecker{}
+	handler := New(Dependencies{PostgreSQL: postgres, Redis: redis})
+
+	request := httptest.NewRequest(http.MethodGet, "/health/ready", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if strings.TrimSpace(response.Body.String()) != `{"status":"ok"}` {
+		t.Fatalf("body = %q", response.Body.String())
+	}
+	if postgres.calls != 1 || redis.calls != 1 {
+		t.Fatalf("ready probes = postgres:%d redis:%d, want one each", postgres.calls, redis.calls)
+	}
+}
+
+func TestReadyFailsClosedWithoutLeakingDependencyErrors(t *testing.T) {
+	tests := []struct {
+		name        string
+		postgresErr error
+		redisErr    error
+	}{
+		{name: "postgres unavailable", postgresErr: errors.New("postgres://user:secret@db/private")},
+		{name: "redis unavailable", redisErr: errors.New("redis password=secret")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := New(Dependencies{
+				PostgreSQL: &stubHealthChecker{err: tt.postgresErr},
+				Redis:      &stubHealthChecker{err: tt.redisErr},
+			})
+
+			request := httptest.NewRequest(http.MethodGet, "/health/ready", nil)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+
+			if response.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+			}
+			body := strings.TrimSpace(response.Body.String())
+			if body != `{"status":"unavailable"}` {
+				t.Fatalf("body = %q", body)
+			}
+			if strings.Contains(body, "secret") || strings.Contains(body, "private") {
+				t.Fatalf("body leaked dependency error: %q", body)
+			}
+		})
+	}
+}
+
+func TestReadyFailsClosedWhenDependencyIsMissing(t *testing.T) {
+	handler := New(Dependencies{})
+	request := httptest.NewRequest(http.MethodGet, "/health/ready", nil)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+	}
+}

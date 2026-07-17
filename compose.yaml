@@ -1,0 +1,36 @@
+name: agentera-app-cloud-dev
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: aera_cloud
+      POSTGRES_USER: aera_cloud
+      POSTGRES_PASSWORD: aera-cloud-dev-only
+    ports:
+      - "127.0.0.1:55434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aera_cloud -d aera_cloud"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    volumes:
+      - aera-cloud-postgres-dev:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    environment:
+      REDISCLI_AUTH: aera-cloud-dev-only
+    ports:
+      - "127.0.0.1:56381:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "--user", "aera_cloud", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    volumes:
+      - ./config/redis-dev.conf:/usr/local/etc/redis/redis.conf:ro
+
+volumes:
+  aera-cloud-postgres-dev:
