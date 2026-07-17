@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -22,6 +23,7 @@ type Dependencies struct {
 	Accounts     http.Handler
 	OAuth        http.Handler
 	Devices      http.Handler
+	Web          http.Handler
 }
 
 func New(dependencies Dependencies) http.Handler {
@@ -60,7 +62,20 @@ func New(dependencies Dependencies) http.Handler {
 		router.Handle("/api/v1/devices", dependencies.Devices)
 		router.Handle("/api/v1/devices/*", dependencies.Devices)
 	}
+	router.NotFound(func(response http.ResponseWriter, request *http.Request) {
+		if dependencies.Web == nil || servicePath(request.URL.Path) {
+			http.NotFound(response, request)
+			return
+		}
+		dependencies.Web.ServeHTTP(response, request)
+	})
 	return router
+}
+
+func servicePath(raw string) bool {
+	trimmed := strings.TrimPrefix(raw, "/")
+	first, _, _ := strings.Cut(trimmed, "/")
+	return first == "api" || first == "health" || first == "oauth" || first == ".well-known"
 }
 
 func writeStatus(response http.ResponseWriter, statusCode int, status string) {

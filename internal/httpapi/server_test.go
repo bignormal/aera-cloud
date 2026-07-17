@@ -204,3 +204,27 @@ func TestDeviceRoutesAreMountedWithoutChangingHealthContract(t *testing.T) {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusNoContent)
 	}
 }
+
+func TestWebAccountCenterHandlesOnlyUnmatchedNonServiceRoutes(t *testing.T) {
+	web := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.WriteHeader(http.StatusOK)
+		_, _ = response.Write([]byte("AgentEra account center: " + request.URL.Path))
+	})
+	handler := New(Dependencies{
+		PostgreSQL: &stubHealthChecker{}, Redis: &stubHealthChecker{}, Web: web,
+	})
+
+	page := httptest.NewRecorder()
+	handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/login", nil))
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "/login") {
+		t.Fatalf("web page = %d %q", page.Code, page.Body.String())
+	}
+
+	for _, path := range []string{"/api/v1/missing", "/health/missing", "/oauth/missing", "/.well-known/missing"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusNotFound || strings.Contains(response.Body.String(), "account center") {
+			t.Fatalf("reserved path %s = %d %q", path, response.Code, response.Body.String())
+		}
+	}
+}

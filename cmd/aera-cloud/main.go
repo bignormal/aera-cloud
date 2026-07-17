@@ -29,6 +29,7 @@ import (
 	"github.com/bignormal/aera-cloud/internal/session"
 	"github.com/bignormal/aera-cloud/internal/store"
 	"github.com/bignormal/aera-cloud/internal/verification"
+	"github.com/bignormal/aera-cloud/internal/webui"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
@@ -117,6 +118,7 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 		Accounts:     accountHandler,
 		OAuth:        oauthHandler,
 		Devices:      deviceHandler,
+		Web:          webui.New(),
 	}))
 }
 
