@@ -4,7 +4,9 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -108,6 +110,39 @@ func TestRunAppliesMigrationsBeforeServing(t *testing.T) {
 	}
 }
 
+func TestBuildVerificationHandlerWiresVersionedRoute(t *testing.T) {
+	services := testkit.Services{
+		DatabaseURL:   "postgres://aera_cloud:secret@127.0.0.1:55434/aera_cloud?sslmode=disable",
+		RedisAddr:     "127.0.0.1:56381",
+		RedisUsername: "aera_cloud",
+		RedisPassword: "secret",
+		RedisDB:       9,
+	}
+	cfg, err := config.Load(integrationLookup(services))
+	if err != nil {
+		t.Fatalf("config.Load() error = %v", err)
+	}
+	handler, err := buildVerificationHandler(cfg, nil, nil)
+	if err != nil {
+		t.Fatalf("buildVerificationHandler() error = %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/verification/challenges", strings.NewReader(`{
+		"kind":"email",
+		"destination":"invalid",
+		"purpose":"registration"
+	}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "request-123")
+	request.Header.Set("X-AgentEra-Installation-ID", "device-123")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest || strings.TrimSpace(response.Body.String()) != `{"error":"invalid_request"}` {
+		t.Fatalf("response = %d %q", response.Code, response.Body.String())
+	}
+}
+
 func integrationLookup(services testkit.Services) config.LookupEnv {
 	values := map[string]string{
 		"AGENTERA_CLOUD_ENVIRONMENT":                       "development",
@@ -122,6 +157,20 @@ func integrationLookup(services testkit.Services) config.LookupEnv {
 		"AGENTERA_CLOUD_IDENTITY_ENCRYPTION_KEYS":          `{"enc-test-v1":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="}`,
 		"AGENTERA_CLOUD_IDENTITY_LOOKUP_ACTIVE_KEY_ID":     "lookup-test-v1",
 		"AGENTERA_CLOUD_IDENTITY_LOOKUP_KEYS":              `{"lookup-test-v1":"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI="}`,
+		"AGENTERA_CLOUD_VERIFICATION_CODE_ACTIVE_KEY_ID":   "code-test-v1",
+		"AGENTERA_CLOUD_VERIFICATION_CODE_KEYS":            `{"code-test-v1":"AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM="}`,
+		"AGENTERA_CLOUD_VERIFICATION_REQUEST_HMAC_KEY":     "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=",
+		"AGENTERA_CLOUD_SMTP_HOST":                         "smtp.agentera.invalid",
+		"AGENTERA_CLOUD_SMTP_PORT":                         "587",
+		"AGENTERA_CLOUD_SMTP_USERNAME":                     "smtp-user",
+		"AGENTERA_CLOUD_SMTP_PASSWORD":                     "smtp-secret",
+		"AGENTERA_CLOUD_SMTP_FROM_ADDRESS":                 "accounts@agentera.invalid",
+		"AGENTERA_CLOUD_SMTP_FROM_NAME":                    "AgentEra",
+		"AGENTERA_CLOUD_SMS_ENDPOINT":                      "https://sms.agentera.invalid/v1/messages",
+		"AGENTERA_CLOUD_SMS_API_KEY":                       "sms-secret",
+		"AGENTERA_CLOUD_SMS_SENDER_ID":                     "AgentEra",
+		"AGENTERA_CLOUD_CAPTCHA_ENDPOINT":                  "https://captcha.agentera.invalid/siteverify",
+		"AGENTERA_CLOUD_CAPTCHA_SECRET":                    "captcha-secret",
 	}
 	return func(key string) (string, bool) {
 		value, ok := values[key]

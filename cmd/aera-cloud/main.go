@@ -11,9 +11,15 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bignormal/aera-cloud/internal/abuse"
 	"github.com/bignormal/aera-cloud/internal/config"
 	"github.com/bignormal/aera-cloud/internal/httpapi"
+	"github.com/bignormal/aera-cloud/internal/notification"
+	"github.com/bignormal/aera-cloud/internal/secure"
 	"github.com/bignormal/aera-cloud/internal/store"
+	"github.com/bignormal/aera-cloud/internal/verification"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -62,6 +68,10 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 			slog.Warn("Redis close failed")
 		}
 	}()
+	verificationHandler, err := buildVerificationHandler(cfg, postgres, redisStore.Client())
+	if err != nil {
+		return err
+	}
 
 	listener, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
@@ -69,9 +79,75 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 	}
 	slog.Info("AgentEra cloud started", "address", cfg.ListenAddr, "environment", cfg.Environment)
 	return serve(ctx, listener, httpapi.New(httpapi.Dependencies{
-		PostgreSQL: postgres,
-		Redis:      redisStore,
+		PostgreSQL:   postgres,
+		Redis:        redisStore,
+		Verification: verificationHandler,
 	}))
+}
+
+func buildVerificationHandler(
+	cfg config.Config,
+	postgres *pgxpool.Pool,
+	redisClient redis.UniversalClient,
+) (http.Handler, error) {
+	identityCodec, err := secure.NewIdentityCodec(secure.IdentityCodecConfig{
+		ActiveEncryptionKeyID: cfg.IdentityEncryptionKeyRing.ActiveKeyID,
+		EncryptionKeys:        cfg.IdentityEncryptionKeyRing.Keys,
+		ActiveLookupKeyID:     cfg.IdentityLookupKeyRing.ActiveKeyID,
+		LookupKeys:            cfg.IdentityLookupKeyRing.Keys,
+	})
+	if err != nil {
+		return nil, err
+	}
+	email, err := notification.NewSMTPEmail(notification.SMTPConfig{
+		Host:        cfg.SMTPHost,
+		Port:        cfg.SMTPPort,
+		Username:    cfg.SMTPUsername,
+		Password:    cfg.SMTPPassword,
+		FromAddress: cfg.SMTPFromAddress,
+		FromName:    cfg.SMTPFromName,
+	}, nil)
+	if err != nil {
+		return nil, err
+	}
+	allowInsecureLoopback := cfg.Environment != "production"
+	sms, err := notification.NewHTTPSMS(notification.HTTPSMSConfig{
+		Endpoint:                  cfg.SMSEndpoint,
+		APIKey:                    cfg.SMSAPIKey,
+		SenderID:                  cfg.SMSSenderID,
+		AllowInsecureLoopbackHTTP: allowInsecureLoopback,
+	})
+	if err != nil {
+		return nil, err
+	}
+	sender, err := notification.NewRouter(email, sms)
+	if err != nil {
+		return nil, err
+	}
+	captcha, err := abuse.NewHTTPChallengeVerifier(abuse.HTTPChallengeConfig{
+		Endpoint:                  cfg.CaptchaEndpoint,
+		Secret:                    cfg.CaptchaSecret,
+		AllowInsecureLoopbackHTTP: allowInsecureLoopback,
+	})
+	if err != nil {
+		return nil, err
+	}
+	service, err := verification.NewService(verification.ServiceConfig{
+		Sender:          sender,
+		Repository:      verification.NewPostgresRepository(postgres),
+		Limiter:         verification.NewRedisLimiter(redisClient),
+		Captcha:         captcha,
+		DeliveryGuard:   verification.NewRedisDeliveryGuard(redisClient),
+		TargetIndexer:   identityCodec,
+		ActiveCodeKeyID: cfg.VerificationCodeKeyRing.ActiveKeyID,
+		CodeKeys:        cfg.VerificationCodeKeyRing.Keys,
+		RequestHMACKey:  cfg.VerificationRequestHMACKey,
+		Logger:          slog.Default(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return verification.NewHandler(service), nil
 }
 
 func serve(ctx context.Context, listener net.Listener, handler http.Handler) error {

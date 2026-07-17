@@ -24,6 +24,20 @@ const (
 	envIdentityEncryptionKeys        = "AGENTERA_CLOUD_IDENTITY_ENCRYPTION_KEYS"
 	envIdentityLookupActiveKeyID     = "AGENTERA_CLOUD_IDENTITY_LOOKUP_ACTIVE_KEY_ID"
 	envIdentityLookupKeys            = "AGENTERA_CLOUD_IDENTITY_LOOKUP_KEYS"
+	envVerificationCodeActiveKeyID   = "AGENTERA_CLOUD_VERIFICATION_CODE_ACTIVE_KEY_ID"
+	envVerificationCodeKeys          = "AGENTERA_CLOUD_VERIFICATION_CODE_KEYS"
+	envVerificationRequestHMACKey    = "AGENTERA_CLOUD_VERIFICATION_REQUEST_HMAC_KEY"
+	envSMTPHost                      = "AGENTERA_CLOUD_SMTP_HOST"
+	envSMTPPort                      = "AGENTERA_CLOUD_SMTP_PORT"
+	envSMTPUsername                  = "AGENTERA_CLOUD_SMTP_USERNAME"
+	envSMTPPassword                  = "AGENTERA_CLOUD_SMTP_PASSWORD"
+	envSMTPFromAddress               = "AGENTERA_CLOUD_SMTP_FROM_ADDRESS"
+	envSMTPFromName                  = "AGENTERA_CLOUD_SMTP_FROM_NAME"
+	envSMSEndpoint                   = "AGENTERA_CLOUD_SMS_ENDPOINT"
+	envSMSAPIKey                     = "AGENTERA_CLOUD_SMS_API_KEY"
+	envSMSSenderID                   = "AGENTERA_CLOUD_SMS_SENDER_ID"
+	envCaptchaEndpoint               = "AGENTERA_CLOUD_CAPTCHA_ENDPOINT"
+	envCaptchaSecret                 = "AGENTERA_CLOUD_CAPTCHA_SECRET"
 )
 
 type LookupEnv func(string) (string, bool)
@@ -34,16 +48,29 @@ type KeyRing struct {
 }
 
 type Config struct {
-	Environment               string
-	ListenAddr                string
-	PublicURL                 string
-	DatabaseURL               string
-	RedisAddr                 string
-	RedisUsername             string
-	RedisPassword             string
-	RedisDB                   int
-	IdentityEncryptionKeyRing KeyRing
-	IdentityLookupKeyRing     KeyRing
+	Environment                string
+	ListenAddr                 string
+	PublicURL                  string
+	DatabaseURL                string
+	RedisAddr                  string
+	RedisUsername              string
+	RedisPassword              string
+	RedisDB                    int
+	IdentityEncryptionKeyRing  KeyRing
+	IdentityLookupKeyRing      KeyRing
+	VerificationCodeKeyRing    KeyRing
+	VerificationRequestHMACKey []byte
+	SMTPHost                   string
+	SMTPPort                   int
+	SMTPUsername               string
+	SMTPPassword               string
+	SMTPFromAddress            string
+	SMTPFromName               string
+	SMSEndpoint                string
+	SMSAPIKey                  string
+	SMSSenderID                string
+	CaptchaEndpoint            string
+	CaptchaSecret              string
 }
 
 func Load(lookup LookupEnv) (Config, error) {
@@ -115,19 +142,109 @@ func Load(lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	verificationCodeKeyRing, err := loadKeyRing(
+		lookup,
+		envVerificationCodeActiveKeyID,
+		envVerificationCodeKeys,
+		32,
+		false,
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	verificationRequestHMACKey, err := loadBase64Key(lookup, envVerificationRequestHMACKey, 32)
+	if err != nil {
+		return Config{}, err
+	}
+	smtpHost, err := required(lookup, envSMTPHost)
+	if err != nil {
+		return Config{}, err
+	}
+	smtpPortText, err := required(lookup, envSMTPPort)
+	if err != nil {
+		return Config{}, err
+	}
+	smtpPort, err := strconv.Atoi(smtpPortText)
+	if err != nil || smtpPort <= 0 || smtpPort > 65535 {
+		return Config{}, fmt.Errorf("%s must be an integer between 1 and 65535", envSMTPPort)
+	}
+	smtpUsername, err := required(lookup, envSMTPUsername)
+	if err != nil {
+		return Config{}, err
+	}
+	smtpPassword, err := required(lookup, envSMTPPassword)
+	if err != nil {
+		return Config{}, err
+	}
+	smtpFromAddress, err := required(lookup, envSMTPFromAddress)
+	if err != nil {
+		return Config{}, err
+	}
+	smtpFromName, err := required(lookup, envSMTPFromName)
+	if err != nil {
+		return Config{}, err
+	}
+	smsEndpoint, err := required(lookup, envSMSEndpoint)
+	if err != nil {
+		return Config{}, err
+	}
+	smsAPIKey, err := required(lookup, envSMSAPIKey)
+	if err != nil {
+		return Config{}, err
+	}
+	smsSenderID, err := required(lookup, envSMSSenderID)
+	if err != nil {
+		return Config{}, err
+	}
+	captchaEndpoint, err := required(lookup, envCaptchaEndpoint)
+	if err != nil {
+		return Config{}, err
+	}
+	captchaSecret, err := required(lookup, envCaptchaSecret)
+	if err != nil {
+		return Config{}, err
+	}
 
 	return Config{
-		Environment:               environment,
-		ListenAddr:                listenAddr,
-		PublicURL:                 publicURL,
-		DatabaseURL:               databaseURL,
-		RedisAddr:                 redisAddr,
-		RedisUsername:             redisUsername,
-		RedisPassword:             redisPassword,
-		RedisDB:                   redisDB,
-		IdentityEncryptionKeyRing: identityEncryptionKeyRing,
-		IdentityLookupKeyRing:     identityLookupKeyRing,
+		Environment:                environment,
+		ListenAddr:                 listenAddr,
+		PublicURL:                  publicURL,
+		DatabaseURL:                databaseURL,
+		RedisAddr:                  redisAddr,
+		RedisUsername:              redisUsername,
+		RedisPassword:              redisPassword,
+		RedisDB:                    redisDB,
+		IdentityEncryptionKeyRing:  identityEncryptionKeyRing,
+		IdentityLookupKeyRing:      identityLookupKeyRing,
+		VerificationCodeKeyRing:    verificationCodeKeyRing,
+		VerificationRequestHMACKey: verificationRequestHMACKey,
+		SMTPHost:                   smtpHost,
+		SMTPPort:                   smtpPort,
+		SMTPUsername:               smtpUsername,
+		SMTPPassword:               smtpPassword,
+		SMTPFromAddress:            smtpFromAddress,
+		SMTPFromName:               smtpFromName,
+		SMSEndpoint:                smsEndpoint,
+		SMSAPIKey:                  smsAPIKey,
+		SMSSenderID:                smsSenderID,
+		CaptchaEndpoint:            captchaEndpoint,
+		CaptchaSecret:              captchaSecret,
 	}, nil
+}
+
+func loadBase64Key(lookup LookupEnv, key string, minimumBytes int) ([]byte, error) {
+	encoded, err := required(lookup, key)
+	if err != nil {
+		return nil, err
+	}
+	material, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("%s must be base64", key)
+	}
+	if len(material) < minimumBytes {
+		return nil, fmt.Errorf("%s must decode to at least %d bytes", key, minimumBytes)
+	}
+	return append([]byte(nil), material...), nil
 }
 
 func loadKeyRing(

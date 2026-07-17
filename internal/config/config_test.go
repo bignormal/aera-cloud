@@ -43,6 +43,16 @@ func TestLoadAcceptsLoopbackHTTPInDevelopment(t *testing.T) {
 	if !bytes.Equal(cfg.IdentityLookupKeyRing.Keys["lookup-dev-v1"], bytes.Repeat([]byte{2}, 32)) {
 		t.Fatal("lookup key ring was not decoded")
 	}
+	if cfg.VerificationCodeKeyRing.ActiveKeyID != "code-dev-v1" ||
+		!bytes.Equal(cfg.VerificationCodeKeyRing.Keys["code-dev-v1"], bytes.Repeat([]byte{3}, 32)) {
+		t.Fatal("verification code key ring was not decoded")
+	}
+	if !bytes.Equal(cfg.VerificationRequestHMACKey, bytes.Repeat([]byte{4}, 32)) {
+		t.Fatal("verification request HMAC key was not decoded")
+	}
+	if cfg.SMTPHost != "smtp.example.com" || cfg.SMTPPort != 587 || cfg.SMSAPIKey != "sms-secret" || cfg.CaptchaSecret != "captcha-secret" {
+		t.Fatalf("notification configuration was not loaded: %+v", cfg)
+	}
 }
 
 func TestLoadRejectsHTTPOutsideLoopback(t *testing.T) {
@@ -78,6 +88,12 @@ func TestLoadRejectsProductionCredentialsThatAreMissing(t *testing.T) {
 		{name: "encryption key ring", key: "AGENTERA_CLOUD_IDENTITY_ENCRYPTION_KEYS"},
 		{name: "lookup active key", key: "AGENTERA_CLOUD_IDENTITY_LOOKUP_ACTIVE_KEY_ID"},
 		{name: "lookup key ring", key: "AGENTERA_CLOUD_IDENTITY_LOOKUP_KEYS"},
+		{name: "verification active key", key: "AGENTERA_CLOUD_VERIFICATION_CODE_ACTIVE_KEY_ID"},
+		{name: "verification key ring", key: "AGENTERA_CLOUD_VERIFICATION_CODE_KEYS"},
+		{name: "verification request key", key: "AGENTERA_CLOUD_VERIFICATION_REQUEST_HMAC_KEY"},
+		{name: "SMTP password", key: "AGENTERA_CLOUD_SMTP_PASSWORD"},
+		{name: "SMS API key", key: "AGENTERA_CLOUD_SMS_API_KEY"},
+		{name: "CAPTCHA secret", key: "AGENTERA_CLOUD_CAPTCHA_SECRET"},
 	}
 
 	for _, tt := range tests {
@@ -145,6 +161,44 @@ func TestLoadRejectsInvalidIdentityKeyRings(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsInvalidVerificationSecrets(t *testing.T) {
+	tests := []struct {
+		name  string
+		key   string
+		value string
+		want  string
+	}{
+		{
+			name:  "short code HMAC key",
+			key:   "AGENTERA_CLOUD_VERIFICATION_CODE_KEYS",
+			value: encodedKeyRing("code-dev-v1", bytes.Repeat([]byte{3}, 31)),
+			want:  "at least 32 bytes",
+		},
+		{
+			name:  "short request HMAC key",
+			key:   "AGENTERA_CLOUD_VERIFICATION_REQUEST_HMAC_KEY",
+			value: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{4}, 31)),
+			want:  "at least 32 bytes",
+		},
+		{
+			name:  "invalid request HMAC base64",
+			key:   "AGENTERA_CLOUD_VERIFICATION_REQUEST_HMAC_KEY",
+			value: "%%%",
+			want:  "base64",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := validEnvironment("production")
+			env[tt.key] = tt.value
+			_, err := Load(mapLookup(env))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Load() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestEnvironmentExamplePreservesKeyRingJSONWhenSourced(t *testing.T) {
 	environmentFile, err := filepath.Abs(filepath.Join("..", "..", ".env.example"))
 	if err != nil {
@@ -153,7 +207,7 @@ func TestEnvironmentExamplePreservesKeyRingJSONWhenSourced(t *testing.T) {
 	command := exec.Command(
 		"sh",
 		"-c",
-		`. "$1"; printf '%s\n%s\n' "$AGENTERA_CLOUD_IDENTITY_ENCRYPTION_KEYS" "$AGENTERA_CLOUD_IDENTITY_LOOKUP_KEYS"`,
+		`. "$1"; printf '%s\n%s\n%s\n' "$AGENTERA_CLOUD_IDENTITY_ENCRYPTION_KEYS" "$AGENTERA_CLOUD_IDENTITY_LOOKUP_KEYS" "$AGENTERA_CLOUD_VERIFICATION_CODE_KEYS"`,
 		"sh",
 		environmentFile,
 	)
@@ -162,8 +216,8 @@ func TestEnvironmentExamplePreservesKeyRingJSONWhenSourced(t *testing.T) {
 		t.Fatalf("source .env.example: %v", err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("sourced key ring lines = %d, want 2", len(lines))
+	if len(lines) != 3 {
+		t.Fatalf("sourced key ring lines = %d, want 3", len(lines))
 	}
 	for index, line := range lines {
 		var keys map[string]string
@@ -227,6 +281,20 @@ func validEnvironment(environment string) map[string]string {
 		"AGENTERA_CLOUD_IDENTITY_ENCRYPTION_KEYS":          encodedKeyRing("enc-dev-v1", bytes.Repeat([]byte{1}, 32)),
 		"AGENTERA_CLOUD_IDENTITY_LOOKUP_ACTIVE_KEY_ID":     "lookup-dev-v1",
 		"AGENTERA_CLOUD_IDENTITY_LOOKUP_KEYS":              encodedKeyRing("lookup-dev-v1", bytes.Repeat([]byte{2}, 32)),
+		"AGENTERA_CLOUD_VERIFICATION_CODE_ACTIVE_KEY_ID":   "code-dev-v1",
+		"AGENTERA_CLOUD_VERIFICATION_CODE_KEYS":            encodedKeyRing("code-dev-v1", bytes.Repeat([]byte{3}, 32)),
+		"AGENTERA_CLOUD_VERIFICATION_REQUEST_HMAC_KEY":     base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{4}, 32)),
+		"AGENTERA_CLOUD_SMTP_HOST":                         "smtp.example.com",
+		"AGENTERA_CLOUD_SMTP_PORT":                         "587",
+		"AGENTERA_CLOUD_SMTP_USERNAME":                     "smtp-user",
+		"AGENTERA_CLOUD_SMTP_PASSWORD":                     "smtp-secret",
+		"AGENTERA_CLOUD_SMTP_FROM_ADDRESS":                 "accounts@example.com",
+		"AGENTERA_CLOUD_SMTP_FROM_NAME":                    "AgentEra",
+		"AGENTERA_CLOUD_SMS_ENDPOINT":                      "https://sms.example.com/verify",
+		"AGENTERA_CLOUD_SMS_API_KEY":                       "sms-secret",
+		"AGENTERA_CLOUD_SMS_SENDER_ID":                     "AgentEra",
+		"AGENTERA_CLOUD_CAPTCHA_ENDPOINT":                  "https://captcha.example.com/verify",
+		"AGENTERA_CLOUD_CAPTCHA_SECRET":                    "captcha-secret",
 	}
 }
 

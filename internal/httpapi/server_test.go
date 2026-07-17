@@ -108,3 +108,25 @@ func TestReadyFailsClosedWhenDependencyIsMissing(t *testing.T) {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusServiceUnavailable)
 	}
 }
+
+func TestVerificationRoutesAreMountedWithoutChangingHealthContract(t *testing.T) {
+	verificationHandler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/v1/verification/challenges" {
+			t.Errorf("verification path = %q", request.URL.Path)
+		}
+		response.WriteHeader(http.StatusAccepted)
+	})
+	handler := New(Dependencies{
+		PostgreSQL:   &stubHealthChecker{},
+		Redis:        &stubHealthChecker{},
+		Verification: verificationHandler,
+	})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/verification/challenges", nil)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusAccepted)
+	}
+}

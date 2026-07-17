@@ -44,3 +44,7 @@ func (s *RedisStore) Ping(ctx context.Context) error {
 func (s *RedisStore) Close() error {
 	return s.client.Close()
 }
+
+func (s *RedisStore) Client() redis.UniversalClient {
+	return s.client
+}

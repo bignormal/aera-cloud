@@ -16,8 +16,9 @@ type HealthChecker interface {
 }
 
 type Dependencies struct {
-	PostgreSQL HealthChecker
-	Redis      HealthChecker
+	PostgreSQL   HealthChecker
+	Redis        HealthChecker
+	Verification http.Handler
 }
 
 func New(dependencies Dependencies) http.Handler {
@@ -39,6 +40,9 @@ func New(dependencies Dependencies) http.Handler {
 		}
 		writeStatus(response, http.StatusOK, "ok")
 	})
+	if dependencies.Verification != nil {
+		router.Handle("/api/v1/verification/*", dependencies.Verification)
+	}
 	return router
 }
 

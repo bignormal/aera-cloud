@@ -23,6 +23,15 @@ curl --fail http://127.0.0.1:8086/health/live
 curl --fail http://127.0.0.1:8086/health/ready
 ```
 
+The versioned verification API is mounted at:
+
+```text
+POST /api/v1/verification/challenges
+POST /api/v1/verification/challenges/verify
+```
+
+Challenge creation requires `Idempotency-Key` and `X-AgentEra-Installation-ID` headers. The provider values in `.env.example` deliberately use the reserved `.invalid` domain, so local requests exercise failure handling without sending email or SMS. Configure real SMTP, SMS, and CAPTCHA providers through the deployment environment before delivery testing.
+
 Run unit tests without services:
 
 ```bash
@@ -32,7 +41,7 @@ go test ./...
 Run service integration tests after starting Compose and sourcing `.env.example`:
 
 ```bash
-AERA_INTEGRATION_TESTS=1 go test ./internal/store -v
+AERA_INTEGRATION_TESTS=1 go test -p 1 ./... -v
 ```
 
 Production deployment is intentionally unavailable at this stage. A filed domain, trusted HTTPS, real email/SMS providers, independent production secrets, and verified backup/restore are later release gates.
