@@ -431,6 +431,13 @@ paths:
             type: string
             minLength: 1
             maxLength: 64
+        - name: prompt
+          in: query
+          required: false
+          description: Forces explicit browser account authentication when switching desktop users.
+          schema:
+            type: string
+            enum: [select_account]
       responses:
         '303':
           description: Sensitive request values were persisted and removed from the browser URL.
@@ -439,7 +446,8 @@ paths:
               required: true
               schema:
                 type: string
-                pattern: '^/authorize\?request_id='
+                description: Approval page, or a forced login page whose internal next target is the approval page.
+                pattern: '^/(authorize\?request_id=|login\?next=)'
         '400':
           $ref: '#/components/responses/InvalidRequest'
         '503':

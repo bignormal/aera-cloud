@@ -49,6 +49,46 @@ func TestHTTPAuthorizeStartsRequestThenRemovesProtocolSecretsFromBrowserURL(t *t
 	}
 }
 
+func TestHTTPAuthorizeSelectAccountForcesFreshBrowserLogin(t *testing.T) {
+	requestID := uuid.New()
+	service := &stubOAuthService{beginResponse: BeginResponse{RequestID: requestID, ExpiresAt: time.Now().Add(10 * time.Minute)}}
+	handler := NewHandler(HTTPConfig{OAuth: service})
+	query := url.Values{
+		"client_id":             {DesktopClientID},
+		"redirect_uri":          {"http://127.0.0.1:43123/agentera/oauth/callback"},
+		"code_challenge":        {strings.Repeat("c", 43)},
+		"code_challenge_method": {"S256"},
+		"state":                 {strings.Repeat("s", 48)},
+		"installation_id":       {uuid.NewString()},
+		"device_public_key":     {base64.RawURLEncoding.EncodeToString(make([]byte, 32))},
+		"device_name":           {"Alice Mac"},
+		"platform":              {"darwin"},
+		"app_version":           {"0.1.0"},
+		"prompt":                {"select_account"},
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+query.Encode(), nil))
+
+	wantNext := "/authorize?request_id=" + requestID.String()
+	wantLocation := (&url.URL{Path: "/login", RawQuery: url.Values{"next": {wantNext}}.Encode()}).String()
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != wantLocation {
+		t.Fatalf("response = %d Location %q, want %q", response.Code, response.Header().Get("Location"), wantLocation)
+	}
+	if strings.Contains(response.Header().Get("Location"), query.Get("state")) || strings.Contains(response.Header().Get("Location"), query.Get("device_public_key")) {
+		t.Fatalf("Location leaks protocol material: %q", response.Header().Get("Location"))
+	}
+
+	query.Set("prompt", "silent")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+query.Encode(), nil))
+	assertOAuthError(t, response, http.StatusBadRequest, "invalid_request")
+
+	query["prompt"] = []string{"select_account", "silent"}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+query.Encode(), nil))
+	assertOAuthError(t, response, http.StatusBadRequest, "invalid_request")
+}
+
 func TestHTTPRejectsNonCanonicalDeviceKeyAndProofEncodings(t *testing.T) {
 	service := &stubOAuthService{}
 	handler := NewHandler(HTTPConfig{OAuth: service})

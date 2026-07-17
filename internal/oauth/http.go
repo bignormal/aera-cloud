@@ -79,6 +79,15 @@ func (h *httpHandler) begin(response http.ResponseWriter, request *http.Request)
 		writeOAuthError(response, http.StatusServiceUnavailable, "service_unavailable")
 		return
 	}
+	promptValues := request.URL.Query()["prompt"]
+	if len(promptValues) > 1 || (len(promptValues) == 1 && promptValues[0] != "select_account") {
+		writeOAuthError(response, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	prompt := ""
+	if len(promptValues) == 1 {
+		prompt = promptValues[0]
+	}
 	installationID, err := uuid.Parse(request.URL.Query().Get("installation_id"))
 	if err != nil {
 		writeOAuthError(response, http.StatusBadRequest, "invalid_request")
@@ -101,6 +110,9 @@ func (h *httpHandler) begin(response http.ResponseWriter, request *http.Request)
 		return
 	}
 	location := &url.URL{Path: "/authorize", RawQuery: url.Values{"request_id": {started.RequestID.String()}}.Encode()}
+	if prompt == "select_account" {
+		location = &url.URL{Path: "/login", RawQuery: url.Values{"next": {location.String()}}.Encode()}
+	}
 	response.Header().Set("Cache-Control", "no-store")
 	response.Header().Set("Referrer-Policy", "no-referrer")
 	http.Redirect(response, request, location.String(), http.StatusSeeOther)
