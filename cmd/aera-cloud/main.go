@@ -45,6 +45,9 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 		return err
 	}
 	defer postgres.Close()
+	if err := store.ApplyMigrations(startupCtx, postgres); err != nil {
+		return err
+	}
 	redisStore, err := store.OpenRedis(startupCtx, store.RedisOptions{
 		Addr:     cfg.RedisAddr,
 		Username: cfg.RedisUsername,
