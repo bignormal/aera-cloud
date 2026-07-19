@@ -41,10 +41,11 @@ expect_fail() {
 }
 
 safe=$(new_repo safe)
-mkdir -p "$safe/internal"
+mkdir -p "$safe/internal" "$safe/migrations"
 printf 'AGENTERA_CLOUD_ENVIRONMENT=development\n' > "$safe/.env.example"
 printf 'package internal\nvar testCode = "123456"\n' > "$safe/internal/provider_test.go"
 printf 'var fakeProviderFixture = map[string]string{"AGENTERA_CLOUD_SMTP_HOST": "smtp.agentera.invalid"}\n' >> "$safe/internal/provider_test.go"
+printf 'CHECK (octet_length(icon_data) <= 524288);\n' > "$safe/migrations/000001_size_limit.sql"
 track "$safe"
 expect_pass "$safe"
 
@@ -68,6 +69,12 @@ mkdir -p "$verification_code/deploy"
 printf 'verification_code: "%s%s"\n' '654' '321' > "$verification_code/deploy/config.yaml"
 track "$verification_code"
 expect_fail "$verification_code"
+
+sql_verification_code=$(new_repo sql-verification-code)
+mkdir -p "$sql_verification_code/migrations"
+printf "INSERT INTO verification_fixtures (code) VALUES ('654321');\n" > "$sql_verification_code/migrations/000001_fixture.sql"
+track "$sql_verification_code"
+expect_fail "$sql_verification_code"
 
 fake_production_provider=$(new_repo production-provider)
 mkdir -p "$fake_production_provider/deploy"

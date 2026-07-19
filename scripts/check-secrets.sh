@@ -41,6 +41,21 @@ is_test_fixture() {
   return 1
 }
 
+has_plaintext_verification_code_shape() {
+  local relative=$1
+  local absolute=$2
+  local pattern='(^|[^0-9])[0-9]{6}([^0-9]|$)'
+
+  if [[ $relative == migrations/*.sql ]]; then
+    grep -E -- "$pattern" "$absolute" |
+      grep -Ev -- 'octet_length\([A-Za-z_][A-Za-z0-9_]*\)[[:space:]]*<=[[:space:]]*[0-9]{6}' \
+        >/dev/null
+    return
+  fi
+
+  grep -Eq -- "$pattern" "$absolute"
+}
+
 while IFS= read -r -d '' relative; do
   case "$relative" in
     .env|.env.*|*/.env|*/.env.*)
@@ -63,7 +78,7 @@ while IFS= read -r -d '' relative; do
       report "$relative" "token-shaped value"
     fi
     if [[ $relative != go.sum && $relative != */package-lock.json && $relative != internal/webui/static/* ]] &&
-      grep -Eq -- '(^|[^0-9])[0-9]{6}([^0-9]|$)' "$absolute"; then
+      has_plaintext_verification_code_shape "$relative" "$absolute"; then
       report "$relative" "plaintext six-digit verification-code shape"
     fi
   fi
