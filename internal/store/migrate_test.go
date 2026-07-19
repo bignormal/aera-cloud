@@ -78,6 +78,7 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	assertCheckConstraintContains(t, ctx, postgres, "agent_control_idempotency_keys", "agent_control_idempotency_key_hash_length_check", "octet_length(key_hash) = 32")
 	assertCheckConstraintContains(t, ctx, postgres, "agent_control_idempotency_keys", "agent_control_idempotency_request_hash_length_check", "octet_length(request_hash) = 32")
 	assertCheckConstraintContains(t, ctx, postgres, "installations", "installations_lifecycle_check", "runtime_profile_id")
+	assertCheckConstraintExcludes(t, ctx, postgres, "installations", "installations_lifecycle_check", "policy_snapshot_id IS NULL")
 	assertCheckConstraintContains(t, ctx, postgres, "installations", "installations_status_check", "pending")
 	assertCheckConstraintContains(t, ctx, postgres, "installations", "installations_update_policy_check", "manual")
 
@@ -109,8 +110,8 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	if err := postgres.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if applied != 7 {
-		t.Fatalf("applied migration count = %d, want 7", applied)
+	if applied != 8 {
+		t.Fatalf("applied migration count = %d, want 8", applied)
 	}
 	var receiptConsumedColumn bool
 	if err := postgres.QueryRow(ctx, `
@@ -218,6 +219,30 @@ func assertCheckConstraintContains(
 	}
 	if !strings.Contains(definition, expected) {
 		t.Fatalf("check constraint %s = %q, want it to contain %q", name, definition, expected)
+	}
+}
+
+func assertCheckConstraintExcludes(
+	t *testing.T,
+	ctx context.Context,
+	postgres *pgxpool.Pool,
+	table string,
+	name string,
+	forbidden string,
+) {
+	t.Helper()
+	var definition string
+	err := postgres.QueryRow(ctx, `
+		SELECT pg_get_constraintdef(c.oid)
+		FROM pg_constraint c
+		JOIN pg_class t ON t.oid = c.conrelid
+		WHERE t.relname = $1 AND c.conname = $2 AND c.contype = 'c'
+	`, table, name).Scan(&definition)
+	if err != nil {
+		t.Fatalf("read check constraint %s: %v", name, err)
+	}
+	if strings.Contains(definition, forbidden) {
+		t.Fatalf("check constraint %s = %q, want it to exclude %q", name, definition, forbidden)
 	}
 }
 

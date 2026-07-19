@@ -2,7 +2,9 @@ package audit
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,6 +49,82 @@ func TestPostgresRecorderPersistsOnlyStructuredRedactedFields(t *testing.T) {
 	}
 	if got := executor.arguments[11]; got != now {
 		t.Fatalf("created_at argument = %#v", got)
+	}
+}
+
+func TestPostgresRecorderPersistsBoundedAgentMetadataDeterministically(t *testing.T) {
+	executor := &fakeExecutor{}
+	recorder, err := NewRecorder(executor)
+	if err != nil {
+		t.Fatalf("NewRecorder() error = %v", err)
+	}
+	ownerID := uuid.New()
+	tenantID := uuid.New()
+	versionID := uuid.New()
+	metadata := map[string]string{
+		"owner_scope":      "USER",
+		"agent_version_id": versionID.String(),
+		"tenant_id":        tenantID.String(),
+		"owner_id":         ownerID.String(),
+		"content_digest":   strings.Repeat("a", 64),
+	}
+	if err := recorder.Record(context.Background(), Event{
+		EventType: "agent_version_published", Outcome: OutcomeSuccess, Metadata: metadata,
+	}); err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+	encoded, ok := executor.arguments[10].(string)
+	if !ok {
+		t.Fatalf("metadata argument type = %T", executor.arguments[10])
+	}
+	var decoded map[string]string
+	if err := json.Unmarshal([]byte(encoded), &decoded); err != nil {
+		t.Fatalf("decode metadata argument: %v", err)
+	}
+	if len(decoded) != len(metadata) || decoded["owner_id"] != ownerID.String() {
+		t.Fatalf("stored metadata = %+v", decoded)
+	}
+	if encoded != `{"agent_version_id":"`+versionID.String()+`","content_digest":"`+strings.Repeat("a", 64)+`","owner_id":"`+ownerID.String()+`","owner_scope":"USER","tenant_id":"`+tenantID.String()+`"}` {
+		t.Fatalf("metadata JSON is not deterministic: %s", encoded)
+	}
+
+	metadata["owner_id"] = "mutated-after-record"
+	if strings.Contains(encoded, "mutated-after-record") {
+		t.Fatal("recorded metadata aliases the caller map")
+	}
+}
+
+func TestPostgresRecorderRejectsUnsafeAgentMetadata(t *testing.T) {
+	tooMany := make(map[string]string, 13)
+	for index := range 13 {
+		tooMany["tenant_id"] = uuid.NewString()
+		tooMany["extra_"+string(rune('a'+index))] = "value"
+	}
+	tests := []map[string]string{
+		tooMany,
+		{"unexpected": "value"},
+		{"Owner_ID": uuid.NewString()},
+		{"owner_id": "alice@example.com"},
+		{"owner_id": "Bearer opaque-token"},
+		{"owner_id": "eyJheader.eyJpayload.signature-value"},
+		{"owner_id": "line\nbreak"},
+		{"owner_id": "/Users/alice/profile"},
+		{"owner_id": strings.Repeat("a", 129)},
+	}
+	for index, metadata := range tests {
+		recorder := &PostgresRecorder{executor: &fakeExecutor{}}
+		if err := recorder.Record(context.Background(), Event{
+			EventType: "agent_version_published", Outcome: OutcomeDenied, Metadata: metadata,
+		}); !errors.Is(err, ErrInvalidEvent) {
+			t.Fatalf("case %d Record() error = %v", index, err)
+		}
+	}
+
+	recorder := &PostgresRecorder{executor: &fakeExecutor{}}
+	if err := recorder.Record(context.Background(), Event{
+		EventType: "browser_login", Outcome: OutcomeSuccess, Metadata: map[string]string{"tenant_id": uuid.NewString()},
+	}); !errors.Is(err, ErrInvalidEvent) {
+		t.Fatalf("non-Agent metadata Record() error = %v", err)
 	}
 }
 
