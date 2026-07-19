@@ -2,6 +2,7 @@ package agentcontrol
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/binary"
@@ -175,7 +176,7 @@ type CreateInstallationCommand struct {
 	InstallationID uuid.UUID
 	DefinitionID   uuid.UUID
 	VersionID      uuid.UUID
-	Policy         PolicyMaterial
+	BuildPolicy    func(Version) (PolicyMaterial, error)
 	Idempotency    IdempotencyEvidence
 	Audit          AuditEvidence
 	CreatedAt      time.Time
@@ -190,6 +191,9 @@ type InstallationCreation struct {
 type ActivationCommand struct {
 	InstallationID   uuid.UUID
 	RuntimeProfileID uuid.UUID
+	AgentVersionID   uuid.UUID
+	PolicySnapshotID uuid.UUID
+	VersionDigest    [sha256.Size]byte
 	Audit            AuditEvidence
 	ActivatedAt      time.Time
 }
@@ -197,7 +201,7 @@ type ActivationCommand struct {
 type VersionSelectionCommand struct {
 	InstallationID uuid.UUID
 	VersionID      uuid.UUID
-	Policy         PolicyMaterial
+	BuildPolicy    func(policyVersion int64, version Version) (PolicyMaterial, error)
 	Audit          AuditEvidence
 	SelectedAt     time.Time
 }
@@ -216,8 +220,18 @@ type RuntimeBindingRecordCommand struct {
 	RuntimeVersion       string
 	PolicySnapshotID     uuid.UUID
 	ToolPermissionDigest [sha256.Size]byte
-	Audit                AuditEvidence
-	CreatedAt            time.Time
+}
+
+type PersistRuntimeBindingCommand struct {
+	RuntimeBindingRecordCommand
+	Audit     AuditEvidence
+	CreatedAt time.Time
+}
+
+type InstallationActivationContext struct {
+	Installation    Installation
+	Version         Version
+	DevicePublicKey ed25519.PublicKey
 }
 
 type RuntimeBindingRecord struct {
@@ -567,6 +581,9 @@ func (r *PostgresRepository) RecordDenied(
 	case "agent_version":
 		eventType = "agent_version_access_denied"
 		metadata["agent_version_id"] = command.ObjectID.String()
+	case "agent_installation":
+		eventType = "agent_installation_access_denied"
+		metadata["agent_installation_id"] = command.ObjectID.String()
 	default:
 		return ErrInvalidRepositoryCommand
 	}
@@ -651,6 +668,20 @@ func (r *PostgresRepository) CreatePendingInstallation(
 	} else if revoked {
 		return InstallationCreation{}, ErrVersionRevoked
 	}
+	version, err := loadVersion(ctx, tx, principal, command.VersionID)
+	if err != nil || version.DefinitionID != command.DefinitionID {
+		if err != nil {
+			return InstallationCreation{}, err
+		}
+		return InstallationCreation{}, ErrNotFound
+	}
+	policy, err := command.BuildPolicy(version)
+	if err != nil {
+		return InstallationCreation{}, err
+	}
+	if !validPolicyMaterial(policy, command.InstallationID, command.VersionID) || policy.PolicyVersion != 1 {
+		return InstallationCreation{}, ErrInvalidRepositoryCommand
+	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO installations (
 			id, tenant_id, owner_scope, owner_id, device_id, device_installation_id,
@@ -661,17 +692,17 @@ func (r *PostgresRepository) CreatePendingInstallation(
 		command.DefinitionID, command.VersionID, command.CreatedAt.UTC()); err != nil {
 		return InstallationCreation{}, ErrServiceUnavailable
 	}
-	if err := insertPolicy(ctx, tx, principal, command.Policy); err != nil {
+	if err := insertPolicy(ctx, tx, principal, policy); err != nil {
 		return InstallationCreation{}, err
 	}
 	result, err := tx.Exec(ctx, `
 		UPDATE installations SET policy_snapshot_id = $4, updated_at = $5
 		WHERE id = $3 AND tenant_id = $1 AND owner_scope = 'USER' AND owner_id = $2
-	`, owner.TenantID, owner.OwnerID, command.InstallationID, command.Policy.ID, command.CreatedAt.UTC())
+	`, owner.TenantID, owner.OwnerID, command.InstallationID, policy.ID, command.CreatedAt.UTC())
 	if err != nil || result.RowsAffected() != 1 {
 		return InstallationCreation{}, ErrServiceUnavailable
 	}
-	response = idempotencyResponse{InstallationID: command.InstallationID, PolicySnapshotID: command.Policy.ID}
+	response = idempotencyResponse{InstallationID: command.InstallationID, PolicySnapshotID: policy.ID}
 	if err := insertIdempotency(ctx, tx, principal, operationCreateInstallation, command.Idempotency,
 		"agent_installation", command.InstallationID, response, command.CreatedAt); err != nil {
 		return InstallationCreation{}, err
@@ -679,7 +710,7 @@ func (r *PostgresRepository) CreatePendingInstallation(
 	if err := recordAudit(ctx, tx, principal, command.Audit, "agent_installation_created", "agent_installation",
 		command.InstallationID, command.CreatedAt, map[string]string{
 			"agent_definition_id": command.DefinitionID.String(), "agent_version_id": command.VersionID.String(),
-			"agent_installation_id": command.InstallationID.String(), "policy_snapshot_id": command.Policy.ID.String(),
+			"agent_installation_id": command.InstallationID.String(), "policy_snapshot_id": policy.ID.String(),
 		}); err != nil {
 		return InstallationCreation{}, err
 	}
@@ -687,11 +718,11 @@ func (r *PostgresRepository) CreatePendingInstallation(
 	if err != nil {
 		return InstallationCreation{}, err
 	}
-	policy, err := loadPolicy(ctx, tx, principal, command.Policy.ID)
+	storedPolicy, err := loadPolicy(ctx, tx, principal, policy.ID)
 	if err != nil {
 		return InstallationCreation{}, err
 	}
-	created := InstallationCreation{Installation: installation, Policy: policy}
+	created := InstallationCreation{Installation: installation, Policy: storedPolicy}
 	return created, commitTransaction(ctx, tx)
 }
 
@@ -713,13 +744,52 @@ func (r *PostgresRepository) FindInstallation(
 	return installation, true, nil
 }
 
+func (r *PostgresRepository) LoadActivationContext(
+	ctx context.Context,
+	principal Principal,
+	installationID uuid.UUID,
+) (InstallationActivationContext, bool, error) {
+	if r == nil || r.postgres == nil || !validPrincipal(principal) || installationID == uuid.Nil {
+		return InstallationActivationContext{}, false, ErrInvalidRepositoryCommand
+	}
+	installation, err := loadInstallation(ctx, r.postgres, principal, installationID, false)
+	if errors.Is(err, ErrNotFound) {
+		return InstallationActivationContext{}, false, nil
+	}
+	if err != nil {
+		return InstallationActivationContext{}, false, err
+	}
+	if installation.DeviceID != principal.DeviceID {
+		return InstallationActivationContext{}, false, nil
+	}
+	version, err := loadVersion(ctx, r.postgres, principal, installation.SelectedVersionID)
+	if err != nil {
+		return InstallationActivationContext{}, false, err
+	}
+	var publicKey []byte
+	err = r.postgres.QueryRow(ctx, `
+		SELECT public_key FROM devices
+		WHERE id = $1 AND user_id = $2 AND status = 'active'
+	`, principal.DeviceID, principal.UserID).Scan(&publicKey)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return InstallationActivationContext{}, false, nil
+	}
+	if err != nil || len(publicKey) != 32 {
+		return InstallationActivationContext{}, false, ErrServiceUnavailable
+	}
+	return InstallationActivationContext{
+		Installation: installation, Version: version, DevicePublicKey: append(ed25519.PublicKey(nil), publicKey...),
+	}, true, nil
+}
+
 func (r *PostgresRepository) ActivateInstallation(
 	ctx context.Context,
 	principal Principal,
 	command ActivationCommand,
 ) (Installation, error) {
 	if r == nil || r.postgres == nil || !validPrincipal(principal) || command.InstallationID == uuid.Nil ||
-		command.RuntimeProfileID == uuid.Nil || command.ActivatedAt.IsZero() || !validAuditEvidence(command.Audit) {
+		command.RuntimeProfileID == uuid.Nil || command.AgentVersionID == uuid.Nil || command.PolicySnapshotID == uuid.Nil ||
+		zeroDigest(command.VersionDigest) || command.ActivatedAt.IsZero() || !validAuditEvidence(command.Audit) {
 		return Installation{}, ErrInvalidRepositoryCommand
 	}
 	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
@@ -741,13 +811,28 @@ func (r *PostgresRepository) ActivateInstallation(
 		if installation.RuntimeProfileID == nil || *installation.RuntimeProfileID != command.RuntimeProfileID {
 			return Installation{}, ErrActivationConflict
 		}
+		matches, err := activationAuditMatches(ctx, tx, principal, command)
+		if err != nil {
+			return Installation{}, err
+		}
+		if !matches {
+			return Installation{}, ErrActivationConflict
+		}
 		return installation, commitTransaction(ctx, tx)
 	case InstallationStatusPending:
-		if installation.PolicySnapshotID == nil {
+		if installation.PolicySnapshotID == nil || installation.SelectedVersionID != command.AgentVersionID ||
+			*installation.PolicySnapshotID != command.PolicySnapshotID {
 			return Installation{}, ErrServiceUnavailable
 		}
 	default:
 		return Installation{}, ErrServiceUnavailable
+	}
+	version, err := loadVersion(ctx, tx, principal, command.AgentVersionID)
+	if err != nil {
+		return Installation{}, err
+	}
+	if version.ContentDigest != command.VersionDigest {
+		return Installation{}, ErrActivationConflict
 	}
 	owner := principal.Owner()
 	result, err := tx.Exec(ctx, `
@@ -762,6 +847,7 @@ func (r *PostgresRepository) ActivateInstallation(
 		command.InstallationID, command.ActivatedAt, map[string]string{
 			"agent_installation_id": command.InstallationID.String(), "agent_version_id": installation.SelectedVersionID.String(),
 			"policy_snapshot_id": installation.PolicySnapshotID.String(),
+			"content_digest":     hex.EncodeToString(command.VersionDigest[:]),
 		}); err != nil {
 		return Installation{}, err
 	}
@@ -778,8 +864,8 @@ func (r *PostgresRepository) SelectInstallationVersion(
 	command VersionSelectionCommand,
 ) (Installation, error) {
 	if r == nil || r.postgres == nil || !validPrincipal(principal) || command.InstallationID == uuid.Nil ||
-		command.VersionID == uuid.Nil || command.SelectedAt.IsZero() || !validAuditEvidence(command.Audit) ||
-		!validPolicyMaterial(command.Policy, command.InstallationID, command.VersionID) {
+		command.VersionID == uuid.Nil || command.BuildPolicy == nil || command.SelectedAt.IsZero() ||
+		!validAuditEvidence(command.Audit) {
 		return Installation{}, ErrInvalidRepositoryCommand
 	}
 	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
@@ -801,17 +887,23 @@ func (r *PostgresRepository) SelectInstallationVersion(
 		return Installation{}, ErrActivationConflict
 	}
 	owner := principal.Owner()
-	var versionNumber int64
+	var definitionStatus string
 	err = tx.QueryRow(ctx, `
-		SELECT version_number FROM agent_versions
-		WHERE id = $4 AND definition_id = $3
-		  AND tenant_id = $1 AND owner_scope = 'USER' AND owner_id = $2
-	`, owner.TenantID, owner.OwnerID, installation.DefinitionID, command.VersionID).Scan(&versionNumber)
+		SELECT d.status
+		FROM agent_versions v
+		JOIN agent_definitions d ON d.id = v.definition_id
+		WHERE v.id = $4 AND v.definition_id = $3
+		  AND v.tenant_id = $1 AND v.owner_scope = 'USER' AND v.owner_id = $2
+		  AND d.tenant_id = $1 AND d.owner_scope = 'USER' AND d.owner_id = $2
+	`, owner.TenantID, owner.OwnerID, installation.DefinitionID, command.VersionID).Scan(&definitionStatus)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Installation{}, ErrNotFound
 	}
 	if err != nil {
 		return Installation{}, ErrServiceUnavailable
+	}
+	if definitionStatus == definitionStatusArchived {
+		return Installation{}, ErrDefinitionArchived
 	}
 	if revoked, err := versionIsRevoked(ctx, tx, principal, command.VersionID); err != nil {
 		return Installation{}, err
@@ -829,24 +921,33 @@ func (r *PostgresRepository) SelectInstallationVersion(
 	if err != nil {
 		return Installation{}, ErrServiceUnavailable
 	}
-	if command.Policy.PolicyVersion != currentPolicyVersion+1 {
-		return Installation{}, ErrVersionConflict
+	version, err := loadVersion(ctx, tx, principal, command.VersionID)
+	if err != nil {
+		return Installation{}, err
 	}
-	if err := insertPolicy(ctx, tx, principal, command.Policy); err != nil {
+	policy, err := command.BuildPolicy(currentPolicyVersion+1, version)
+	if err != nil {
+		return Installation{}, err
+	}
+	if !validPolicyMaterial(policy, command.InstallationID, command.VersionID) ||
+		policy.PolicyVersion != currentPolicyVersion+1 {
+		return Installation{}, ErrInvalidRepositoryCommand
+	}
+	if err := insertPolicy(ctx, tx, principal, policy); err != nil {
 		return Installation{}, err
 	}
 	result, err := tx.Exec(ctx, `
 		UPDATE installations
 		SET selected_version_id = $4, policy_snapshot_id = $5, updated_at = $6
 		WHERE id = $3 AND tenant_id = $1 AND owner_scope = 'USER' AND owner_id = $2 AND status = 'active'
-	`, owner.TenantID, owner.OwnerID, command.InstallationID, command.VersionID, command.Policy.ID, command.SelectedAt.UTC())
+	`, owner.TenantID, owner.OwnerID, command.InstallationID, command.VersionID, policy.ID, command.SelectedAt.UTC())
 	if err != nil || result.RowsAffected() != 1 {
 		return Installation{}, ErrServiceUnavailable
 	}
 	if err := recordAudit(ctx, tx, principal, command.Audit, "agent_installation_version_selected", "agent_installation",
 		command.InstallationID, command.SelectedAt, map[string]string{
 			"agent_installation_id": command.InstallationID.String(), "agent_version_id": command.VersionID.String(),
-			"policy_snapshot_id": command.Policy.ID.String(),
+			"policy_snapshot_id": policy.ID.String(),
 		}); err != nil {
 		return Installation{}, err
 	}
@@ -905,9 +1006,10 @@ func (r *PostgresRepository) ArchiveInstallation(
 func (r *PostgresRepository) InsertRuntimeBinding(
 	ctx context.Context,
 	principal Principal,
-	command RuntimeBindingRecordCommand,
+	command PersistRuntimeBindingCommand,
 ) (RuntimeBindingRecord, error) {
-	if r == nil || r.postgres == nil || !validPrincipal(principal) || !validRuntimeBinding(command) {
+	if r == nil || r.postgres == nil || !validPrincipal(principal) ||
+		!validRuntimeBinding(command.RuntimeBindingRecordCommand) || !validAuditEvidence(command.Audit) || command.CreatedAt.IsZero() {
 		return RuntimeBindingRecord{}, ErrInvalidRepositoryCommand
 	}
 	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
@@ -1370,6 +1472,40 @@ func versionIsRevoked(ctx context.Context, queryer queryRower, principal Princip
 	return exists, nil
 }
 
+func activationAuditMatches(
+	ctx context.Context,
+	queryer queryRower,
+	principal Principal,
+	command ActivationCommand,
+) (bool, error) {
+	var versionText, policyText, digestText string
+	err := queryer.QueryRow(ctx, `
+		SELECT metadata->>'agent_version_id', metadata->>'policy_snapshot_id', metadata->>'content_digest'
+		FROM audit_events
+		WHERE event_type = 'agent_installation_activated' AND outcome = 'success'
+		  AND actor_user_id = $1 AND device_id = $2 AND object_type = 'agent_installation' AND object_id = $3
+		  AND metadata->>'tenant_id' = $4 AND metadata->>'owner_scope' = 'USER' AND metadata->>'owner_id' = $1::text
+		ORDER BY created_at ASC, id ASC
+		LIMIT 1
+	`, principal.UserID, principal.DeviceID, command.InstallationID, principal.PersonalSpaceID.String()).Scan(
+		&versionText, &policyText, &digestText,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, ErrServiceUnavailable
+	}
+	if err != nil {
+		return false, ErrServiceUnavailable
+	}
+	versionID, versionErr := uuid.Parse(versionText)
+	policyID, policyErr := uuid.Parse(policyText)
+	digest, digestErr := hex.DecodeString(digestText)
+	if versionErr != nil || policyErr != nil || digestErr != nil || len(digest) != sha256.Size {
+		return false, ErrServiceUnavailable
+	}
+	return versionID == command.AgentVersionID && policyID == command.PolicySnapshotID &&
+		subtle.ConstantTimeCompare(digest, command.VersionDigest[:]) == 1, nil
+}
+
 func findVersionRevocation(
 	ctx context.Context,
 	queryer queryRower,
@@ -1428,7 +1564,7 @@ func validVersionMaterial(material VersionMaterial, expectedNumber int64) bool {
 
 func validCreateInstallation(command CreateInstallationCommand) bool {
 	return command.InstallationID != uuid.Nil && command.DefinitionID != uuid.Nil && command.VersionID != uuid.Nil &&
-		validPolicyMaterial(command.Policy, command.InstallationID, command.VersionID) &&
+		command.BuildPolicy != nil &&
 		validIdempotency(command.Idempotency, command.CreatedAt) && validAuditEvidence(command.Audit) && !command.CreatedAt.IsZero()
 }
 
@@ -1442,7 +1578,7 @@ func validPolicyMaterial(policy PolicyMaterial, installationID uuid.UUID, versio
 func validRuntimeBinding(command RuntimeBindingRecordCommand) bool {
 	return command.BindingID != uuid.Nil && command.AgentInstallationID != uuid.Nil && command.AgentVersionID != uuid.Nil &&
 		command.RuntimeProfileID != uuid.Nil && command.PolicySnapshotID != uuid.Nil && !zeroDigest(command.ToolPermissionDigest) &&
-		validToken(command.RuntimeVersion, 128) && validAuditEvidence(command.Audit) && !command.CreatedAt.IsZero()
+		validToken(command.RuntimeVersion, 128)
 }
 
 func validVersionRevocation(command VersionRevocationCommand) bool {

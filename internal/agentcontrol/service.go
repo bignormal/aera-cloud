@@ -26,6 +26,13 @@ type ServiceRepository interface {
 	ListVersions(context.Context, Principal, uuid.UUID) ([]Version, error)
 	AppendVersionRevocation(context.Context, Principal, VersionRevocationCommand) (VersionRevocation, error)
 	RecordDenied(context.Context, Principal, DeniedAuditCommand) error
+	CreatePendingInstallation(context.Context, Principal, CreateInstallationCommand) (InstallationCreation, error)
+	FindInstallation(context.Context, Principal, uuid.UUID) (Installation, bool, error)
+	LoadActivationContext(context.Context, Principal, uuid.UUID) (InstallationActivationContext, bool, error)
+	ActivateInstallation(context.Context, Principal, ActivationCommand) (Installation, error)
+	SelectInstallationVersion(context.Context, Principal, VersionSelectionCommand) (Installation, error)
+	ArchiveInstallation(context.Context, Principal, ArchiveInstallationCommand) (Installation, error)
+	InsertRuntimeBinding(context.Context, Principal, PersistRuntimeBindingCommand) (RuntimeBindingRecord, error)
 }
 
 type ServiceConfig struct {
@@ -68,6 +75,33 @@ type RevokeVersionRequest struct {
 	SupersedingVersionID *uuid.UUID
 	IdempotencyKey       string
 	RequestID            string
+}
+
+type CreateInstallationRequest struct {
+	DefinitionID   uuid.UUID
+	VersionID      uuid.UUID
+	IdempotencyKey string
+	RequestID      string
+}
+
+type ActivateInstallationRequest struct {
+	InstallationID   uuid.UUID
+	RuntimeProfileID uuid.UUID
+	VersionDigest    [sha256.Size]byte
+	Timestamp        int64
+	DeviceProof      []byte
+	RequestID        string
+}
+
+type SelectInstallationVersionRequest struct {
+	InstallationID uuid.UUID
+	VersionID      uuid.UUID
+	RequestID      string
+}
+
+type ArchiveInstallationRequest struct {
+	InstallationID uuid.UUID
+	RequestID      string
 }
 
 type DeniedAuditCommand struct {
@@ -352,6 +386,219 @@ func (s *Service) RevokeVersion(
 	return cloneVersionRevocation(revocation), nil
 }
 
+func (s *Service) CreateInstallation(
+	ctx context.Context,
+	principal Principal,
+	request CreateInstallationRequest,
+) (InstallationCreation, error) {
+	if s == nil || !validPrincipal(principal) || request.DefinitionID == uuid.Nil || request.VersionID == uuid.Nil ||
+		!validIdempotencyKey(request.IdempotencyKey) || !validRequestID(request.RequestID) {
+		return InstallationCreation{}, ErrInvalidRequest
+	}
+	requestHash, err := hashRequest(struct {
+		Operation    string `json:"operation"`
+		DefinitionID string `json:"definition_id"`
+		VersionID    string `json:"version_id"`
+	}{
+		Operation: operationCreateInstallation, DefinitionID: request.DefinitionID.String(), VersionID: request.VersionID.String(),
+	})
+	if err != nil {
+		return InstallationCreation{}, ErrInvalidRequest
+	}
+	now := s.clock().UTC()
+	installationID, policyID, idempotencyID, auditID := s.newID(), s.newID(), s.newID(), s.newID()
+	if installationID == uuid.Nil || policyID == uuid.Nil || idempotencyID == uuid.Nil || auditID == uuid.Nil {
+		return InstallationCreation{}, ErrServiceUnavailable
+	}
+	created, err := s.repository.CreatePendingInstallation(ctx, principal, CreateInstallationCommand{
+		InstallationID: installationID, DefinitionID: request.DefinitionID, VersionID: request.VersionID,
+		BuildPolicy: func(version Version) (PolicyMaterial, error) {
+			return s.buildPolicy(installationID, policyID, version, 1, now)
+		},
+		Idempotency: IdempotencyEvidence{
+			ID: idempotencyID, KeyHash: sha256.Sum256([]byte(request.IdempotencyKey)),
+			RequestHash: requestHash, ExpiresAt: now.Add(idempotencyLifetime),
+		},
+		Audit: AuditEvidence{EventID: auditID, RequestID: request.RequestID}, CreatedAt: now,
+	})
+	if errors.Is(err, ErrNotFound) {
+		if auditErr := s.recordDenied(ctx, principal, "agent_definition", request.DefinitionID, request.RequestID); auditErr != nil {
+			return InstallationCreation{}, auditErr
+		}
+	}
+	if err != nil {
+		return InstallationCreation{}, err
+	}
+	return cloneInstallationCreation(created), nil
+}
+
+func (s *Service) ActivateInstallation(
+	ctx context.Context,
+	principal Principal,
+	request ActivateInstallationRequest,
+) (Installation, error) {
+	if s == nil || !validPrincipal(principal) || request.InstallationID == uuid.Nil || request.RuntimeProfileID == uuid.Nil ||
+		zeroDigest(request.VersionDigest) || request.Timestamp <= 0 || len(request.DeviceProof) != 64 ||
+		!validRequestID(request.RequestID) {
+		return Installation{}, ErrInvalidRequest
+	}
+	activationContext, found, err := s.repository.LoadActivationContext(ctx, principal, request.InstallationID)
+	if err != nil {
+		return Installation{}, err
+	}
+	if !found || activationContext.Installation.DeviceID != principal.DeviceID {
+		if err := s.recordDenied(ctx, principal, "agent_installation", request.InstallationID, request.RequestID); err != nil {
+			return Installation{}, err
+		}
+		return Installation{}, ErrNotFound
+	}
+	if activationContext.Installation.PolicySnapshotID == nil {
+		return Installation{}, ErrServiceUnavailable
+	}
+	if activationContext.Version.ID != activationContext.Installation.SelectedVersionID ||
+		activationContext.Version.ContentDigest != request.VersionDigest {
+		return Installation{}, ErrInvalidDeviceProof
+	}
+	now := s.clock().UTC()
+	if err := VerifyActivationProof(activationContext.DevicePublicKey, ActivationProofInput{
+		AgentInstallationID: request.InstallationID, RuntimeProfileID: request.RuntimeProfileID,
+		VersionDigest: request.VersionDigest, Timestamp: request.Timestamp,
+	}, request.DeviceProof, now); err != nil {
+		return Installation{}, err
+	}
+	auditID := s.newID()
+	if auditID == uuid.Nil {
+		return Installation{}, ErrServiceUnavailable
+	}
+	installation, err := s.repository.ActivateInstallation(ctx, principal, ActivationCommand{
+		InstallationID: request.InstallationID, RuntimeProfileID: request.RuntimeProfileID,
+		AgentVersionID: activationContext.Version.ID, PolicySnapshotID: *activationContext.Installation.PolicySnapshotID,
+		VersionDigest: request.VersionDigest,
+		Audit:         AuditEvidence{EventID: auditID, RequestID: request.RequestID}, ActivatedAt: now,
+	})
+	if errors.Is(err, ErrNotFound) {
+		if auditErr := s.recordDenied(ctx, principal, "agent_installation", request.InstallationID, request.RequestID); auditErr != nil {
+			return Installation{}, auditErr
+		}
+	}
+	if err != nil {
+		return Installation{}, err
+	}
+	return cloneInstallation(installation), nil
+}
+
+func (s *Service) SelectInstallationVersion(
+	ctx context.Context,
+	principal Principal,
+	request SelectInstallationVersionRequest,
+) (Installation, error) {
+	if s == nil || !validPrincipal(principal) || request.InstallationID == uuid.Nil || request.VersionID == uuid.Nil ||
+		!validRequestID(request.RequestID) {
+		return Installation{}, ErrInvalidRequest
+	}
+	policyID, auditID := s.newID(), s.newID()
+	if policyID == uuid.Nil || auditID == uuid.Nil {
+		return Installation{}, ErrServiceUnavailable
+	}
+	now := s.clock().UTC()
+	selected, err := s.repository.SelectInstallationVersion(ctx, principal, VersionSelectionCommand{
+		InstallationID: request.InstallationID, VersionID: request.VersionID,
+		BuildPolicy: func(policyVersion int64, version Version) (PolicyMaterial, error) {
+			return s.buildPolicy(request.InstallationID, policyID, version, policyVersion, now)
+		},
+		Audit: AuditEvidence{EventID: auditID, RequestID: request.RequestID}, SelectedAt: now,
+	})
+	if errors.Is(err, ErrNotFound) {
+		if auditErr := s.recordDenied(ctx, principal, "agent_installation", request.InstallationID, request.RequestID); auditErr != nil {
+			return Installation{}, auditErr
+		}
+	}
+	if err != nil {
+		return Installation{}, err
+	}
+	return cloneInstallation(selected), nil
+}
+
+func (s *Service) ArchiveInstallation(
+	ctx context.Context,
+	principal Principal,
+	request ArchiveInstallationRequest,
+) (Installation, error) {
+	if s == nil || !validPrincipal(principal) || request.InstallationID == uuid.Nil || !validRequestID(request.RequestID) {
+		return Installation{}, ErrInvalidRequest
+	}
+	auditID := s.newID()
+	if auditID == uuid.Nil {
+		return Installation{}, ErrServiceUnavailable
+	}
+	installation, err := s.repository.ArchiveInstallation(ctx, principal, ArchiveInstallationCommand{
+		InstallationID: request.InstallationID, Audit: AuditEvidence{EventID: auditID, RequestID: request.RequestID},
+		ArchivedAt: s.clock().UTC(),
+	})
+	if errors.Is(err, ErrNotFound) {
+		if auditErr := s.recordDenied(ctx, principal, "agent_installation", request.InstallationID, request.RequestID); auditErr != nil {
+			return Installation{}, auditErr
+		}
+	}
+	if err != nil {
+		return Installation{}, err
+	}
+	return cloneInstallation(installation), nil
+}
+
+func (s *Service) RecordRuntimeBinding(
+	ctx context.Context,
+	principal Principal,
+	command RuntimeBindingRecordCommand,
+	requestID string,
+) (RuntimeBindingRecord, error) {
+	if s == nil || !validPrincipal(principal) || !validRuntimeBinding(command) || !validRequestID(requestID) {
+		return RuntimeBindingRecord{}, ErrInvalidRequest
+	}
+	auditID := s.newID()
+	if auditID == uuid.Nil {
+		return RuntimeBindingRecord{}, ErrServiceUnavailable
+	}
+	record, err := s.repository.InsertRuntimeBinding(ctx, principal, PersistRuntimeBindingCommand{
+		RuntimeBindingRecordCommand: command,
+		Audit:                       AuditEvidence{EventID: auditID, RequestID: requestID}, CreatedAt: s.clock().UTC(),
+	})
+	if errors.Is(err, ErrNotFound) {
+		if auditErr := s.recordDenied(ctx, principal, "agent_installation", command.AgentInstallationID, requestID); auditErr != nil {
+			return RuntimeBindingRecord{}, auditErr
+		}
+	}
+	if err != nil {
+		return RuntimeBindingRecord{}, err
+	}
+	return record, nil
+}
+
+func (s *Service) buildPolicy(
+	installationID uuid.UUID,
+	policyID uuid.UUID,
+	version Version,
+	policyVersion int64,
+	createdAt time.Time,
+) (PolicyMaterial, error) {
+	document, err := policyDocumentForVersion(version)
+	if err != nil {
+		return PolicyMaterial{}, err
+	}
+	digest := sha256.Sum256(document)
+	attestation, err := s.signer.SignPolicy(PolicySignatureInput{
+		PolicyID: policyID, PolicyVersion: policyVersion, DocumentDigest: digest,
+	})
+	if err != nil {
+		return PolicyMaterial{}, ErrServiceUnavailable
+	}
+	return PolicyMaterial{
+		ID: policyID, InstallationID: installationID, AgentVersionID: version.ID, PolicyVersion: policyVersion,
+		Document: document, ContentDigest: digest, Issuer: attestation.Issuer, SigningKeyID: attestation.KeyID,
+		Signature: append([]byte(nil), attestation.Signature...), CreatedAt: createdAt.UTC(),
+	}, nil
+}
+
 func (s *Service) recordDenied(
 	ctx context.Context,
 	principal Principal,
@@ -425,6 +672,47 @@ func digestHex(value []byte) string {
 	return hex.EncodeToString(digest[:])
 }
 
+type policyDocumentV1 struct {
+	SchemaVersion        int                           `json:"schema_version"`
+	AgentDefinitionID    string                        `json:"agent_definition_id"`
+	AgentVersionID       string                        `json:"agent_version_id"`
+	VersionDigest        string                        `json:"version_digest"`
+	ModelConstraints     canonicalModelConstraints     `json:"model_constraints"`
+	Tools                canonicalTools                `json:"tools"`
+	RuntimeCompatibility canonicalRuntimeCompatibility `json:"runtime_compatibility"`
+	PublicationAllowed   bool                          `json:"publication_allowed"`
+	DenyRules            []string                      `json:"deny_rules"`
+}
+
+func policyDocumentForVersion(version Version) ([]byte, error) {
+	if version.ID == uuid.Nil || version.DefinitionID == uuid.Nil || zeroDigest(version.ContentDigest) ||
+		len(version.CanonicalManifest) == 0 || len(version.CanonicalManifest) > MaxManifestBytes ||
+		len(version.Bundle) == 0 || len(version.Bundle) > MaxBundleBytes {
+		return nil, ErrInvalidAgentContent
+	}
+	content := make([]byte, 0, len(version.CanonicalManifest)+1+len(version.Bundle))
+	content = append(content, version.CanonicalManifest...)
+	content = append(content, 0)
+	content = append(content, version.Bundle...)
+	if sha256.Sum256(content) != version.ContentDigest {
+		return nil, ErrInvalidAgentContent
+	}
+	var manifest canonicalManifest
+	if err := decodeStrictJSON(version.CanonicalManifest, &manifest); err != nil || manifest.SchemaVersion != 1 {
+		return nil, ErrInvalidAgentContent
+	}
+	document, err := marshalCanonical(policyDocumentV1{
+		SchemaVersion: 1, AgentDefinitionID: version.DefinitionID.String(), AgentVersionID: version.ID.String(),
+		VersionDigest: hex.EncodeToString(version.ContentDigest[:]), ModelConstraints: manifest.ModelConstraints,
+		Tools: manifest.Tools, RuntimeCompatibility: manifest.RuntimeCompatibility,
+		PublicationAllowed: false, DenyRules: []string{},
+	})
+	if err != nil || len(document) > MaxManifestBytes {
+		return nil, ErrInvalidAgentContent
+	}
+	return document, nil
+}
+
 func clonePublication(value Publication) Publication {
 	value.Definition = cloneDefinition(value.Definition)
 	value.Version = cloneVersion(value.Version)
@@ -469,6 +757,52 @@ func cloneVersion(value Version) Version {
 func cloneVersionRevocation(value VersionRevocation) VersionRevocation {
 	value.SupersedingVersionID = cloneUUIDPointer(value.SupersedingVersionID)
 	return value
+}
+
+func cloneInstallationCreation(value InstallationCreation) InstallationCreation {
+	value.Installation = cloneInstallation(value.Installation)
+	value.Policy = clonePolicySnapshot(value.Policy)
+	return value
+}
+
+func cloneInstallation(value Installation) Installation {
+	value.RuntimeProfileID = cloneUUIDPointer(value.RuntimeProfileID)
+	value.PolicySnapshotID = cloneUUIDPointer(value.PolicySnapshotID)
+	value.ActivatedAt = cloneTimePointer(value.ActivatedAt)
+	value.ArchivedAt = cloneTimePointer(value.ArchivedAt)
+	return value
+}
+
+func clonePolicySnapshot(value PolicySnapshot) PolicySnapshot {
+	value.Document = append([]byte(nil), value.Document...)
+	value.Signature = append([]byte(nil), value.Signature...)
+	return value
+}
+
+func policySnapshotFromMaterial(material PolicyMaterial) PolicySnapshot {
+	return PolicySnapshot{
+		ID: material.ID, InstallationID: material.InstallationID, AgentVersionID: material.AgentVersionID,
+		PolicyVersion: material.PolicyVersion, Document: append([]byte(nil), material.Document...),
+		ContentDigest: material.ContentDigest, Issuer: material.Issuer, SigningKeyID: material.SigningKeyID,
+		Signature: append([]byte(nil), material.Signature...), CreatedAt: material.CreatedAt,
+	}
+}
+
+func runtimeBindingFromCommand(command PersistRuntimeBindingCommand) RuntimeBindingRecord {
+	return RuntimeBindingRecord{
+		ID: command.BindingID, AgentInstallationID: command.AgentInstallationID,
+		AgentVersionID: command.AgentVersionID, RuntimeProfileID: command.RuntimeProfileID,
+		RuntimeVersion: command.RuntimeVersion, PolicySnapshotID: command.PolicySnapshotID,
+		ToolPermissionDigest: command.ToolPermissionDigest, CreatedAt: command.CreatedAt.UTC(),
+	}
+}
+
+func cloneTimePointer(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 func uuidStringPointer(value *uuid.UUID) *string {

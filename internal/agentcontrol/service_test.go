@@ -3,9 +3,12 @@ package agentcontrol
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"errors"
+	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -289,6 +292,296 @@ func TestServiceRevokeVersionHashesIdempotencyAndPreservesAppendOnlyConflictSema
 	}
 }
 
+func TestServiceCreateInstallationSignsBoundedPolicyAfterOwnerAuthorizationAndReplays(t *testing.T) {
+	fixture := newAgentControlServiceFixture(t)
+	definitionID := uuid.New()
+	versionID := uuid.New()
+	version := policyVersionFixture(t, definitionID, versionID, 1)
+	latest := versionID
+	fixture.repository.findDefinition = func(context.Context, Principal, uuid.UUID) (Definition, bool, error) {
+		return Definition{ID: definitionID, Status: definitionStatusActive, LatestVersionID: &latest}, true, nil
+	}
+	fixture.repository.findVersion = func(context.Context, Principal, uuid.UUID) (Version, bool, error) {
+		return version, true, nil
+	}
+	policyBuilds := 0
+	var storedRequest [sha256.Size]byte
+	var storedKey [sha256.Size]byte
+	var stored InstallationCreation
+	fixture.repository.createPendingInstallation = func(
+		_ context.Context,
+		_ Principal,
+		command CreateInstallationCommand,
+	) (InstallationCreation, error) {
+		if stored.Installation.ID != uuid.Nil {
+			if command.Idempotency.KeyHash == storedKey && command.Idempotency.RequestHash != storedRequest {
+				return InstallationCreation{}, ErrIdempotencyConflict
+			}
+			replayed := cloneInstallationCreation(stored)
+			replayed.Replayed = true
+			return replayed, nil
+		}
+		policyBuilds++
+		policy, err := command.BuildPolicy(version)
+		if err != nil {
+			return InstallationCreation{}, err
+		}
+		storedRequest = command.Idempotency.RequestHash
+		storedKey = command.Idempotency.KeyHash
+		policyID := policy.ID
+		stored = InstallationCreation{
+			Installation: Installation{
+				ID: command.InstallationID, DeviceID: fixture.principal.DeviceID, DeviceInstallationID: uuid.New(),
+				DefinitionID: definitionID, SelectedVersionID: versionID, PolicySnapshotID: &policyID,
+				UpdatePolicy: installationUpdatePolicy, Status: InstallationStatusPending,
+			},
+			Policy: policySnapshotFromMaterial(policy),
+		}
+		return stored, nil
+	}
+	request := CreateInstallationRequest{
+		DefinitionID: definitionID, VersionID: versionID,
+		IdempotencyKey: "install-one", RequestID: "request-install-1",
+	}
+	created, err := fixture.service.CreateInstallation(context.Background(), fixture.principal, request)
+	if err != nil {
+		t.Fatalf("CreateInstallation() error = %v", err)
+	}
+	if created.Installation.Status != InstallationStatusPending || created.Installation.RuntimeProfileID != nil ||
+		created.Installation.DeviceInstallationID == uuid.Nil || policyBuilds != 1 {
+		t.Fatalf("CreateInstallation() = %+v policyBuilds=%d", created, policyBuilds)
+	}
+	if strings.Contains(strings.ToLower(string(created.Policy.Document)), "memory") ||
+		strings.Contains(strings.ToLower(string(created.Policy.Document)), "profile_path") ||
+		strings.Contains(strings.ToLower(string(created.Policy.Document)), "credential") {
+		t.Fatalf("policy contains private runtime fields: %s", created.Policy.Document)
+	}
+	if err := fixture.verifier.VerifyPolicy(PolicyAttestation{
+		Issuer: created.Policy.Issuer, KeyID: created.Policy.SigningKeyID, PolicyID: created.Policy.ID,
+		PolicyVersion: created.Policy.PolicyVersion, DocumentDigest: sha256.Sum256(created.Policy.Document),
+		Signature: created.Policy.Signature,
+	}); err != nil {
+		t.Fatalf("VerifyPolicy() error = %v", err)
+	}
+	replayed, err := fixture.service.CreateInstallation(context.Background(), fixture.principal, request)
+	if err != nil || !replayed.Replayed || replayed.Installation.ID != created.Installation.ID || policyBuilds != 1 {
+		t.Fatalf("CreateInstallation(replay) = %+v error=%v policyBuilds=%d", replayed, err, policyBuilds)
+	}
+}
+
+func TestServiceActivationVerifiesDeviceProofDigestProfileTimestampAndReplay(t *testing.T) {
+	fixture := newAgentControlServiceFixture(t)
+	private := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x55}, ed25519.SeedSize))
+	installationID := uuid.New()
+	profileID := uuid.New()
+	version := policyVersionFixture(t, uuid.New(), uuid.New(), 1)
+	policyID := uuid.New()
+	activationContext := InstallationActivationContext{
+		Installation: Installation{
+			ID: installationID, DeviceID: fixture.principal.DeviceID, DefinitionID: version.DefinitionID,
+			SelectedVersionID: version.ID, PolicySnapshotID: &policyID, Status: InstallationStatusPending,
+		},
+		Version: version, DevicePublicKey: private.Public().(ed25519.PublicKey),
+	}
+	fixture.repository.loadActivationContext = func(context.Context, Principal, uuid.UUID) (InstallationActivationContext, bool, error) {
+		return activationContext, true, nil
+	}
+	activationCalls := 0
+	fixture.repository.activateInstallation = func(_ context.Context, _ Principal, command ActivationCommand) (Installation, error) {
+		activationCalls++
+		activated := activationContext.Installation
+		activated.Status = InstallationStatusActive
+		activated.RuntimeProfileID = &command.RuntimeProfileID
+		return activated, nil
+	}
+	proofInput := ActivationProofInput{
+		AgentInstallationID: installationID, RuntimeProfileID: profileID,
+		VersionDigest: version.ContentDigest, Timestamp: fixture.now.Unix(),
+	}
+	payload, err := ActivationProofBytes(proofInput)
+	if err != nil {
+		t.Fatalf("ActivationProofBytes() error = %v", err)
+	}
+	request := ActivateInstallationRequest{
+		InstallationID: installationID, RuntimeProfileID: profileID, VersionDigest: version.ContentDigest,
+		Timestamp: fixture.now.Unix(), DeviceProof: ed25519.Sign(private, payload), RequestID: "request-activate-1",
+	}
+	activated, err := fixture.service.ActivateInstallation(context.Background(), fixture.principal, request)
+	if err != nil || activated.RuntimeProfileID == nil || *activated.RuntimeProfileID != profileID {
+		t.Fatalf("ActivateInstallation() = %+v error=%v", activated, err)
+	}
+	replayed, err := fixture.service.ActivateInstallation(context.Background(), fixture.principal, request)
+	if err != nil || replayed.RuntimeProfileID == nil || *replayed.RuntimeProfileID != profileID {
+		t.Fatalf("ActivateInstallation(replay) = %+v error=%v", replayed, err)
+	}
+	if activationCalls != 2 {
+		t.Fatalf("activation calls = %d", activationCalls)
+	}
+
+	invalid := []ActivateInstallationRequest{
+		withActivationRequestProfile(request, uuid.New()),
+		withActivationRequestDigest(request, sha256.Sum256([]byte("wrong version"))),
+		withActivationRequestTimestamp(t, request, private, fixture.now.Add(-6*time.Minute).Unix()),
+	}
+	for index, candidate := range invalid {
+		if _, err := fixture.service.ActivateInstallation(context.Background(), fixture.principal, candidate); !errors.Is(err, ErrInvalidDeviceProof) {
+			t.Fatalf("invalid activation %d error = %v", index, err)
+		}
+	}
+	if activationCalls != 2 {
+		t.Fatalf("activation calls after invalid proofs = %d", activationCalls)
+	}
+	activationContext.DevicePublicKey = ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x56}, ed25519.SeedSize)).Public().(ed25519.PublicKey)
+	if _, err := fixture.service.ActivateInstallation(context.Background(), fixture.principal, request); !errors.Is(err, ErrInvalidDeviceProof) {
+		t.Fatalf("ActivateInstallation(wrong device key) error = %v", err)
+	}
+}
+
+func TestServiceSelectionSignsNextPolicyAndPreservesLastVersionOnFailure(t *testing.T) {
+	fixture := newAgentControlServiceFixture(t)
+	definitionID := uuid.New()
+	oldVersionID := uuid.New()
+	newVersion := policyVersionFixture(t, definitionID, uuid.New(), 2)
+	profileID := uuid.New()
+	oldPolicyID := uuid.New()
+	installation := Installation{
+		ID: uuid.New(), DeviceID: fixture.principal.DeviceID, DefinitionID: definitionID,
+		SelectedVersionID: oldVersionID, RuntimeProfileID: &profileID, PolicySnapshotID: &oldPolicyID,
+		Status: InstallationStatusActive,
+	}
+	fixture.repository.findInstallation = func(context.Context, Principal, uuid.UUID) (Installation, bool, error) {
+		return installation, true, nil
+	}
+	fixture.repository.findVersion = func(context.Context, Principal, uuid.UUID) (Version, bool, error) {
+		return newVersion, true, nil
+	}
+	var built PolicyMaterial
+	fixture.repository.selectInstallationVersion = func(
+		_ context.Context,
+		_ Principal,
+		command VersionSelectionCommand,
+	) (Installation, error) {
+		policy, err := command.BuildPolicy(2, newVersion)
+		if err != nil {
+			return Installation{}, err
+		}
+		built = policy
+		selected := installation
+		selected.SelectedVersionID = command.VersionID
+		selected.PolicySnapshotID = &policy.ID
+		return selected, nil
+	}
+	selected, err := fixture.service.SelectInstallationVersion(context.Background(), fixture.principal, SelectInstallationVersionRequest{
+		InstallationID: installation.ID, VersionID: newVersion.ID, RequestID: "request-select-1",
+	})
+	if err != nil || selected.SelectedVersionID != newVersion.ID || built.PolicyVersion != 2 {
+		t.Fatalf("SelectInstallationVersion() = %+v policy=%+v error=%v", selected, built, err)
+	}
+	if err := fixture.verifier.VerifyPolicy(PolicyAttestation{
+		Issuer: built.Issuer, KeyID: built.SigningKeyID, PolicyID: built.ID,
+		PolicyVersion: built.PolicyVersion, DocumentDigest: built.ContentDigest, Signature: built.Signature,
+	}); err != nil {
+		t.Fatalf("VerifyPolicy(selection) error = %v", err)
+	}
+	fixture.repository.selectInstallationVersion = func(context.Context, Principal, VersionSelectionCommand) (Installation, error) {
+		return Installation{}, ErrServiceUnavailable
+	}
+	failed, err := fixture.service.SelectInstallationVersion(context.Background(), fixture.principal, SelectInstallationVersionRequest{
+		InstallationID: installation.ID, VersionID: newVersion.ID, RequestID: "request-select-2",
+	})
+	if !errors.Is(err, ErrServiceUnavailable) || failed.SelectedVersionID != uuid.Nil || installation.SelectedVersionID != oldVersionID {
+		t.Fatalf("failed selection = %+v error=%v original=%+v", failed, err, installation)
+	}
+}
+
+func TestServiceArchiveAndBindingUseMetadataOnlyCommands(t *testing.T) {
+	fixture := newAgentControlServiceFixture(t)
+	installation := Installation{ID: uuid.New(), DeviceID: fixture.principal.DeviceID, Status: InstallationStatusActive}
+	fixture.repository.archiveInstallation = func(_ context.Context, _ Principal, command ArchiveInstallationCommand) (Installation, error) {
+		archived := installation
+		archived.Status = InstallationStatusArchived
+		archived.ArchivedAt = &command.ArchivedAt
+		return archived, nil
+	}
+	archived, err := fixture.service.ArchiveInstallation(context.Background(), fixture.principal, ArchiveInstallationRequest{
+		InstallationID: installation.ID, RequestID: "request-archive-1",
+	})
+	if err != nil || archived.Status != InstallationStatusArchived {
+		t.Fatalf("ArchiveInstallation() = %+v error=%v", archived, err)
+	}
+
+	commandType := reflect.TypeOf(RuntimeBindingRecordCommand{})
+	wantFields := []string{
+		"BindingID", "AgentInstallationID", "AgentVersionID", "RuntimeProfileID",
+		"RuntimeVersion", "PolicySnapshotID", "ToolPermissionDigest",
+	}
+	if commandType.NumField() != len(wantFields) {
+		t.Fatalf("RuntimeBindingRecordCommand fields = %d, want %d", commandType.NumField(), len(wantFields))
+	}
+	for index, name := range wantFields {
+		if commandType.Field(index).Name != name {
+			t.Fatalf("RuntimeBindingRecordCommand field %d = %s, want %s", index, commandType.Field(index).Name, name)
+		}
+	}
+	binding := RuntimeBindingRecordCommand{
+		BindingID: uuid.New(), AgentInstallationID: uuid.New(), AgentVersionID: uuid.New(),
+		RuntimeProfileID: uuid.New(), RuntimeVersion: "0.18.2-agentera.1", PolicySnapshotID: uuid.New(),
+		ToolPermissionDigest: sha256.Sum256([]byte("tools")),
+	}
+	var persisted PersistRuntimeBindingCommand
+	fixture.repository.insertRuntimeBinding = func(_ context.Context, _ Principal, command PersistRuntimeBindingCommand) (RuntimeBindingRecord, error) {
+		persisted = command
+		return runtimeBindingFromCommand(command), nil
+	}
+	stored, err := fixture.service.RecordRuntimeBinding(context.Background(), fixture.principal, binding, "request-binding-1")
+	if err != nil || stored.ID != binding.BindingID || persisted.Audit.EventID == uuid.Nil || persisted.CreatedAt.IsZero() {
+		t.Fatalf("RecordRuntimeBinding() = %+v persisted=%+v error=%v", stored, persisted, err)
+	}
+}
+
+func policyVersionFixture(t *testing.T, definitionID uuid.UUID, versionID uuid.UUID, number int64) Version {
+	t.Helper()
+	manifest, bundle := validManifestFixture()
+	canonical, err := CanonicalizeVersion(manifest, bundle)
+	if err != nil {
+		t.Fatalf("CanonicalizeVersion() error = %v", err)
+	}
+	return Version{
+		ID: versionID, DefinitionID: definitionID, VersionNumber: number,
+		CanonicalManifest: canonical.ManifestJSON, Bundle: canonical.BundleJSON, ContentDigest: canonical.ContentDigest,
+		RuntimeMinimumVersion: "v0.18.2-agentera.1",
+	}
+}
+
+func withActivationRequestProfile(request ActivateInstallationRequest, profileID uuid.UUID) ActivateInstallationRequest {
+	request.RuntimeProfileID = profileID
+	return request
+}
+
+func withActivationRequestDigest(request ActivateInstallationRequest, digest [sha256.Size]byte) ActivateInstallationRequest {
+	request.VersionDigest = digest
+	return request
+}
+
+func withActivationRequestTimestamp(
+	t *testing.T,
+	request ActivateInstallationRequest,
+	private ed25519.PrivateKey,
+	timestamp int64,
+) ActivateInstallationRequest {
+	t.Helper()
+	request.Timestamp = timestamp
+	payload, err := ActivationProofBytes(ActivationProofInput{
+		AgentInstallationID: request.InstallationID, RuntimeProfileID: request.RuntimeProfileID,
+		VersionDigest: request.VersionDigest, Timestamp: timestamp,
+	})
+	if err != nil {
+		t.Fatalf("ActivationProofBytes() error = %v", err)
+	}
+	request.DeviceProof = ed25519.Sign(private, payload)
+	return request
+}
+
 type agentControlServiceFixture struct {
 	service    *Service
 	repository *stubServiceRepository
@@ -322,14 +615,21 @@ func newAgentControlServiceFixture(t *testing.T) *agentControlServiceFixture {
 }
 
 type stubServiceRepository struct {
-	publishInitial   func(context.Context, Principal, InitialPublicationCommand) (Publication, error)
-	publishNext      func(context.Context, Principal, NextPublicationCommand) (Publication, error)
-	findDefinition   func(context.Context, Principal, uuid.UUID) (Definition, bool, error)
-	findVersion      func(context.Context, Principal, uuid.UUID) (Version, bool, error)
-	listDefinitions  func(context.Context, Principal) ([]Definition, error)
-	listVersions     func(context.Context, Principal, uuid.UUID) ([]Version, error)
-	appendRevocation func(context.Context, Principal, VersionRevocationCommand) (VersionRevocation, error)
-	recordDenied     func(context.Context, Principal, DeniedAuditCommand) error
+	publishInitial            func(context.Context, Principal, InitialPublicationCommand) (Publication, error)
+	publishNext               func(context.Context, Principal, NextPublicationCommand) (Publication, error)
+	findDefinition            func(context.Context, Principal, uuid.UUID) (Definition, bool, error)
+	findVersion               func(context.Context, Principal, uuid.UUID) (Version, bool, error)
+	listDefinitions           func(context.Context, Principal) ([]Definition, error)
+	listVersions              func(context.Context, Principal, uuid.UUID) ([]Version, error)
+	appendRevocation          func(context.Context, Principal, VersionRevocationCommand) (VersionRevocation, error)
+	recordDenied              func(context.Context, Principal, DeniedAuditCommand) error
+	createPendingInstallation func(context.Context, Principal, CreateInstallationCommand) (InstallationCreation, error)
+	findInstallation          func(context.Context, Principal, uuid.UUID) (Installation, bool, error)
+	loadActivationContext     func(context.Context, Principal, uuid.UUID) (InstallationActivationContext, bool, error)
+	activateInstallation      func(context.Context, Principal, ActivationCommand) (Installation, error)
+	selectInstallationVersion func(context.Context, Principal, VersionSelectionCommand) (Installation, error)
+	archiveInstallation       func(context.Context, Principal, ArchiveInstallationCommand) (Installation, error)
+	insertRuntimeBinding      func(context.Context, Principal, PersistRuntimeBindingCommand) (RuntimeBindingRecord, error)
 }
 
 func (s *stubServiceRepository) PublishInitial(ctx context.Context, principal Principal, command InitialPublicationCommand) (Publication, error) {
@@ -386,6 +686,55 @@ func (s *stubServiceRepository) RecordDenied(ctx context.Context, principal Prin
 		return nil
 	}
 	return s.recordDenied(ctx, principal, command)
+}
+
+func (s *stubServiceRepository) CreatePendingInstallation(ctx context.Context, principal Principal, command CreateInstallationCommand) (InstallationCreation, error) {
+	if s.createPendingInstallation == nil {
+		return InstallationCreation{}, errors.New("unexpected CreatePendingInstallation call")
+	}
+	return s.createPendingInstallation(ctx, principal, command)
+}
+
+func (s *stubServiceRepository) FindInstallation(ctx context.Context, principal Principal, id uuid.UUID) (Installation, bool, error) {
+	if s.findInstallation == nil {
+		return Installation{}, false, errors.New("unexpected FindInstallation call")
+	}
+	return s.findInstallation(ctx, principal, id)
+}
+
+func (s *stubServiceRepository) LoadActivationContext(ctx context.Context, principal Principal, id uuid.UUID) (InstallationActivationContext, bool, error) {
+	if s.loadActivationContext == nil {
+		return InstallationActivationContext{}, false, errors.New("unexpected LoadActivationContext call")
+	}
+	return s.loadActivationContext(ctx, principal, id)
+}
+
+func (s *stubServiceRepository) ActivateInstallation(ctx context.Context, principal Principal, command ActivationCommand) (Installation, error) {
+	if s.activateInstallation == nil {
+		return Installation{}, errors.New("unexpected ActivateInstallation call")
+	}
+	return s.activateInstallation(ctx, principal, command)
+}
+
+func (s *stubServiceRepository) SelectInstallationVersion(ctx context.Context, principal Principal, command VersionSelectionCommand) (Installation, error) {
+	if s.selectInstallationVersion == nil {
+		return Installation{}, errors.New("unexpected SelectInstallationVersion call")
+	}
+	return s.selectInstallationVersion(ctx, principal, command)
+}
+
+func (s *stubServiceRepository) ArchiveInstallation(ctx context.Context, principal Principal, command ArchiveInstallationCommand) (Installation, error) {
+	if s.archiveInstallation == nil {
+		return Installation{}, errors.New("unexpected ArchiveInstallation call")
+	}
+	return s.archiveInstallation(ctx, principal, command)
+}
+
+func (s *stubServiceRepository) InsertRuntimeBinding(ctx context.Context, principal Principal, command PersistRuntimeBindingCommand) (RuntimeBindingRecord, error) {
+	if s.insertRuntimeBinding == nil {
+		return RuntimeBindingRecord{}, errors.New("unexpected InsertRuntimeBinding call")
+	}
+	return s.insertRuntimeBinding(ctx, principal, command)
 }
 
 func publicationFromInitial(command InitialPublicationCommand, material VersionMaterial) Publication {

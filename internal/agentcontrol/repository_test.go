@@ -207,40 +207,51 @@ func TestRepositoryPersistsInstallationPolicyBindingRevocationAndLifecycle(t *te
 	if created.Installation.DeviceInstallationID != fixture.deviceInstallationID(t, principal.DeviceID) {
 		t.Fatal("device installation ID was not derived from the authenticated device")
 	}
+	activationContext, found, err := fixture.repository.LoadActivationContext(fixture.ctx, principal, created.Installation.ID)
+	if err != nil || !found || activationContext.Version.ID != publication.Version.ID ||
+		!bytes.Equal(activationContext.DevicePublicKey, bytes.Repeat([]byte{7}, 32)) {
+		t.Fatalf("LoadActivationContext() = %+v found=%v error=%v", activationContext, found, err)
+	}
 	replayed, err := fixture.repository.CreatePendingInstallation(fixture.ctx, principal, create)
 	if err != nil || !replayed.Replayed || replayed.Installation.ID != created.Installation.ID {
 		t.Fatalf("CreatePendingInstallation(replay) = %+v error=%v", replayed, err)
 	}
 
 	runtimeProfileID := uuid.New()
-	activated, err := fixture.repository.ActivateInstallation(fixture.ctx, principal, ActivationCommand{
+	activation := ActivationCommand{
 		InstallationID: created.Installation.ID, RuntimeProfileID: runtimeProfileID,
-		Audit: fixture.auditEvidence(10), ActivatedAt: fixture.now.Add(10 * time.Minute),
-	})
+		AgentVersionID: publication.Version.ID, PolicySnapshotID: created.Policy.ID,
+		VersionDigest: publication.Version.ContentDigest,
+		Audit:         fixture.auditEvidence(10), ActivatedAt: fixture.now.Add(10 * time.Minute),
+	}
+	activated, err := fixture.repository.ActivateInstallation(fixture.ctx, principal, activation)
 	if err != nil {
 		t.Fatalf("ActivateInstallation() error = %v", err)
 	}
 	if activated.Status != InstallationStatusActive || activated.RuntimeProfileID == nil || *activated.RuntimeProfileID != runtimeProfileID {
 		t.Fatalf("activated installation = %+v", activated)
 	}
-	if replay, err := fixture.repository.ActivateInstallation(fixture.ctx, principal, ActivationCommand{
-		InstallationID: created.Installation.ID, RuntimeProfileID: runtimeProfileID,
-		Audit: fixture.auditEvidence(11), ActivatedAt: fixture.now.Add(11 * time.Minute),
-	}); err != nil || replay.RuntimeProfileID == nil || *replay.RuntimeProfileID != runtimeProfileID {
+	replayActivation := activation
+	replayActivation.Audit = fixture.auditEvidence(11)
+	replayActivation.ActivatedAt = fixture.now.Add(11 * time.Minute)
+	if replay, err := fixture.repository.ActivateInstallation(fixture.ctx, principal, replayActivation); err != nil ||
+		replay.RuntimeProfileID == nil || *replay.RuntimeProfileID != runtimeProfileID {
 		t.Fatalf("ActivateInstallation(replay) = %+v error=%v", replay, err)
 	}
-	if _, err := fixture.repository.ActivateInstallation(fixture.ctx, principal, ActivationCommand{
-		InstallationID: created.Installation.ID, RuntimeProfileID: uuid.New(),
-		Audit: fixture.auditEvidence(12), ActivatedAt: fixture.now.Add(12 * time.Minute),
-	}); !errors.Is(err, ErrActivationConflict) {
+	changedActivation := activation
+	changedActivation.RuntimeProfileID = uuid.New()
+	changedActivation.Audit = fixture.auditEvidence(12)
+	changedActivation.ActivatedAt = fixture.now.Add(12 * time.Minute)
+	if _, err := fixture.repository.ActivateInstallation(fixture.ctx, principal, changedActivation); !errors.Is(err, ErrActivationConflict) {
 		t.Fatalf("ActivateInstallation(changed profile) error = %v", err)
 	}
 
 	failedPolicy := fixture.policy(created.Installation.ID, second.Version.ID, 2, 13)
 	failedPolicy.Signature = []byte{1}
 	if _, err := fixture.repository.SelectInstallationVersion(fixture.ctx, principal, VersionSelectionCommand{
-		InstallationID: created.Installation.ID, VersionID: second.Version.ID, Policy: failedPolicy,
-		Audit: fixture.auditEvidence(13), SelectedAt: fixture.now.Add(13 * time.Minute),
+		InstallationID: created.Installation.ID, VersionID: second.Version.ID,
+		BuildPolicy: func(int64, Version) (PolicyMaterial, error) { return failedPolicy, nil },
+		Audit:       fixture.auditEvidence(13), SelectedAt: fixture.now.Add(13 * time.Minute),
 	}); err == nil {
 		t.Fatal("SelectInstallationVersion(invalid policy) error = nil")
 	}
@@ -251,8 +262,9 @@ func TestRepositoryPersistsInstallationPolicyBindingRevocationAndLifecycle(t *te
 
 	selectedPolicy := fixture.policy(created.Installation.ID, second.Version.ID, 2, 14)
 	selected, err := fixture.repository.SelectInstallationVersion(fixture.ctx, principal, VersionSelectionCommand{
-		InstallationID: created.Installation.ID, VersionID: second.Version.ID, Policy: selectedPolicy,
-		Audit: fixture.auditEvidence(14), SelectedAt: fixture.now.Add(14 * time.Minute),
+		InstallationID: created.Installation.ID, VersionID: second.Version.ID,
+		BuildPolicy: func(int64, Version) (PolicyMaterial, error) { return selectedPolicy, nil },
+		Audit:       fixture.auditEvidence(14), SelectedAt: fixture.now.Add(14 * time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("SelectInstallationVersion() error = %v", err)
@@ -260,11 +272,22 @@ func TestRepositoryPersistsInstallationPolicyBindingRevocationAndLifecycle(t *te
 	if selected.SelectedVersionID != second.Version.ID || selected.PolicySnapshotID == nil || *selected.PolicySnapshotID != selectedPolicy.ID {
 		t.Fatalf("selected installation = %+v", selected)
 	}
+	activationAfterSelection := activation
+	activationAfterSelection.AgentVersionID = second.Version.ID
+	activationAfterSelection.PolicySnapshotID = selectedPolicy.ID
+	activationAfterSelection.VersionDigest = second.Version.ContentDigest
+	activationAfterSelection.Audit = fixture.auditEvidence(20)
+	activationAfterSelection.ActivatedAt = fixture.now.Add(20 * time.Minute)
+	if _, err := fixture.repository.ActivateInstallation(fixture.ctx, principal, activationAfterSelection); !errors.Is(err, ErrActivationConflict) {
+		t.Fatalf("ActivateInstallation(after version selection) error = %v", err)
+	}
 
-	binding := RuntimeBindingRecordCommand{
-		BindingID: uuid.New(), AgentInstallationID: created.Installation.ID, AgentVersionID: second.Version.ID,
-		RuntimeProfileID: runtimeProfileID, RuntimeVersion: "0.18.2-agentera.1",
-		PolicySnapshotID: selectedPolicy.ID, ToolPermissionDigest: sha256.Sum256([]byte("tools")),
+	binding := PersistRuntimeBindingCommand{
+		RuntimeBindingRecordCommand: RuntimeBindingRecordCommand{
+			BindingID: uuid.New(), AgentInstallationID: created.Installation.ID, AgentVersionID: second.Version.ID,
+			RuntimeProfileID: runtimeProfileID, RuntimeVersion: "0.18.2-agentera.1",
+			PolicySnapshotID: selectedPolicy.ID, ToolPermissionDigest: sha256.Sum256([]byte("tools")),
+		},
 		Audit: fixture.auditEvidence(15), CreatedAt: fixture.now.Add(15 * time.Minute),
 	}
 	storedBinding, err := fixture.repository.InsertRuntimeBinding(fixture.ctx, principal, binding)
@@ -440,7 +463,9 @@ func (f *agentControlRepositoryFixture) pendingInstallation(
 	installationID := uuid.New()
 	return CreateInstallationCommand{
 		InstallationID: installationID, DefinitionID: definitionID, VersionID: versionID,
-		Policy:      f.policy(installationID, versionID, policyVersion, discriminator),
+		BuildPolicy: func(Version) (PolicyMaterial, error) {
+			return f.policy(installationID, versionID, policyVersion, discriminator), nil
+		},
 		Idempotency: f.idempotency(discriminator), Audit: f.auditEvidence(discriminator), CreatedAt: f.now.Add(time.Duration(discriminator) * time.Minute),
 	}
 }
