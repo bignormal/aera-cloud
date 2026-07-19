@@ -34,7 +34,7 @@ func TestAccessAuthenticationFailsClosedWhenRedisIsUnavailable(t *testing.T) {
 	claims := validAccessClaims()
 	authenticator, err := NewAccessAuthenticator(AccessAuthenticatorConfig{
 		Tokens: &stubAccessVerifier{claims: claims}, Repository: &stubAccessStatusRepository{active: true},
-		Cache: &stubAccessStatusCache{readErr: errors.New("redis unavailable")},
+		Cache: &stubAccessStatusCache{readErr: errors.New("redis unavailable")}, Clock: clockInsideAccessWindow(claims),
 	})
 	if err != nil {
 		t.Fatalf("NewAccessAuthenticator() error = %v", err)
@@ -50,7 +50,7 @@ func TestAccessAuthenticationRejectsCachedRevocationWithoutDatabaseRead(t *testi
 	repository := &stubAccessStatusRepository{active: true}
 	authenticator, err := NewAccessAuthenticator(AccessAuthenticatorConfig{
 		Tokens: &stubAccessVerifier{claims: claims}, Repository: repository,
-		Cache: &stubAccessStatusCache{status: AccessStatusRevoked},
+		Cache: &stubAccessStatusCache{status: AccessStatusRevoked}, Clock: clockInsideAccessWindow(claims),
 	})
 	if err != nil {
 		t.Fatalf("NewAccessAuthenticator() error = %v", err)
@@ -70,6 +70,7 @@ func TestPostgresRemainsAuthoritativeOverCachedActiveState(t *testing.T) {
 	repository := &stubAccessStatusRepository{active: false}
 	authenticator, err := NewAccessAuthenticator(AccessAuthenticatorConfig{
 		Tokens: &stubAccessVerifier{claims: claims}, Repository: repository, Cache: cache,
+		Clock: clockInsideAccessWindow(claims),
 	})
 	if err != nil {
 		t.Fatalf("NewAccessAuthenticator() error = %v", err)
@@ -88,7 +89,7 @@ func TestAccessAuthenticationCachesAuthoritativeActiveState(t *testing.T) {
 	cache := &stubAccessStatusCache{status: AccessStatusUnknown}
 	authenticator, err := NewAccessAuthenticator(AccessAuthenticatorConfig{
 		Tokens: &stubAccessVerifier{claims: claims}, Repository: &stubAccessStatusRepository{active: true}, Cache: cache,
-		Clock: func() time.Time { return claims.IssuedAt.Add(time.Minute) },
+		Clock: clockInsideAccessWindow(claims),
 	})
 	if err != nil {
 		t.Fatalf("NewAccessAuthenticator() error = %v", err)
@@ -174,6 +175,10 @@ func validAccessClaims() AccessClaims {
 		},
 		IssuedAt: issuedAt, ExpiresAt: issuedAt.Add(15 * time.Minute),
 	}
+}
+
+func clockInsideAccessWindow(claims AccessClaims) func() time.Time {
+	return func() time.Time { return claims.IssuedAt.Add(time.Minute) }
 }
 
 type stubAccessVerifier struct {
