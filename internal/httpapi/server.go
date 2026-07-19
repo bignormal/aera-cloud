@@ -23,6 +23,7 @@ type Dependencies struct {
 	Accounts     http.Handler
 	OAuth        http.Handler
 	Devices      http.Handler
+	AgentControl http.Handler
 	Web          http.Handler
 }
 
@@ -61,6 +62,15 @@ func New(dependencies Dependencies) http.Handler {
 	if dependencies.Devices != nil {
 		router.Handle("/api/v1/devices", dependencies.Devices)
 		router.Handle("/api/v1/devices/*", dependencies.Devices)
+	}
+	if dependencies.AgentControl != nil {
+		router.Handle("/api/v1/agent-definitions", dependencies.AgentControl)
+		router.Handle("/api/v1/agent-definitions/*", dependencies.AgentControl)
+		router.Handle("/api/v1/agent-versions/*", dependencies.AgentControl)
+		router.Handle("/api/v1/agent-installations", dependencies.AgentControl)
+		router.Handle("/api/v1/agent-installations/*", dependencies.AgentControl)
+		router.Handle("/api/v1/policy-snapshots/*", dependencies.AgentControl)
+		router.Handle("/api/v1/runtime-binding-records", dependencies.AgentControl)
 	}
 	router.NotFound(func(response http.ResponseWriter, request *http.Request) {
 		if dependencies.Web == nil || servicePath(request.URL.Path) {

@@ -99,6 +99,10 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 	if err != nil {
 		return err
 	}
+	agentControlHandler, err := buildAgentControlHandler(cfg, postgres, redisStore.Client())
+	if err != nil {
+		return err
+	}
 	maintenanceRunner, err := buildMaintenanceRunner(cfg, postgres, redisStore.Client())
 	if err != nil {
 		return err
@@ -119,6 +123,7 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 		Accounts:     accountHandler,
 		OAuth:        oauthHandler,
 		Devices:      deviceHandler,
+		AgentControl: agentControlHandler,
 		Web:          webui.New(),
 	}))
 }
@@ -376,6 +381,33 @@ func buildDeviceHandler(
 	}
 	return device.NewHandler(device.HTTPConfig{
 		Devices: devices, AccessTokens: accessAuthenticator, BrowserSessions: browserSessions,
+	}), nil
+}
+
+func buildAgentControlHandler(
+	cfg config.Config,
+	postgres *pgxpool.Pool,
+	redisClient redis.UniversalClient,
+) (http.Handler, error) {
+	accessAuthenticator, err := buildAccessAuthenticator(cfg, postgres, redisClient)
+	if err != nil {
+		return nil, err
+	}
+	signer, err := agentcontrol.NewSigner(agentcontrol.SigningConfig{
+		Issuer: cfg.PublicURL, ActiveKeyID: cfg.AgentControlSigningKeyRing.ActiveKeyID,
+		SigningKeys: privateSigningKeys(cfg.AgentControlSigningKeyRing),
+	})
+	if err != nil {
+		return nil, err
+	}
+	service, err := agentcontrol.NewService(agentcontrol.ServiceConfig{
+		Repository: agentcontrol.NewPostgresRepository(postgres), Signer: signer,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return agentcontrol.NewHandler(agentcontrol.HTTPConfig{
+		Service: service, AccessTokens: accessAuthenticator,
 	}), nil
 }
 

@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: AgentEra App Cloud API
-  version: 0.1.0
-  description: Account, browser session, and identity verification contract for AgentEra Studio.
+  version: 0.2.0
+  description: Account, device authorization, and USER-owned Agent control-plane contract for AgentEra Studio.
 servers:
   - url: https://accounts.agentera.example
 paths:
@@ -548,6 +548,353 @@ paths:
           $ref: '#/components/responses/SessionRevoked'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/agent-definitions:
+    get:
+      operationId: listUserAgentDefinitions
+      security:
+        - desktopAccessToken: []
+      responses:
+        '200':
+          description: USER-owned Agent definitions visible to the authenticated product principal.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentDefinitionList'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    post:
+      operationId: publishInitialUserAgentVersion
+      description: The maximum agent publication request body is 2621440 bytes. Drafts remain local and are not accepted by this API.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishInitialAgentRequest'
+      responses:
+        '201':
+          description: Definition and immutable first version published atomically.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentPublication'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '409':
+          $ref: '#/components/responses/AgentConflict'
+        '413':
+          $ref: '#/components/responses/InvalidRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/agent-definitions/{definition_id}:
+    get:
+      operationId: getUserAgentDefinition
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/AgentDefinitionID'
+      responses:
+        '200':
+          description: One USER-owned Agent definition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentDefinition'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '404':
+          $ref: '#/components/responses/AgentNotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/agent-definitions/{definition_id}/versions:
+    get:
+      operationId: listUserAgentVersions
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/AgentDefinitionID'
+      responses:
+        '200':
+          description: Immutable versions for one USER-owned Agent definition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentVersionList'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '404':
+          $ref: '#/components/responses/AgentNotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    post:
+      operationId: publishNextUserAgentVersion
+      description: The maximum agent publication request body is 2621440 bytes. A base version provides optimistic concurrency.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/AgentDefinitionID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishNextAgentVersionRequest'
+      responses:
+        '201':
+          description: Immutable next version published and selected as latest.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentPublication'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '404':
+          $ref: '#/components/responses/AgentNotFound'
+        '409':
+          $ref: '#/components/responses/AgentConflict'
+        '413':
+          $ref: '#/components/responses/InvalidRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/agent-versions/{version_id}:
+    get:
+      operationId: getUserAgentVersion
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/AgentVersionID'
+      responses:
+        '200':
+          description: Signed immutable Agent version and public version assets.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentVersion'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '404':
+          $ref: '#/components/responses/AgentNotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/agent-versions/{version_id}/revocations:
+    post:
+      operationId: revokeUserAgentVersion
+      description: The maximum Agent metadata request body is 65536 bytes. Revocation is append-only and never mutates an immutable version.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/AgentVersionID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevokeAgentVersionRequest'
+      responses:
+        '201':
+          description: Version revocation appended.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentVersionRevocation'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '404':
+          $ref: '#/components/responses/AgentNotFound'
+        '409':
+          $ref: '#/components/responses/AgentConflict'
+        '413':
+          $ref: '#/components/responses/InvalidRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/agent-installations:
+    post:
+      operationId: createUserAgentInstallation
+      description: The maximum Agent metadata request body is 65536 bytes. The authenticated device determines installation ownership.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAgentInstallationRequest'
+      responses:
+        '201':
+          description: Pending installation and signed policy snapshot created atomically.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentInstallationCreation'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '404':
+          $ref: '#/components/responses/AgentNotFound'
+        '409':
+          $ref: '#/components/responses/AgentConflict'
+        '413':
+          $ref: '#/components/responses/InvalidRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/agent-installations/{installation_id}/activate:
+    post:
+      operationId: activateUserAgentInstallation
+      description: The maximum Agent metadata request body is 65536 bytes. Device proof binds the signed version digest to one local Runtime profile.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/AgentInstallationID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActivateAgentInstallationRequest'
+      responses:
+        '200':
+          description: Installation activated or an exact activation replay returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentInstallation'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '404':
+          $ref: '#/components/responses/AgentNotFound'
+        '409':
+          $ref: '#/components/responses/AgentConflict'
+        '413':
+          $ref: '#/components/responses/InvalidRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/agent-installations/{installation_id}/select-version:
+    post:
+      operationId: selectUserAgentInstallationVersion
+      description: The maximum Agent metadata request body is 65536 bytes. A newly selected version applies only to later Runtime bindings.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/AgentInstallationID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SelectAgentInstallationVersionRequest'
+      responses:
+        '200':
+          description: Installation selected version and signed policy snapshot updated atomically.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentInstallation'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '404':
+          $ref: '#/components/responses/AgentNotFound'
+        '409':
+          $ref: '#/components/responses/AgentConflict'
+        '413':
+          $ref: '#/components/responses/InvalidRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/agent-installations/{installation_id}/archive:
+    post:
+      operationId: archiveUserAgentInstallation
+      description: The maximum Agent metadata request body is 65536 bytes. Archive changes cloud control metadata only and does not delete a Hermes profile.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/AgentInstallationID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ArchiveAgentInstallationRequest'
+      responses:
+        '200':
+          description: Installation archived without deleting local runtime state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentInstallation'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '404':
+          $ref: '#/components/responses/AgentNotFound'
+        '409':
+          $ref: '#/components/responses/AgentConflict'
+        '413':
+          $ref: '#/components/responses/InvalidRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/runtime-binding-records:
+    post:
+      operationId: recordUserAgentRuntimeBinding
+      description: The maximum Agent metadata request body is 65536 bytes. This records immutable control-plane identifiers and never uploads session, Memory, files, or credentials.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRuntimeBindingRecordRequest'
+      responses:
+        '201':
+          description: Runtime binding record persisted for a newly starting session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeBindingRecord'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '404':
+          $ref: '#/components/responses/AgentNotFound'
+        '409':
+          $ref: '#/components/responses/AgentConflict'
+        '413':
+          $ref: '#/components/responses/InvalidRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /.well-known/agentera-signing-keys.json:
     get:
       operationId: getAgentEraSigningKeys
@@ -588,6 +935,37 @@ components:
         type: string
         minLength: 43
         maxLength: 43
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Opaque operation key. The same key may be replayed only with the exact same request.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 256
+        pattern: '^[^\\s\\x00]+$'
+    AgentDefinitionID:
+      name: definition_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    AgentVersionID:
+      name: version_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    AgentInstallationID:
+      name: installation_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
   schemas:
     IdentityKind:
       type: string
@@ -855,6 +1233,574 @@ components:
           type: string
           description: Ed25519 signature of the AgentEra self-revocation digest, encoded as canonical unpadded base64url.
           pattern: '^[A-Za-z0-9_-]{86}$'
+    AgentDefinitionList:
+      type: object
+      additionalProperties: false
+      required: [definitions]
+      properties:
+        definitions:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentDefinition'
+    AgentDefinition:
+      type: object
+      additionalProperties: false
+      required: [id, display_name, status, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        icon_media_type:
+          type: string
+          enum: [image/png, image/webp]
+        icon_data:
+          type: string
+          description: Static icon bytes encoded as canonical unpadded base64url.
+          maxLength: 699051
+          pattern: '^[A-Za-z0-9_-]+$'
+        status:
+          type: string
+          enum: [active, archived]
+        latest_version_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    AgentVersionList:
+      type: object
+      additionalProperties: false
+      required: [versions]
+      properties:
+        versions:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentVersion'
+    AgentVersion:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - definition_id
+        - version_number
+        - manifest
+        - bundle
+        - content_digest
+        - signing_key_id
+        - signature
+        - runtime_minimum_version
+        - published_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        definition_id:
+          type: string
+          format: uuid
+        version_number:
+          type: integer
+          format: int64
+          minimum: 1
+        manifest:
+          $ref: '#/components/schemas/AgentManifestV1'
+        bundle:
+          $ref: '#/components/schemas/AgentVersionBundleV1'
+        content_digest:
+          $ref: '#/components/schemas/SHA256Digest'
+        signing_key_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+        signature:
+          type: string
+          description: Ed25519 agent_version signature encoded as canonical unpadded base64url.
+          pattern: '^[A-Za-z0-9_-]{86}$'
+        runtime_minimum_version:
+          type: string
+          minLength: 1
+          maxLength: 64
+        runtime_maximum_version_exclusive:
+          type: string
+          minLength: 1
+          maxLength: 64
+        published_at:
+          type: string
+          format: date-time
+    AgentManifestV1:
+      type: object
+      additionalProperties: false
+      required: [schema_version, identity, assets, model_constraints, tools, dependencies, runtime_compatibility]
+      properties:
+        schema_version:
+          const: 1
+        identity:
+          $ref: '#/components/schemas/AgentIdentityV1'
+        assets:
+          type: array
+          maxItems: 128
+          items:
+            $ref: '#/components/schemas/AgentManifestAssetV1'
+        model_constraints:
+          $ref: '#/components/schemas/AgentModelConstraintsV1'
+        tools:
+          $ref: '#/components/schemas/AgentToolPolicyV1'
+        dependencies:
+          type: array
+          maxItems: 128
+          items:
+            $ref: '#/components/schemas/AgentDependencyV1'
+        runtime_compatibility:
+          $ref: '#/components/schemas/AgentRuntimeCompatibilityV1'
+    AgentIdentityV1:
+      type: object
+      additionalProperties: false
+      required: [system_prompt]
+      properties:
+        system_prompt:
+          type: string
+          minLength: 1
+          maxLength: 262144
+    AgentManifestAssetV1:
+      type: object
+      additionalProperties: false
+      required: [path, kind, media_type, sha256]
+      properties:
+        path:
+          type: string
+          minLength: 1
+          maxLength: 512
+        kind:
+          type: string
+          enum: [skill, sop, knowledge]
+        media_type:
+          type: string
+          enum: [text/markdown, text/plain]
+        sha256:
+          $ref: '#/components/schemas/SHA256Digest'
+    AgentModelConstraintsV1:
+      type: object
+      additionalProperties: false
+      required: [allowed_providers, allowed_models]
+      properties:
+        allowed_providers:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+            maxLength: 128
+        allowed_models:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+            maxLength: 256
+    AgentToolPolicyV1:
+      type: object
+      additionalProperties: false
+      required: [allowed, denied]
+      properties:
+        allowed:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+            maxLength: 256
+        denied:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+            maxLength: 256
+    AgentDependencyV1:
+      type: object
+      additionalProperties: false
+      required: [agent_definition_id, agent_version_id]
+      properties:
+        agent_definition_id:
+          type: string
+          format: uuid
+        agent_version_id:
+          type: string
+          format: uuid
+    AgentRuntimeCompatibilityV1:
+      type: object
+      additionalProperties: false
+      required: [minimum_version]
+      properties:
+        minimum_version:
+          type: string
+          minLength: 1
+          maxLength: 64
+        maximum_version_exclusive:
+          type: string
+          minLength: 1
+          maxLength: 64
+    AgentVersionBundleV1:
+      type: object
+      additionalProperties: false
+      required: [assets]
+      properties:
+        assets:
+          type: array
+          maxItems: 128
+          items:
+            $ref: '#/components/schemas/AgentBundleAssetV1'
+    AgentBundleAssetV1:
+      type: object
+      additionalProperties: false
+      required: [path, content]
+      properties:
+        path:
+          type: string
+          minLength: 1
+          maxLength: 512
+        content:
+          type: string
+          maxLength: 262144
+    PublishInitialAgentRequest:
+      type: object
+      additionalProperties: false
+      required: [display_name, manifest, bundle]
+      properties:
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        icon_media_type:
+          type: string
+          enum: [image/png, image/webp]
+        icon_data:
+          type: string
+          description: Static icon bytes encoded as canonical unpadded base64url.
+          maxLength: 699051
+          pattern: '^[A-Za-z0-9_-]+$'
+        manifest:
+          $ref: '#/components/schemas/AgentManifestV1'
+        bundle:
+          $ref: '#/components/schemas/AgentVersionBundleV1'
+    PublishNextAgentVersionRequest:
+      type: object
+      additionalProperties: false
+      required: [base_version_id, manifest, bundle]
+      properties:
+        base_version_id:
+          type: string
+          format: uuid
+        manifest:
+          $ref: '#/components/schemas/AgentManifestV1'
+        bundle:
+          $ref: '#/components/schemas/AgentVersionBundleV1'
+    AgentPublication:
+      type: object
+      additionalProperties: false
+      required: [definition, version, replayed]
+      properties:
+        definition:
+          $ref: '#/components/schemas/AgentDefinition'
+        version:
+          $ref: '#/components/schemas/AgentVersion'
+        replayed:
+          type: boolean
+    RevokeAgentVersionRequest:
+      type: object
+      additionalProperties: false
+      required: [reason_code, policy_snapshot_id]
+      properties:
+        reason_code:
+          type: string
+          minLength: 1
+          maxLength: 64
+        policy_snapshot_id:
+          type: string
+          format: uuid
+        superseding_version_id:
+          type: string
+          format: uuid
+    AgentVersionRevocation:
+      type: object
+      additionalProperties: false
+      required: [id, version_id, reason_code, policy_snapshot_id, created_at, replayed]
+      properties:
+        id:
+          type: string
+          format: uuid
+        version_id:
+          type: string
+          format: uuid
+        reason_code:
+          type: string
+          minLength: 1
+          maxLength: 64
+        policy_snapshot_id:
+          type: string
+          format: uuid
+        superseding_version_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        replayed:
+          type: boolean
+    CreateAgentInstallationRequest:
+      type: object
+      additionalProperties: false
+      required: [definition_id, version_id]
+      properties:
+        definition_id:
+          type: string
+          format: uuid
+        version_id:
+          type: string
+          format: uuid
+    ActivateAgentInstallationRequest:
+      type: object
+      additionalProperties: false
+      required: [runtime_profile_id, version_digest, timestamp, device_proof]
+      properties:
+        runtime_profile_id:
+          type: string
+          format: uuid
+        version_digest:
+          $ref: '#/components/schemas/SHA256Digest'
+        timestamp:
+          type: integer
+          format: int64
+          minimum: 1
+        device_proof:
+          type: string
+          description: Ed25519 activation signature encoded as canonical unpadded base64url.
+          pattern: '^[A-Za-z0-9_-]{86}$'
+    SelectAgentInstallationVersionRequest:
+      type: object
+      additionalProperties: false
+      required: [version_id]
+      properties:
+        version_id:
+          type: string
+          format: uuid
+    ArchiveAgentInstallationRequest:
+      type: object
+      additionalProperties: false
+      maxProperties: 0
+    AgentInstallationCreation:
+      type: object
+      additionalProperties: false
+      required: [installation, policy_snapshot, replayed]
+      properties:
+        installation:
+          $ref: '#/components/schemas/AgentInstallation'
+        policy_snapshot:
+          $ref: '#/components/schemas/AgentPolicySnapshot'
+        replayed:
+          type: boolean
+    AgentInstallation:
+      type: object
+      additionalProperties: false
+      required: [id, definition_id, selected_version_id, update_policy, status, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        definition_id:
+          type: string
+          format: uuid
+        selected_version_id:
+          type: string
+          format: uuid
+        runtime_profile_id:
+          type: string
+          format: uuid
+        policy_snapshot_id:
+          type: string
+          format: uuid
+        update_policy:
+          const: manual
+        status:
+          type: string
+          enum: [pending, active, archived]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        activated_at:
+          type: string
+          format: date-time
+        archived_at:
+          type: string
+          format: date-time
+    AgentPolicySnapshot:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - installation_id
+        - agent_version_id
+        - policy_version
+        - document
+        - content_digest
+        - issuer
+        - signing_key_id
+        - signature
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        installation_id:
+          type: string
+          format: uuid
+        agent_version_id:
+          type: string
+          format: uuid
+        policy_version:
+          type: integer
+          format: int64
+          minimum: 1
+        document:
+          $ref: '#/components/schemas/AgentPolicyDocumentV1'
+        content_digest:
+          $ref: '#/components/schemas/SHA256Digest'
+        issuer:
+          type: string
+          format: uri
+        signing_key_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+        signature:
+          type: string
+          description: Ed25519 agent_policy signature encoded as canonical unpadded base64url.
+          pattern: '^[A-Za-z0-9_-]{86}$'
+        created_at:
+          type: string
+          format: date-time
+    AgentPolicyDocumentV1:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - agent_definition_id
+        - agent_version_id
+        - version_digest
+        - model_constraints
+        - tools
+        - runtime_compatibility
+        - publication_allowed
+        - deny_rules
+      properties:
+        schema_version:
+          const: 1
+        agent_definition_id:
+          type: string
+          format: uuid
+        agent_version_id:
+          type: string
+          format: uuid
+        version_digest:
+          $ref: '#/components/schemas/SHA256Digest'
+        model_constraints:
+          $ref: '#/components/schemas/AgentModelConstraintsV1'
+        tools:
+          $ref: '#/components/schemas/AgentToolPolicyV1'
+        runtime_compatibility:
+          $ref: '#/components/schemas/AgentRuntimeCompatibilityV1'
+        publication_allowed:
+          const: false
+        deny_rules:
+          type: array
+          items:
+            type: string
+            maxLength: 256
+    CreateRuntimeBindingRecordRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - binding_id
+        - agent_installation_id
+        - agent_version_id
+        - runtime_profile_id
+        - runtime_version
+        - policy_snapshot_id
+        - tool_permission_digest
+      properties:
+        binding_id:
+          type: string
+          format: uuid
+        agent_installation_id:
+          type: string
+          format: uuid
+        agent_version_id:
+          type: string
+          format: uuid
+        runtime_profile_id:
+          type: string
+          format: uuid
+        runtime_version:
+          type: string
+          minLength: 1
+          maxLength: 64
+        policy_snapshot_id:
+          type: string
+          format: uuid
+        tool_permission_digest:
+          $ref: '#/components/schemas/SHA256Digest'
+    RuntimeBindingRecord:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - agent_installation_id
+        - agent_version_id
+        - runtime_profile_id
+        - runtime_version
+        - policy_snapshot_id
+        - tool_permission_digest
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        agent_installation_id:
+          type: string
+          format: uuid
+        agent_version_id:
+          type: string
+          format: uuid
+        runtime_profile_id:
+          type: string
+          format: uuid
+        runtime_version:
+          type: string
+          minLength: 1
+          maxLength: 64
+        policy_snapshot_id:
+          type: string
+          format: uuid
+        tool_permission_digest:
+          $ref: '#/components/schemas/SHA256Digest'
+        created_at:
+          type: string
+          format: date-time
+    SHA256Digest:
+      type: string
+      description: Lowercase hexadecimal SHA-256 digest.
+      pattern: '^[0-9a-f]{64}$'
     CurrentLegalDocuments:
       type: object
       additionalProperties: false
@@ -979,7 +1925,7 @@ components:
           const: sig
         purpose:
           type: string
-          enum: [access, offline_entitlement]
+          enum: [access, offline_entitlement, agent_version, agent_policy]
         x:
           type: string
           pattern: '^[A-Za-z0-9_-]{43}$'
@@ -1001,6 +1947,16 @@ components:
         - account_not_found
         - device_not_found
         - self_revoke_replayed
+        - invalid_agent_content
+        - runtime_incompatible
+        - invalid_device_proof
+        - not_found
+        - version_conflict
+        - idempotency_conflict
+        - definition_archived
+        - version_revoked
+        - activation_conflict
+        - installation_archived
         - service_unavailable
     ErrorEnvelope:
       type: object
@@ -1046,6 +2002,18 @@ components:
             $ref: '#/components/schemas/ErrorEnvelope'
     SessionRevoked:
       description: The browser session is absent, expired, or revoked.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    AgentNotFound:
+      description: The USER-owned Agent object is absent or outside the authenticated owner boundary.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    AgentConflict:
+      description: The Agent version, installation, revocation, or idempotency state conflicts with the request.
       content:
         application/json:
           schema:

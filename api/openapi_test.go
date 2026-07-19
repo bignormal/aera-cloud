@@ -114,3 +114,62 @@ func TestOpenAPIContainsAccountLifecycleAndDeviceContractWithoutAdminHTTP(t *tes
 		}
 	}
 }
+
+func TestOpenAPIContainsStrictUserAgentControlPlaneContract(t *testing.T) {
+	contents, err := os.ReadFile("openapi.yaml")
+	if err != nil {
+		t.Fatalf("read openapi.yaml: %v", err)
+	}
+	document := string(contents)
+	if !strings.Contains(document, "version: 0.2.0") {
+		t.Fatal("OpenAPI version was not advanced for the Agent control plane")
+	}
+	for _, path := range []string{
+		"/api/v1/agent-definitions:",
+		"/api/v1/agent-definitions/{definition_id}:",
+		"/api/v1/agent-definitions/{definition_id}/versions:",
+		"/api/v1/agent-versions/{version_id}:",
+		"/api/v1/agent-versions/{version_id}/revocations:",
+		"/api/v1/agent-installations:",
+		"/api/v1/agent-installations/{installation_id}/activate:",
+		"/api/v1/agent-installations/{installation_id}/select-version:",
+		"/api/v1/agent-installations/{installation_id}/archive:",
+		"/api/v1/runtime-binding-records:",
+	} {
+		if !strings.Contains(document, path) {
+			t.Fatalf("OpenAPI is missing %s", path)
+		}
+	}
+	for _, schema := range []string{
+		"AgentDefinition:", "AgentVersion:", "AgentPolicySnapshot:", "AgentInstallation:",
+		"RuntimeBindingRecord:", "PublishInitialAgentRequest:", "PublishNextAgentVersionRequest:",
+	} {
+		if !strings.Contains(document, schema) {
+			t.Fatalf("OpenAPI is missing schema %q", schema)
+		}
+	}
+	for _, contract := range []string{
+		"Idempotency-Key", "maximum agent publication request body is 2621440 bytes",
+		"maximum Agent metadata request body is 65536 bytes", "agent_version", "agent_policy",
+	} {
+		if !strings.Contains(document, contract) {
+			t.Fatalf("OpenAPI is missing Agent contract %q", contract)
+		}
+	}
+	for _, code := range []string{
+		"invalid_agent_content", "runtime_incompatible", "invalid_device_proof", "not_found",
+		"version_conflict", "idempotency_conflict", "definition_archived", "version_revoked",
+		"activation_conflict", "installation_archived",
+	} {
+		if !strings.Contains(document, "- "+code) {
+			t.Fatalf("OpenAPI is missing Agent error code %q", code)
+		}
+	}
+	for _, forbidden := range []string{
+		"AgentDraft", "agent_draft", "memory_scope", "profile_path", "adaptive_state", "api_key", "curator_state",
+	} {
+		if strings.Contains(document, forbidden) {
+			t.Fatalf("OpenAPI exposed local-only Agent state %q", forbidden)
+		}
+	}
+}

@@ -258,6 +258,33 @@ func TestBuildDeviceHandlerWiresPublicSelfRevocationRoute(t *testing.T) {
 	}
 }
 
+func TestBuildAgentControlHandlerWiresAccessTokenOnlyRoute(t *testing.T) {
+	services := testkit.Services{
+		DatabaseURL:   "postgres://aera_cloud:secret@127.0.0.1:55434/aera_cloud?sslmode=disable",
+		RedisAddr:     "127.0.0.1:56381",
+		RedisUsername: "aera_cloud",
+		RedisPassword: "secret",
+		RedisDB:       9,
+	}
+	cfg, err := config.Load(integrationLookup(services))
+	if err != nil {
+		t.Fatalf("config.Load() error = %v", err)
+	}
+	redisClient := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
+	defer func() { _ = redisClient.Close() }()
+	handler, err := buildAgentControlHandler(cfg, nil, redisClient)
+	if err != nil {
+		t.Fatalf("buildAgentControlHandler() error = %v", err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/agent-definitions", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), `"code":"session_revoked"`) {
+		t.Fatalf("response = %d %q", response.Code, response.Body.String())
+	}
+}
+
 func TestBuildMaintenanceRunnerUsesConfiguredStores(t *testing.T) {
 	services := testkit.IntegrationServices(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

@@ -205,6 +205,42 @@ func TestDeviceRoutesAreMountedWithoutChangingHealthContract(t *testing.T) {
 	}
 }
 
+func TestAgentControlRoutesAreMountedWithoutCapturingOtherAPIRoutes(t *testing.T) {
+	routes := []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodGet, path: "/api/v1/agent-definitions"},
+		{method: http.MethodGet, path: "/api/v1/agent-definitions/definition-id"},
+		{method: http.MethodGet, path: "/api/v1/agent-versions/version-id"},
+		{method: http.MethodPost, path: "/api/v1/agent-installations"},
+		{method: http.MethodPost, path: "/api/v1/agent-installations/installation-id/activate"},
+		{method: http.MethodGet, path: "/api/v1/policy-snapshots/policy-id"},
+		{method: http.MethodPost, path: "/api/v1/runtime-binding-records"},
+	}
+	agentHandler := http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusTeapot)
+	})
+	handler := New(Dependencies{
+		PostgreSQL: &stubHealthChecker{}, Redis: &stubHealthChecker{}, AgentControl: agentHandler,
+	})
+	for _, route := range routes {
+		t.Run(route.path, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(route.method, route.path, nil))
+			if response.Code != http.StatusTeapot {
+				t.Fatalf("status = %d, want %d", response.Code, http.StatusTeapot)
+			}
+		})
+	}
+
+	unrelated := httptest.NewRecorder()
+	handler.ServeHTTP(unrelated, httptest.NewRequest(http.MethodGet, "/api/v1/accounts/me", nil))
+	if unrelated.Code != http.StatusNotFound {
+		t.Fatalf("unrelated API status = %d, want %d", unrelated.Code, http.StatusNotFound)
+	}
+}
+
 func TestWebAccountCenterHandlesOnlyUnmatchedNonServiceRoutes(t *testing.T) {
 	web := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.WriteHeader(http.StatusOK)
