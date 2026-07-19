@@ -20,6 +20,21 @@ func TestRepositoryPublishesSerializedVersionsWithOwnerAndIdempotencyBoundaries(
 	fixture := newAgentControlRepositoryFixture(t)
 	principal := fixture.principal(t, 1)
 	other := fixture.principal(t, 2)
+	unauthorized := principal
+	unauthorized.DeviceID = other.DeviceID
+	unauthorizedCommand := fixture.initialPublication(principal, "Unauthorized Agent", 20)
+	originalBuilder := unauthorizedCommand.BuildVersion
+	builderCalled := false
+	unauthorizedCommand.BuildVersion = func() (VersionMaterial, error) {
+		builderCalled = true
+		return originalBuilder()
+	}
+	if _, err := fixture.repository.PublishInitial(fixture.ctx, unauthorized, unauthorizedCommand); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("PublishInitial(unauthorized device) error = %v", err)
+	}
+	if builderCalled {
+		t.Fatal("PublishInitial() built and signed a version before principal authorization")
+	}
 
 	initial := fixture.initialPublication(principal, "Research Agent", 1)
 	first, err := fixture.repository.PublishInitial(fixture.ctx, principal, initial)
@@ -49,6 +64,31 @@ func TestRepositoryPublishesSerializedVersionsWithOwnerAndIdempotencyBoundaries(
 	}
 	if _, found, err := fixture.repository.FindVersion(fixture.ctx, other, first.Version.ID); err != nil || found {
 		t.Fatalf("FindVersion(cross owner) found=%v error=%v", found, err)
+	}
+	definitions, err := fixture.repository.ListDefinitions(fixture.ctx, principal)
+	if err != nil || len(definitions) != 1 || definitions[0].ID != first.Definition.ID {
+		t.Fatalf("ListDefinitions() = %+v error=%v", definitions, err)
+	}
+	otherDefinitions, err := fixture.repository.ListDefinitions(fixture.ctx, other)
+	if err != nil || len(otherDefinitions) != 0 {
+		t.Fatalf("ListDefinitions(other) = %+v error=%v", otherDefinitions, err)
+	}
+	if _, err := fixture.repository.ListVersions(fixture.ctx, other, first.Definition.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ListVersions(cross owner) error = %v", err)
+	}
+	if err := fixture.repository.RecordDenied(fixture.ctx, other, DeniedAuditCommand{
+		EventID: uuid.New(), ObjectType: "agent_definition", ObjectID: first.Definition.ID,
+		ReasonCode: "not_found", RequestID: "cross-owner", OccurredAt: fixture.now,
+	}); err != nil {
+		t.Fatalf("RecordDenied() error = %v", err)
+	}
+	var deniedAudits int64
+	if err := fixture.postgres.QueryRow(fixture.ctx, `
+		SELECT count(*) FROM audit_events
+		WHERE actor_user_id = $1 AND event_type = 'agent_definition_access_denied'
+		  AND outcome = 'denied' AND reason_code = 'not_found'
+	`, other.UserID).Scan(&deniedAudits); err != nil || deniedAudits != 1 {
+		t.Fatalf("denied audit count = %d error=%v", deniedAudits, err)
 	}
 
 	secondCommand := fixture.nextPublication(principal, first.Definition.ID, first.Version.ID, 2)
@@ -235,26 +275,36 @@ func TestRepositoryPersistsInstallationPolicyBindingRevocationAndLifecycle(t *te
 		t.Fatalf("stored binding = %+v", storedBinding)
 	}
 
-	revocation, err := fixture.repository.AppendVersionRevocation(fixture.ctx, principal, VersionRevocationCommand{
+	revocationCommand := VersionRevocationCommand{
 		RevocationID: uuid.New(), VersionID: publication.Version.ID, ReasonCode: "owner_revoked",
-		PolicySnapshotID: created.Policy.ID, Audit: fixture.auditEvidence(16), RevokedAt: fixture.now.Add(16 * time.Minute),
-	})
+		PolicySnapshotID: created.Policy.ID, Idempotency: fixture.idempotency(16),
+		Audit: fixture.auditEvidence(16), RevokedAt: fixture.now.Add(16 * time.Minute),
+	}
+	revocation, err := fixture.repository.AppendVersionRevocation(fixture.ctx, principal, revocationCommand)
 	if err != nil {
 		t.Fatalf("AppendVersionRevocation() error = %v", err)
 	}
 	if revocation.VersionID != publication.Version.ID || revocation.Replayed {
 		t.Fatalf("revocation = %+v", revocation)
 	}
-	replayedRevocation, err := fixture.repository.AppendVersionRevocation(fixture.ctx, principal, VersionRevocationCommand{
+	replayCommand := VersionRevocationCommand{
 		RevocationID: uuid.New(), VersionID: publication.Version.ID, ReasonCode: "owner_revoked",
-		PolicySnapshotID: created.Policy.ID, Audit: fixture.auditEvidence(17), RevokedAt: fixture.now.Add(17 * time.Minute),
-	})
+		PolicySnapshotID: created.Policy.ID, Idempotency: revocationCommand.Idempotency,
+		Audit: fixture.auditEvidence(17), RevokedAt: fixture.now.Add(17 * time.Minute),
+	}
+	replayedRevocation, err := fixture.repository.AppendVersionRevocation(fixture.ctx, principal, replayCommand)
 	if err != nil || !replayedRevocation.Replayed {
 		t.Fatalf("AppendVersionRevocation(replay) = %+v error=%v", replayedRevocation, err)
 	}
+	conflictingReplay := replayCommand
+	conflictingReplay.Idempotency.RequestHash = sha256.Sum256([]byte("changed revocation request"))
+	if _, err := fixture.repository.AppendVersionRevocation(fixture.ctx, principal, conflictingReplay); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("AppendVersionRevocation(changed replay) error = %v", err)
+	}
 	if _, err := fixture.repository.AppendVersionRevocation(fixture.ctx, principal, VersionRevocationCommand{
 		RevocationID: uuid.New(), VersionID: publication.Version.ID, ReasonCode: "security_issue",
-		PolicySnapshotID: created.Policy.ID, Audit: fixture.auditEvidence(18), RevokedAt: fixture.now.Add(18 * time.Minute),
+		PolicySnapshotID: created.Policy.ID, Idempotency: fixture.idempotency(18),
+		Audit: fixture.auditEvidence(18), RevokedAt: fixture.now.Add(18 * time.Minute),
 	}); !errors.Is(err, ErrVersionRevoked) {
 		t.Fatalf("AppendVersionRevocation(changed reason) error = %v", err)
 	}
@@ -340,10 +390,11 @@ func (f *agentControlRepositoryFixture) initialPublication(
 ) InitialPublicationCommand {
 	definitionID := uuid.New()
 	versionID := uuid.New()
+	material := f.versionMaterial(definitionID, versionID, 1, discriminator)
 	return InitialPublicationCommand{
 		DefinitionID: definitionID, DisplayName: displayName,
-		Version:     f.versionMaterial(definitionID, versionID, 1, discriminator),
-		Idempotency: f.idempotency(discriminator), Audit: f.auditEvidence(discriminator), PublishedAt: f.now,
+		BuildVersion: func() (VersionMaterial, error) { return material, nil },
+		Idempotency:  f.idempotency(discriminator), Audit: f.auditEvidence(discriminator), PublishedAt: f.now,
 	}
 }
 

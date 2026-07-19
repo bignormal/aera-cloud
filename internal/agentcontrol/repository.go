@@ -35,6 +35,7 @@ const (
 	operationPublishInitial     = "publish_initial"
 	operationPublishNext        = "publish_next"
 	operationCreateInstallation = "create_installation"
+	operationRevokeVersion      = "revoke_version"
 	definitionStatusActive      = "active"
 	definitionStatusArchived    = "archived"
 	InstallationStatusPending   = "pending"
@@ -107,7 +108,7 @@ type InitialPublicationCommand struct {
 	DisplayName   string
 	IconMediaType string
 	IconData      []byte
-	Version       VersionMaterial
+	BuildVersion  func() (VersionMaterial, error)
 	Idempotency   IdempotencyEvidence
 	Audit         AuditEvidence
 	PublishedAt   time.Time
@@ -237,6 +238,7 @@ type VersionRevocationCommand struct {
 	ReasonCode           string
 	PolicySnapshotID     uuid.UUID
 	SupersedingVersionID *uuid.UUID
+	Idempotency          IdempotencyEvidence
 	Audit                AuditEvidence
 	RevokedAt            time.Time
 }
@@ -284,6 +286,29 @@ func (r *PostgresRepository) PublishInitial(
 		publication.Replayed = true
 		return publication, commitTransaction(ctx, tx)
 	}
+	var authorized bool
+	err = tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM users u
+			JOIN personal_spaces ps ON ps.id = $2 AND ps.owner_user_id = u.id AND ps.status = 'active'
+			JOIN devices d ON d.id = $3 AND d.user_id = u.id AND d.status = 'active'
+			WHERE u.id = $1 AND u.status = 'active'
+		)
+	`, principal.UserID, principal.PersonalSpaceID, principal.DeviceID).Scan(&authorized)
+	if err != nil {
+		return Publication{}, ErrServiceUnavailable
+	}
+	if !authorized {
+		return Publication{}, ErrNotFound
+	}
+	material, err := command.BuildVersion()
+	if err != nil {
+		return Publication{}, err
+	}
+	if !validVersionMaterial(material, 1) {
+		return Publication{}, ErrInvalidRepositoryCommand
+	}
 
 	owner := principal.Owner()
 	if _, err := tx.Exec(ctx, `
@@ -295,29 +320,29 @@ func (r *PostgresRepository) PublishInitial(
 		command.IconMediaType, nilIfEmptyBytes(command.IconData), command.PublishedAt.UTC()); err != nil {
 		return Publication{}, ErrServiceUnavailable
 	}
-	if err := insertVersion(ctx, tx, principal, command.DefinitionID, command.Version, command.PublishedAt); err != nil {
+	if err := insertVersion(ctx, tx, principal, command.DefinitionID, material, command.PublishedAt); err != nil {
 		return Publication{}, err
 	}
 	result, err := tx.Exec(ctx, `
 		UPDATE agent_definitions SET latest_version_id = $4, updated_at = $5
 		WHERE id = $3 AND tenant_id = $1 AND owner_scope = 'USER' AND owner_id = $2
-	`, owner.TenantID, owner.OwnerID, command.DefinitionID, command.Version.ID, command.PublishedAt.UTC())
+	`, owner.TenantID, owner.OwnerID, command.DefinitionID, material.ID, command.PublishedAt.UTC())
 	if err != nil || result.RowsAffected() != 1 {
 		return Publication{}, ErrServiceUnavailable
 	}
-	response = idempotencyResponse{DefinitionID: command.DefinitionID, VersionID: command.Version.ID}
+	response = idempotencyResponse{DefinitionID: command.DefinitionID, VersionID: material.ID}
 	if err := insertIdempotency(ctx, tx, principal, operationPublishInitial, command.Idempotency,
 		"agent_definition", command.DefinitionID, response, command.PublishedAt); err != nil {
 		return Publication{}, err
 	}
 	if err := recordAudit(ctx, tx, principal, command.Audit, "agent_definition_published", "agent_definition",
 		command.DefinitionID, command.PublishedAt, map[string]string{
-			"agent_definition_id": command.DefinitionID.String(), "agent_version_id": command.Version.ID.String(),
-			"content_digest": hex.EncodeToString(command.Version.ContentDigest[:]),
+			"agent_definition_id": command.DefinitionID.String(), "agent_version_id": material.ID.String(),
+			"content_digest": hex.EncodeToString(material.ContentDigest[:]),
 		}); err != nil {
 		return Publication{}, err
 	}
-	publication, err := loadPublication(ctx, tx, principal, command.DefinitionID, command.Version.ID)
+	publication, err := loadPublication(ctx, tx, principal, command.DefinitionID, material.ID)
 	if err != nil {
 		return Publication{}, err
 	}
@@ -444,6 +469,122 @@ func (r *PostgresRepository) FindVersion(
 		return Version{}, false, ErrServiceUnavailable
 	}
 	return version, true, nil
+}
+
+func (r *PostgresRepository) ListDefinitions(ctx context.Context, principal Principal) ([]Definition, error) {
+	if r == nil || r.postgres == nil || !validPrincipal(principal) {
+		return nil, ErrInvalidRepositoryCommand
+	}
+	rows, err := r.postgres.Query(ctx, `
+		SELECT id, display_name, COALESCE(icon_media_type, ''), icon_data, status, latest_version_id, created_at, updated_at
+		FROM agent_definitions
+		WHERE tenant_id = $1 AND owner_scope = 'USER' AND owner_id = $2
+		ORDER BY updated_at DESC, id
+	`, principal.PersonalSpaceID, principal.UserID)
+	if err != nil {
+		return nil, ErrServiceUnavailable
+	}
+	defer rows.Close()
+	definitions := make([]Definition, 0)
+	for rows.Next() {
+		definition, scanErr := scanDefinition(rows)
+		if scanErr != nil {
+			return nil, ErrServiceUnavailable
+		}
+		definitions = append(definitions, definition)
+	}
+	if rows.Err() != nil {
+		return nil, ErrServiceUnavailable
+	}
+	return definitions, nil
+}
+
+func (r *PostgresRepository) ListVersions(
+	ctx context.Context,
+	principal Principal,
+	definitionID uuid.UUID,
+) ([]Version, error) {
+	if r == nil || r.postgres == nil || !validPrincipal(principal) || definitionID == uuid.Nil {
+		return nil, ErrInvalidRepositoryCommand
+	}
+	var exists bool
+	err := r.postgres.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM agent_definitions
+			WHERE tenant_id = $1 AND owner_scope = 'USER' AND owner_id = $2 AND id = $3
+		)
+	`, principal.PersonalSpaceID, principal.UserID, definitionID).Scan(&exists)
+	if err != nil {
+		return nil, ErrServiceUnavailable
+	}
+	if !exists {
+		return nil, ErrNotFound
+	}
+	rows, err := r.postgres.Query(ctx, `
+		SELECT id, definition_id, version_number, canonical_manifest::text, bundle::text, content_digest,
+			signing_key_id, signature, runtime_minimum_version, COALESCE(runtime_maximum_version_exclusive, ''), published_at
+		FROM agent_versions
+		WHERE tenant_id = $1 AND owner_scope = 'USER' AND owner_id = $2 AND definition_id = $3
+		ORDER BY version_number DESC
+	`, principal.PersonalSpaceID, principal.UserID, definitionID)
+	if err != nil {
+		return nil, ErrServiceUnavailable
+	}
+	defer rows.Close()
+	versions := make([]Version, 0)
+	for rows.Next() {
+		version, scanErr := scanVersion(rows)
+		if scanErr != nil {
+			return nil, ErrServiceUnavailable
+		}
+		versions = append(versions, version)
+	}
+	if rows.Err() != nil {
+		return nil, ErrServiceUnavailable
+	}
+	return versions, nil
+}
+
+func (r *PostgresRepository) RecordDenied(
+	ctx context.Context,
+	principal Principal,
+	command DeniedAuditCommand,
+) error {
+	if r == nil || r.postgres == nil || !validPrincipal(principal) || command.EventID == uuid.Nil ||
+		command.ObjectID == uuid.Nil || command.ReasonCode != "not_found" || !validRequestID(command.RequestID) ||
+		command.OccurredAt.IsZero() {
+		return ErrInvalidRepositoryCommand
+	}
+	eventType := ""
+	metadata := map[string]string{
+		"tenant_id": principal.PersonalSpaceID.String(), "owner_scope": string(OwnerScopeUser),
+		"owner_id": principal.UserID.String(),
+	}
+	switch command.ObjectType {
+	case "agent_definition":
+		eventType = "agent_definition_access_denied"
+		metadata["agent_definition_id"] = command.ObjectID.String()
+	case "agent_version":
+		eventType = "agent_version_access_denied"
+		metadata["agent_version_id"] = command.ObjectID.String()
+	default:
+		return ErrInvalidRepositoryCommand
+	}
+	recorder, err := audit.NewPostgresRecorder(r.postgres)
+	if err != nil {
+		return ErrServiceUnavailable
+	}
+	actor := principal.UserID
+	device := principal.DeviceID
+	if err := recorder.Record(ctx, audit.Event{
+		ID: command.EventID, EventType: eventType, ActorUserID: &actor, DeviceID: &device,
+		ObjectType: command.ObjectType, ObjectID: &command.ObjectID, Outcome: audit.OutcomeDenied,
+		ReasonCode: command.ReasonCode, RequestID: command.RequestID, Metadata: metadata,
+		OccurredAt: command.OccurredAt.UTC(),
+	}); err != nil {
+		return ErrServiceUnavailable
+	}
+	return nil
 }
 
 func (r *PostgresRepository) CreatePendingInstallation(
@@ -828,6 +969,21 @@ func (r *PostgresRepository) AppendVersionRevocation(
 		return VersionRevocation{}, ErrServiceUnavailable
 	}
 	defer rollback(tx)
+	response, replayed, err := lockAndReadIdempotency(ctx, tx, principal, operationRevokeVersion, command.Idempotency)
+	if err != nil {
+		return VersionRevocation{}, err
+	}
+	if replayed {
+		existing, found, err := findVersionRevocation(ctx, tx, principal, response.VersionID)
+		if err != nil {
+			return VersionRevocation{}, err
+		}
+		if !found {
+			return VersionRevocation{}, ErrServiceUnavailable
+		}
+		existing.Replayed = true
+		return existing, commitTransaction(ctx, tx)
+	}
 	owner := principal.Owner()
 	if _, err := loadVersion(ctx, tx, principal, command.VersionID); err != nil {
 		return VersionRevocation{}, err
@@ -835,16 +991,11 @@ func (r *PostgresRepository) AppendVersionRevocation(
 	if _, err := loadPolicy(ctx, tx, principal, command.PolicySnapshotID); err != nil {
 		return VersionRevocation{}, err
 	}
-	existing, found, err := findVersionRevocation(ctx, tx, principal, command.VersionID)
+	_, found, err := findVersionRevocation(ctx, tx, principal, command.VersionID)
 	if err != nil {
 		return VersionRevocation{}, err
 	}
 	if found {
-		if existing.ReasonCode == command.ReasonCode && existing.PolicySnapshotID == command.PolicySnapshotID &&
-			uuidPointersEqual(existing.SupersedingVersionID, command.SupersedingVersionID) {
-			existing.Replayed = true
-			return existing, commitTransaction(ctx, tx)
-		}
 		return VersionRevocation{}, ErrVersionRevoked
 	}
 	if command.SupersedingVersionID != nil {
@@ -860,6 +1011,11 @@ func (r *PostgresRepository) AppendVersionRevocation(
 	`, command.RevocationID, command.VersionID, owner.TenantID, owner.OwnerID, command.ReasonCode,
 		command.PolicySnapshotID, command.SupersedingVersionID, command.RevokedAt.UTC()); err != nil {
 		return VersionRevocation{}, ErrServiceUnavailable
+	}
+	response = idempotencyResponse{VersionID: command.VersionID}
+	if err := insertIdempotency(ctx, tx, principal, operationRevokeVersion, command.Idempotency,
+		"agent_version_revocation", command.RevocationID, response, command.RevokedAt); err != nil {
+		return VersionRevocation{}, err
 	}
 	if err := recordAudit(ctx, tx, principal, command.Audit, "agent_version_revoked", "agent_version",
 		command.VersionID, command.RevokedAt, map[string]string{
@@ -1251,7 +1407,7 @@ func validInitialPublication(command InitialPublicationCommand) bool {
 	name := strings.TrimSpace(command.DisplayName)
 	return command.DefinitionID != uuid.Nil && name == command.DisplayName && utf8.ValidString(name) &&
 		len([]rune(name)) >= 1 && len([]rune(name)) <= 100 && validIcon(command.IconMediaType, command.IconData) &&
-		validVersionMaterial(command.Version, 1) && validIdempotency(command.Idempotency, command.PublishedAt) &&
+		command.BuildVersion != nil && validIdempotency(command.Idempotency, command.PublishedAt) &&
 		validAuditEvidence(command.Audit) && !command.PublishedAt.IsZero()
 }
 
@@ -1293,7 +1449,8 @@ func validVersionRevocation(command VersionRevocationCommand) bool {
 	return command.RevocationID != uuid.Nil && command.VersionID != uuid.Nil && command.PolicySnapshotID != uuid.Nil &&
 		validToken(command.ReasonCode, 64) && (command.SupersedingVersionID == nil ||
 		(*command.SupersedingVersionID != uuid.Nil && *command.SupersedingVersionID != command.VersionID)) &&
-		validAuditEvidence(command.Audit) && !command.RevokedAt.IsZero()
+		validIdempotency(command.Idempotency, command.RevokedAt) && validAuditEvidence(command.Audit) &&
+		!command.RevokedAt.IsZero()
 }
 
 func validIdempotency(evidence IdempotencyEvidence, createdAt time.Time) bool {
