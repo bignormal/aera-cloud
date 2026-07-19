@@ -207,6 +207,14 @@ func TestRepositoryPersistsInstallationPolicyBindingRevocationAndLifecycle(t *te
 	if created.Installation.DeviceInstallationID != fixture.deviceInstallationID(t, principal.DeviceID) {
 		t.Fatal("device installation ID was not derived from the authenticated device")
 	}
+	storedPolicy, found, err := fixture.repository.FindPolicySnapshot(fixture.ctx, principal, created.Policy.ID)
+	if err != nil || !found || storedPolicy.ID != created.Policy.ID || !bytes.Equal(storedPolicy.Document, created.Policy.Document) {
+		t.Fatalf("FindPolicySnapshot() = %+v found=%v error=%v", storedPolicy, found, err)
+	}
+	other := fixture.principal(t, 8)
+	if _, found, err := fixture.repository.FindPolicySnapshot(fixture.ctx, other, created.Policy.ID); err != nil || found {
+		t.Fatalf("FindPolicySnapshot(cross owner) found=%v error=%v", found, err)
+	}
 	activationContext, found, err := fixture.repository.LoadActivationContext(fixture.ctx, principal, created.Installation.ID)
 	if err != nil || !found || activationContext.Version.ID != publication.Version.ID ||
 		!bytes.Equal(activationContext.DevicePublicKey, bytes.Repeat([]byte{7}, 32)) {

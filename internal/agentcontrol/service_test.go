@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"reflect"
 	"strconv"
@@ -203,7 +204,10 @@ func TestServiceListAndGetDetachResultsAndAuditCrossOwnerNonDisclosure(t *testin
 	signature := bytes.Repeat([]byte{7}, 64)
 	definitionID := uuid.New()
 	versionID := uuid.New()
+	policyID := uuid.New()
 	latest := versionID
+	policyDocument := []byte(`{"schema_version":1}`)
+	policySignature := bytes.Repeat([]byte{8}, 64)
 	fixture.repository.listDefinitions = func(context.Context, Principal) ([]Definition, error) {
 		return []Definition{{ID: definitionID, DisplayName: "Agent", IconData: icon, Status: definitionStatusActive, LatestVersionID: &latest}}, nil
 	}
@@ -212,6 +216,9 @@ func TestServiceListAndGetDetachResultsAndAuditCrossOwnerNonDisclosure(t *testin
 	}
 	fixture.repository.findVersion = func(context.Context, Principal, uuid.UUID) (Version, bool, error) {
 		return Version{ID: versionID, DefinitionID: definitionID, VersionNumber: 1, Bundle: bundle, Signature: signature}, true, nil
+	}
+	fixture.repository.findPolicySnapshot = func(context.Context, Principal, uuid.UUID) (PolicySnapshot, bool, error) {
+		return PolicySnapshot{ID: policyID, Document: policyDocument, Signature: policySignature}, true, nil
 	}
 	fixture.repository.listVersions = func(context.Context, Principal, uuid.UUID) ([]Version, error) {
 		return []Version{{ID: versionID, DefinitionID: definitionID, VersionNumber: 1, Bundle: bundle, Signature: signature}}, nil
@@ -234,12 +241,18 @@ func TestServiceListAndGetDetachResultsAndAuditCrossOwnerNonDisclosure(t *testin
 	if err != nil {
 		t.Fatalf("GetVersion() error = %v", err)
 	}
+	policy, err := fixture.service.GetPolicySnapshot(context.Background(), fixture.principal, policyID, "request-6-policy")
+	if err != nil {
+		t.Fatalf("GetPolicySnapshot() error = %v", err)
+	}
 	definitions[0].IconData[0] = 9
 	versions[0].Bundle[0] = 9
 	versions[0].Signature[0] = 9
 	version.Bundle[0] = 8
 	version.Signature[0] = 8
-	if icon[0] != 1 || bundle[0] != '{' || signature[0] != 7 {
+	policy.Document[0] = '['
+	policy.Signature[0] = 9
+	if icon[0] != 1 || bundle[0] != '{' || signature[0] != 7 || policyDocument[0] != '{' || policySignature[0] != 8 {
 		t.Fatal("list response aliases repository-owned data")
 	}
 
@@ -249,6 +262,15 @@ func TestServiceListAndGetDetachResultsAndAuditCrossOwnerNonDisclosure(t *testin
 	}
 	if denied.ObjectID != missingID || denied.ObjectType != "agent_definition" || denied.ReasonCode != "not_found" {
 		t.Fatalf("denied audit = %+v", denied)
+	}
+	fixture.repository.findPolicySnapshot = func(context.Context, Principal, uuid.UUID) (PolicySnapshot, bool, error) {
+		return PolicySnapshot{}, false, nil
+	}
+	if _, err := fixture.service.GetPolicySnapshot(context.Background(), fixture.principal, missingID, "request-7-policy"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetPolicySnapshot(cross owner) error = %v", err)
+	}
+	if denied.ObjectID != missingID || denied.ObjectType != "policy_snapshot" || denied.ReasonCode != "not_found" {
+		t.Fatalf("policy denied audit = %+v", denied)
 	}
 }
 
@@ -366,6 +388,31 @@ func TestServiceCreateInstallationSignsBoundedPolicyAfterOwnerAuthorizationAndRe
 	replayed, err := fixture.service.CreateInstallation(context.Background(), fixture.principal, request)
 	if err != nil || !replayed.Replayed || replayed.Installation.ID != created.Installation.ID || policyBuilds != 1 {
 		t.Fatalf("CreateInstallation(replay) = %+v error=%v policyBuilds=%d", replayed, err, policyBuilds)
+	}
+}
+
+func TestPolicyDocumentRecanonicalizesEquivalentJSONStorageBytes(t *testing.T) {
+	version := policyVersionFixture(t, uuid.New(), uuid.New(), 1)
+	version.CanonicalManifest = append([]byte(" \n\t"), version.CanonicalManifest...)
+	version.Bundle = append([]byte("\n "), version.Bundle...)
+
+	document, err := policyDocumentForVersion(version)
+	if err != nil {
+		t.Fatalf("policyDocumentForVersion(equivalent JSON) error = %v", err)
+	}
+	if !bytes.Contains(document, []byte(hex.EncodeToString(version.ContentDigest[:]))) {
+		t.Fatalf("policy document does not retain the immutable version digest: %s", document)
+	}
+
+	tampered := version
+	tampered.CanonicalManifest = bytes.Replace(
+		tampered.CanonicalManifest,
+		[]byte("Agent identity"),
+		[]byte("Altered identity"),
+		1,
+	)
+	if _, err := policyDocumentForVersion(tampered); !errors.Is(err, ErrInvalidAgentContent) {
+		t.Fatalf("policyDocumentForVersion(tampered) error = %v", err)
 	}
 }
 
@@ -619,6 +666,7 @@ type stubServiceRepository struct {
 	publishNext               func(context.Context, Principal, NextPublicationCommand) (Publication, error)
 	findDefinition            func(context.Context, Principal, uuid.UUID) (Definition, bool, error)
 	findVersion               func(context.Context, Principal, uuid.UUID) (Version, bool, error)
+	findPolicySnapshot        func(context.Context, Principal, uuid.UUID) (PolicySnapshot, bool, error)
 	listDefinitions           func(context.Context, Principal) ([]Definition, error)
 	listVersions              func(context.Context, Principal, uuid.UUID) ([]Version, error)
 	appendRevocation          func(context.Context, Principal, VersionRevocationCommand) (VersionRevocation, error)
@@ -658,6 +706,13 @@ func (s *stubServiceRepository) FindVersion(ctx context.Context, principal Princ
 		return Version{}, false, errors.New("unexpected FindVersion call")
 	}
 	return s.findVersion(ctx, principal, id)
+}
+
+func (s *stubServiceRepository) FindPolicySnapshot(ctx context.Context, principal Principal, id uuid.UUID) (PolicySnapshot, bool, error) {
+	if s.findPolicySnapshot == nil {
+		return PolicySnapshot{}, false, errors.New("unexpected FindPolicySnapshot call")
+	}
+	return s.findPolicySnapshot(ctx, principal, id)
 }
 
 func (s *stubServiceRepository) ListDefinitions(ctx context.Context, principal Principal) ([]Definition, error) {

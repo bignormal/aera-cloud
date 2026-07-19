@@ -693,6 +693,29 @@ paths:
           $ref: '#/components/responses/AgentNotFound'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/policy-snapshots/{policy_snapshot_id}:
+    get:
+      operationId: getUserAgentPolicySnapshot
+      description: Returns the signed policy snapshot for an Agent installation owned by the authenticated USER scope.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/AgentPolicySnapshotID'
+      responses:
+        '200':
+          description: Signed immutable Agent installation policy snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentPolicySnapshot'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '404':
+          $ref: '#/components/responses/AgentNotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /api/v1/agent-versions/{version_id}/revocations:
     post:
       operationId: revokeUserAgentVersion
@@ -954,6 +977,13 @@ components:
         format: uuid
     AgentVersionID:
       name: version_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    AgentPolicySnapshotID:
+      name: policy_snapshot_id
       in: path
       required: true
       schema:

@@ -31,6 +31,7 @@ func TestHTTPAgentControlRoutesUseOnlyAccessClaimsAndStrictContracts(t *testing.
 		{name: "list versions", method: http.MethodGet, path: "/api/v1/agent-definitions/" + fixture.definitionID.String() + "/versions", status: http.StatusOK},
 		{name: "publish next", method: http.MethodPost, path: "/api/v1/agent-definitions/" + fixture.definitionID.String() + "/versions", body: nextPublicationJSON(fixture.versionID), status: http.StatusCreated, idempotent: true},
 		{name: "get version", method: http.MethodGet, path: "/api/v1/agent-versions/" + fixture.versionID.String(), status: http.StatusOK},
+		{name: "get policy snapshot", method: http.MethodGet, path: "/api/v1/policy-snapshots/" + fixture.policyID.String(), status: http.StatusOK},
 		{name: "revoke version", method: http.MethodPost, path: "/api/v1/agent-versions/" + fixture.versionID.String() + "/revocations", body: `{"reason_code":"owner_revoked","policy_snapshot_id":"` + fixture.policyID.String() + `"}`, status: http.StatusCreated, idempotent: true},
 		{name: "create installation", method: http.MethodPost, path: "/api/v1/agent-installations", body: `{"definition_id":"` + fixture.definitionID.String() + `","version_id":"` + fixture.versionID.String() + `"}`, status: http.StatusCreated, idempotent: true},
 		{name: "activate installation", method: http.MethodPost, path: "/api/v1/agent-installations/" + fixture.installationID.String() + "/activate", body: activationJSON(fixture), status: http.StatusOK, idempotent: true},
@@ -246,7 +247,7 @@ func newAgentControlHTTPFixture(t *testing.T) *agentControlHTTPFixture {
 	service := &stubAgentControlHTTPService{
 		definitions: []Definition{definition}, definition: definition, versions: []Version{version}, version: version,
 		publication: Publication{Definition: definition, Version: version},
-		creation:    InstallationCreation{Installation: installation, Policy: policy}, installation: installation,
+		creation:    InstallationCreation{Installation: installation, Policy: policy}, policy: policy, installation: installation,
 		revocation: VersionRevocation{ID: uuid.New(), VersionID: versionID, ReasonCode: "owner_revoked", PolicySnapshotID: policyID, CreatedAt: now},
 		binding: RuntimeBindingRecord{
 			ID: uuid.New(), DeviceID: principal.DeviceID, AgentInstallationID: installationID, AgentVersionID: versionID,
@@ -274,6 +275,7 @@ type stubAgentControlHTTPService struct {
 	version       Version
 	publication   Publication
 	creation      InstallationCreation
+	policy        PolicySnapshot
 	installation  Installation
 	revocation    VersionRevocation
 	binding       RuntimeBindingRecord
@@ -307,6 +309,11 @@ func (s *stubAgentControlHTTPService) PublishNext(_ context.Context, principal P
 func (s *stubAgentControlHTTPService) GetVersion(_ context.Context, principal Principal, _ uuid.UUID, _ string) (Version, error) {
 	s.lastPrincipal = principal
 	return s.version, s.err
+}
+
+func (s *stubAgentControlHTTPService) GetPolicySnapshot(_ context.Context, principal Principal, _ uuid.UUID, _ string) (PolicySnapshot, error) {
+	s.lastPrincipal = principal
+	return s.policy, s.err
 }
 
 func (s *stubAgentControlHTTPService) RevokeVersion(_ context.Context, principal Principal, _ RevokeVersionRequest) (VersionRevocation, error) {

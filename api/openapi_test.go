@@ -130,6 +130,7 @@ func TestOpenAPIContainsStrictUserAgentControlPlaneContract(t *testing.T) {
 		"/api/v1/agent-definitions/{definition_id}/versions:",
 		"/api/v1/agent-versions/{version_id}:",
 		"/api/v1/agent-versions/{version_id}/revocations:",
+		"/api/v1/policy-snapshots/{policy_snapshot_id}:",
 		"/api/v1/agent-installations:",
 		"/api/v1/agent-installations/{installation_id}/activate:",
 		"/api/v1/agent-installations/{installation_id}/select-version:",

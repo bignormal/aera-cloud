@@ -31,6 +31,7 @@ type HTTPService interface {
 	ListVersions(context.Context, Principal, uuid.UUID, string) ([]Version, error)
 	PublishNext(context.Context, Principal, PublishNextRequest) (Publication, error)
 	GetVersion(context.Context, Principal, uuid.UUID, string) (Version, error)
+	GetPolicySnapshot(context.Context, Principal, uuid.UUID, string) (PolicySnapshot, error)
 	RevokeVersion(context.Context, Principal, RevokeVersionRequest) (VersionRevocation, error)
 	CreateInstallation(context.Context, Principal, CreateInstallationRequest) (InstallationCreation, error)
 	ActivateInstallation(context.Context, Principal, ActivateInstallationRequest) (Installation, error)
@@ -62,6 +63,7 @@ func NewHandler(config HTTPConfig) http.Handler {
 	router.Get("/api/v1/agent-definitions/{definitionID}/versions", handler.listVersions)
 	router.Post("/api/v1/agent-definitions/{definitionID}/versions", handler.publishNext)
 	router.Get("/api/v1/agent-versions/{versionID}", handler.getVersion)
+	router.Get("/api/v1/policy-snapshots/{policySnapshotID}", handler.getPolicySnapshot)
 	router.Post("/api/v1/agent-versions/{versionID}/revocations", handler.revokeVersion)
 	router.Post("/api/v1/agent-installations", handler.createInstallation)
 	router.Post("/api/v1/agent-installations/{installationID}/activate", handler.activateInstallation)
@@ -214,6 +216,23 @@ func (h *httpHandler) getVersion(response http.ResponseWriter, request *http.Req
 		return
 	}
 	writeAgentJSON(response, http.StatusOK, publicVersion(version))
+}
+
+func (h *httpHandler) getPolicySnapshot(response http.ResponseWriter, request *http.Request) {
+	principal, ok := h.authorize(response, request)
+	if !ok {
+		return
+	}
+	policySnapshotID, ok := pathUUID(response, request, "policySnapshotID")
+	if !ok {
+		return
+	}
+	policy, err := h.service.GetPolicySnapshot(request.Context(), principal, policySnapshotID, newAgentRequestID())
+	if err != nil {
+		writeAgentServiceError(response, err)
+		return
+	}
+	writeAgentJSON(response, http.StatusOK, publicPolicy(policy))
 }
 
 func (h *httpHandler) revokeVersion(response http.ResponseWriter, request *http.Request) {

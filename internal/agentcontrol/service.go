@@ -22,6 +22,7 @@ type ServiceRepository interface {
 	PublishNext(context.Context, Principal, NextPublicationCommand) (Publication, error)
 	FindDefinition(context.Context, Principal, uuid.UUID) (Definition, bool, error)
 	FindVersion(context.Context, Principal, uuid.UUID) (Version, bool, error)
+	FindPolicySnapshot(context.Context, Principal, uuid.UUID) (PolicySnapshot, bool, error)
 	ListDefinitions(context.Context, Principal) ([]Definition, error)
 	ListVersions(context.Context, Principal, uuid.UUID) ([]Version, error)
 	AppendVersionRevocation(context.Context, Principal, VersionRevocationCommand) (VersionRevocation, error)
@@ -335,6 +336,28 @@ func (s *Service) GetVersion(
 		return Version{}, ErrNotFound
 	}
 	return cloneVersion(version), nil
+}
+
+func (s *Service) GetPolicySnapshot(
+	ctx context.Context,
+	principal Principal,
+	policySnapshotID uuid.UUID,
+	requestID string,
+) (PolicySnapshot, error) {
+	if s == nil || !validPrincipal(principal) || policySnapshotID == uuid.Nil || !validRequestID(requestID) {
+		return PolicySnapshot{}, ErrInvalidRequest
+	}
+	policy, found, err := s.repository.FindPolicySnapshot(ctx, principal, policySnapshotID)
+	if err != nil {
+		return PolicySnapshot{}, err
+	}
+	if !found {
+		if err := s.recordDenied(ctx, principal, "policy_snapshot", policySnapshotID, requestID); err != nil {
+			return PolicySnapshot{}, err
+		}
+		return PolicySnapshot{}, ErrNotFound
+	}
+	return clonePolicySnapshot(policy), nil
 }
 
 func (s *Service) RevokeVersion(
@@ -690,15 +713,20 @@ func policyDocumentForVersion(version Version) ([]byte, error) {
 		len(version.Bundle) == 0 || len(version.Bundle) > MaxBundleBytes {
 		return nil, ErrInvalidAgentContent
 	}
-	content := make([]byte, 0, len(version.CanonicalManifest)+1+len(version.Bundle))
-	content = append(content, version.CanonicalManifest...)
-	content = append(content, 0)
-	content = append(content, version.Bundle...)
-	if sha256.Sum256(content) != version.ContentDigest {
+	manifestValue, err := DecodeManifest(version.CanonicalManifest)
+	if err != nil {
+		return nil, ErrInvalidAgentContent
+	}
+	bundleValue, err := DecodeBundle(version.Bundle)
+	if err != nil {
+		return nil, ErrInvalidAgentContent
+	}
+	canonical, err := CanonicalizeVersion(manifestValue, bundleValue)
+	if err != nil || canonical.ContentDigest != version.ContentDigest {
 		return nil, ErrInvalidAgentContent
 	}
 	var manifest canonicalManifest
-	if err := decodeStrictJSON(version.CanonicalManifest, &manifest); err != nil || manifest.SchemaVersion != 1 {
+	if err := decodeStrictJSON(canonical.ManifestJSON, &manifest); err != nil || manifest.SchemaVersion != 1 {
 		return nil, ErrInvalidAgentContent
 	}
 	document, err := marshalCanonical(policyDocumentV1{

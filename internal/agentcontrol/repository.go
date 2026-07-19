@@ -485,6 +485,24 @@ func (r *PostgresRepository) FindVersion(
 	return version, true, nil
 }
 
+func (r *PostgresRepository) FindPolicySnapshot(
+	ctx context.Context,
+	principal Principal,
+	policySnapshotID uuid.UUID,
+) (PolicySnapshot, bool, error) {
+	if r == nil || r.postgres == nil || !validPrincipal(principal) || policySnapshotID == uuid.Nil {
+		return PolicySnapshot{}, false, ErrInvalidRepositoryCommand
+	}
+	policy, err := loadPolicy(ctx, r.postgres, principal, policySnapshotID)
+	if errors.Is(err, ErrNotFound) {
+		return PolicySnapshot{}, false, nil
+	}
+	if err != nil {
+		return PolicySnapshot{}, false, err
+	}
+	return policy, true, nil
+}
+
 func (r *PostgresRepository) ListDefinitions(ctx context.Context, principal Principal) ([]Definition, error) {
 	if r == nil || r.postgres == nil || !validPrincipal(principal) {
 		return nil, ErrInvalidRepositoryCommand
