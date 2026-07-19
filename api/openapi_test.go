@@ -151,6 +151,7 @@ func TestOpenAPIContainsStrictUserAgentControlPlaneContract(t *testing.T) {
 	for _, contract := range []string{
 		"Idempotency-Key", "maximum agent publication request body is 2621440 bytes",
 		"maximum Agent metadata request body is 65536 bytes", "agent_version", "agent_policy",
+		"type: [string, 'null']",
 	} {
 		if !strings.Contains(document, contract) {
 			t.Fatalf("OpenAPI is missing Agent contract %q", contract)

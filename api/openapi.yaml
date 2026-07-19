@@ -1445,7 +1445,7 @@ components:
           minLength: 1
           maxLength: 64
         maximum_version_exclusive:
-          type: string
+          type: [string, 'null']
           minLength: 1
           maxLength: 64
     AgentVersionBundleV1:
