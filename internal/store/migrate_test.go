@@ -42,6 +42,13 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 		"audit_events",
 		"legal_acceptances",
 		"device_self_revocation_nonces",
+		"agent_definitions",
+		"agent_versions",
+		"agent_version_revocations",
+		"installations",
+		"policy_snapshots",
+		"runtime_binding_records",
+		"agent_control_idempotency_keys",
 	}
 	for _, table := range tables {
 		var exists bool
@@ -56,13 +63,54 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	assertUniqueConstraint(t, ctx, postgres, "identities", "identities_kind_lookup_hmac_key", []string{"kind", "lookup_hmac"})
 	assertUniqueConstraint(t, ctx, postgres, "devices", "devices_installation_id_key", []string{"installation_id"})
 	assertUniqueConstraint(t, ctx, postgres, "identities", "identities_user_id_kind_key", []string{"user_id", "kind"})
+	assertUniqueConstraint(t, ctx, postgres, "agent_versions", "agent_versions_definition_version_key", []string{"definition_id", "version_number"})
+	assertUniqueConstraint(t, ctx, postgres, "agent_version_revocations", "agent_version_revocations_version_key", []string{"version_id"})
+	assertUniqueConstraint(t, ctx, postgres, "policy_snapshots", "policy_snapshots_installation_version_key", []string{"installation_id", "policy_version"})
+	assertUniqueConstraint(t, ctx, postgres, "agent_control_idempotency_keys", "agent_control_idempotency_owner_operation_key", []string{
+		"tenant_id", "owner_scope", "owner_id", "operation", "key_hash",
+	})
+
+	assertCheckConstraintContains(t, ctx, postgres, "agent_versions", "agent_versions_content_digest_length_check", "octet_length(content_digest) = 32")
+	assertCheckConstraintContains(t, ctx, postgres, "agent_versions", "agent_versions_signature_length_check", "octet_length(signature) = 64")
+	assertCheckConstraintContains(t, ctx, postgres, "policy_snapshots", "policy_snapshots_content_digest_length_check", "octet_length(content_digest) = 32")
+	assertCheckConstraintContains(t, ctx, postgres, "policy_snapshots", "policy_snapshots_signature_length_check", "octet_length(signature) = 64")
+	assertCheckConstraintContains(t, ctx, postgres, "runtime_binding_records", "runtime_binding_records_tool_digest_length_check", "octet_length(tool_permission_digest) = 32")
+	assertCheckConstraintContains(t, ctx, postgres, "agent_control_idempotency_keys", "agent_control_idempotency_key_hash_length_check", "octet_length(key_hash) = 32")
+	assertCheckConstraintContains(t, ctx, postgres, "agent_control_idempotency_keys", "agent_control_idempotency_request_hash_length_check", "octet_length(request_hash) = 32")
+	assertCheckConstraintContains(t, ctx, postgres, "installations", "installations_lifecycle_check", "runtime_profile_id")
+	assertCheckConstraintContains(t, ctx, postgres, "installations", "installations_status_check", "pending")
+	assertCheckConstraintContains(t, ctx, postgres, "installations", "installations_update_policy_check", "manual")
+
+	assertColumns(t, ctx, postgres, "agent_definitions", []string{
+		"id", "tenant_id", "owner_scope", "owner_id", "display_name", "icon_media_type", "icon_data",
+		"status", "latest_version_id", "created_by", "created_at", "updated_at",
+	})
+	assertColumns(t, ctx, postgres, "agent_versions", []string{
+		"id", "definition_id", "tenant_id", "owner_scope", "owner_id", "version_number",
+		"canonical_manifest", "bundle", "content_digest", "signing_key_id", "signature",
+		"runtime_minimum_version", "runtime_maximum_version_exclusive", "published_by", "published_at",
+	})
+	assertColumns(t, ctx, postgres, "installations", []string{
+		"id", "tenant_id", "owner_scope", "owner_id", "device_id", "device_installation_id",
+		"definition_id", "selected_version_id", "runtime_profile_id", "policy_snapshot_id", "update_policy",
+		"status", "created_by", "created_at", "updated_at", "activated_at", "archived_at",
+	})
+
+	for table, trigger := range map[string]string{
+		"agent_versions":            "agent_versions_immutable_trigger",
+		"policy_snapshots":          "policy_snapshots_immutable_trigger",
+		"agent_version_revocations": "agent_version_revocations_immutable_trigger",
+		"runtime_binding_records":   "runtime_binding_records_immutable_trigger",
+	} {
+		assertTriggerExists(t, ctx, postgres, table, trigger)
+	}
 
 	var applied int
 	if err := postgres.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if applied != 6 {
-		t.Fatalf("applied migration count = %d, want 6", applied)
+	if applied != 7 {
+		t.Fatalf("applied migration count = %d, want 7", applied)
 	}
 	var receiptConsumedColumn bool
 	if err := postgres.QueryRow(ctx, `
@@ -117,6 +165,76 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	}
 	if adminAuditColumns != 2 {
 		t.Fatalf("restricted audit column count = %d, want 2", adminAuditColumns)
+	}
+}
+
+func assertColumns(t *testing.T, ctx context.Context, postgres *pgxpool.Pool, table string, expected []string) {
+	t.Helper()
+	rows, err := postgres.Query(ctx, `
+		SELECT column_name
+		FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = $1
+	`, table)
+	if err != nil {
+		t.Fatalf("read columns for %s: %v", table, err)
+	}
+	defer rows.Close()
+	actual := make(map[string]struct{}, len(expected))
+	for rows.Next() {
+		var column string
+		if err := rows.Scan(&column); err != nil {
+			t.Fatalf("scan column for %s: %v", table, err)
+		}
+		actual[column] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate columns for %s: %v", table, err)
+	}
+	for _, column := range expected {
+		if _, ok := actual[column]; !ok {
+			t.Errorf("table %s is missing column %s", table, column)
+		}
+	}
+}
+
+func assertCheckConstraintContains(
+	t *testing.T,
+	ctx context.Context,
+	postgres *pgxpool.Pool,
+	table string,
+	name string,
+	expected string,
+) {
+	t.Helper()
+	var definition string
+	err := postgres.QueryRow(ctx, `
+		SELECT pg_get_constraintdef(c.oid)
+		FROM pg_constraint c
+		JOIN pg_class t ON t.oid = c.conrelid
+		WHERE t.relname = $1 AND c.conname = $2 AND c.contype = 'c'
+	`, table, name).Scan(&definition)
+	if err != nil {
+		t.Fatalf("read check constraint %s: %v", name, err)
+	}
+	if !strings.Contains(definition, expected) {
+		t.Fatalf("check constraint %s = %q, want it to contain %q", name, definition, expected)
+	}
+}
+
+func assertTriggerExists(t *testing.T, ctx context.Context, postgres *pgxpool.Pool, table, name string) {
+	t.Helper()
+	var enabled string
+	err := postgres.QueryRow(ctx, `
+		SELECT tg.tgenabled::text
+		FROM pg_trigger tg
+		JOIN pg_class tbl ON tbl.oid = tg.tgrelid
+		WHERE tbl.relname = $1 AND tg.tgname = $2 AND NOT tg.tgisinternal
+	`, table, name).Scan(&enabled)
+	if err != nil {
+		t.Fatalf("read trigger %s: %v", name, err)
+	}
+	if enabled != "O" {
+		t.Fatalf("trigger %s enabled state = %q, want O", name, enabled)
 	}
 }
 

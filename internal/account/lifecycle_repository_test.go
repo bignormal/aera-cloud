@@ -175,6 +175,7 @@ func TestPostgresLifecycleFinalizationReleasesIdentityAndAnonymizesAudit(t *test
 		t.Fatalf("Register() error = %v", err)
 	}
 	seedLifecycleSession(t, fixture, registration.UserID, 62)
+	agentAuditID := seedAgentControlPlaneState(t, fixture, registration.UserID, registration.PersonalSpaceID)
 	deletionClaims := fixture.verifiedReceipt(t, secure.IdentityEmail, "alice@example.com", verification.PurposeAccountDeletion, 63)
 	requestedAt := fixture.now.Add(time.Hour)
 	if err := fixture.repository.RequestDeletion(fixture.ctx, DeletionRequestRecord{
@@ -229,6 +230,39 @@ func TestPostgresLifecycleFinalizationReleasesIdentityAndAnonymizesAudit(t *test
 		if count != 0 {
 			t.Fatalf("finalized %s rows = %d", table, count)
 		}
+	}
+	for _, table := range []string{
+		"agent_definitions",
+		"agent_versions",
+		"agent_version_revocations",
+		"installations",
+		"policy_snapshots",
+		"runtime_binding_records",
+		"agent_control_idempotency_keys",
+	} {
+		var count int64
+		if err := fixture.postgres.QueryRow(
+			fixture.ctx,
+			`SELECT count(*) FROM `+table+` WHERE owner_id = $1`,
+			registration.UserID,
+		).Scan(&count); err != nil {
+			t.Fatalf("count finalized %s: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("finalized %s rows = %d", table, count)
+		}
+	}
+	var agentObjectCleared bool
+	var agentMetadataCleared bool
+	if err := fixture.postgres.QueryRow(fixture.ctx, `
+		SELECT object_id IS NULL, metadata = '{}'::jsonb
+		FROM audit_events
+		WHERE id = $1
+	`, agentAuditID).Scan(&agentObjectCleared, &agentMetadataCleared); err != nil {
+		t.Fatalf("read anonymized Agent audit: %v", err)
+	}
+	if !agentObjectCleared || !agentMetadataCleared {
+		t.Fatalf("Agent audit anonymization object=%v metadata=%v", agentObjectCleared, agentMetadataCleared)
 	}
 	var identifyingAudit int64
 	if err := fixture.postgres.QueryRow(fixture.ctx, `
@@ -314,6 +348,130 @@ func seedLifecycleSession(t *testing.T, fixture *repositoryFixture, userID uuid.
 		t.Fatalf("insert lifecycle session: %v", err)
 	}
 	return sessionID
+}
+
+func seedAgentControlPlaneState(
+	t *testing.T,
+	fixture *repositoryFixture,
+	userID uuid.UUID,
+	personalSpaceID uuid.UUID,
+) uuid.UUID {
+	t.Helper()
+	var deviceID uuid.UUID
+	var deviceInstallationID uuid.UUID
+	if err := fixture.postgres.QueryRow(fixture.ctx, `
+		SELECT id, installation_id FROM devices WHERE user_id = $1
+	`, userID).Scan(&deviceID, &deviceInstallationID); err != nil {
+		t.Fatalf("read lifecycle device: %v", err)
+	}
+
+	definitionID := uuid.New()
+	versionID := uuid.New()
+	installationID := uuid.New()
+	policyID := uuid.New()
+	runtimeProfileID := uuid.New()
+	digest := bytes.Repeat([]byte{0x91}, 32)
+	signature := bytes.Repeat([]byte{0x92}, 64)
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		INSERT INTO agent_definitions (
+			id, tenant_id, owner_scope, owner_id, display_name, status, created_by, created_at, updated_at
+		) VALUES ($1, $2, 'USER', $3, 'Deletion fixture', 'active', $3, $4, $4)
+	`, definitionID, personalSpaceID, userID, fixture.now); err != nil {
+		t.Fatalf("insert Agent definition fixture: %v", err)
+	}
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		INSERT INTO agent_versions (
+			id, definition_id, tenant_id, owner_scope, owner_id, version_number,
+			canonical_manifest, bundle, content_digest, signing_key_id, signature,
+			runtime_minimum_version, published_by, published_at
+		) VALUES (
+			$1, $2, $3, 'USER', $4, 1,
+			'{"schema_version":1}'::jsonb, '{"assets":[]}'::jsonb, $5, 'agent-control-1', $6,
+			'0.18.2-agentera.1', $4, $7
+		)
+	`, versionID, definitionID, personalSpaceID, userID, digest, signature, fixture.now); err != nil {
+		t.Fatalf("insert Agent version fixture: %v", err)
+	}
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		UPDATE agent_definitions SET latest_version_id = $2 WHERE id = $1
+	`, definitionID, versionID); err != nil {
+		t.Fatalf("link Agent latest version fixture: %v", err)
+	}
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		INSERT INTO installations (
+			id, tenant_id, owner_scope, owner_id, device_id, device_installation_id,
+			definition_id, selected_version_id, update_policy, status, created_by, created_at, updated_at
+		) VALUES ($1, $2, 'USER', $3, $4, $5, $6, $7, 'manual', 'pending', $3, $8, $8)
+	`, installationID, personalSpaceID, userID, deviceID, deviceInstallationID, definitionID, versionID, fixture.now); err != nil {
+		t.Fatalf("insert Agent installation fixture: %v", err)
+	}
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		INSERT INTO policy_snapshots (
+			id, installation_id, agent_version_id, tenant_id, owner_scope, owner_id,
+			policy_version, policy_document, content_digest, issuer, signing_key_id, signature, created_by, created_at
+		) VALUES (
+			$1, $2, $3, $4, 'USER', $5,
+			1, '{"tools":{"allowed":[]}}'::jsonb, $6, 'agentera-cloud', 'agent-control-1', $7, $5, $8
+		)
+	`, policyID, installationID, versionID, personalSpaceID, userID, digest, signature, fixture.now); err != nil {
+		t.Fatalf("insert Agent policy fixture: %v", err)
+	}
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		UPDATE installations
+		SET runtime_profile_id = $2, policy_snapshot_id = $3, status = 'active', activated_at = $4, updated_at = $4
+		WHERE id = $1
+	`, installationID, runtimeProfileID, policyID, fixture.now); err != nil {
+		t.Fatalf("activate Agent installation fixture: %v", err)
+	}
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		INSERT INTO agent_version_revocations (
+			id, version_id, tenant_id, owner_scope, owner_id, reason_code,
+			actor_user_id, policy_snapshot_id, created_at
+		) VALUES ($1, $2, $3, 'USER', $4, 'owner_revoked', $4, $5, $6)
+	`, uuid.New(), versionID, personalSpaceID, userID, policyID, fixture.now); err != nil {
+		t.Fatalf("insert Agent revocation fixture: %v", err)
+	}
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		INSERT INTO runtime_binding_records (
+			id, tenant_id, owner_scope, owner_id, device_id, agent_installation_id,
+			agent_version_id, runtime_profile_id, runtime_version, policy_snapshot_id,
+			tool_permission_digest, created_at
+		) VALUES ($1, $2, 'USER', $3, $4, $5, $6, $7, '0.18.2-agentera.1', $8, $9, $10)
+	`, uuid.New(), personalSpaceID, userID, deviceID, installationID, versionID, runtimeProfileID, policyID, digest, fixture.now); err != nil {
+		t.Fatalf("insert RuntimeBinding record fixture: %v", err)
+	}
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		INSERT INTO agent_control_idempotency_keys (
+			id, tenant_id, owner_scope, owner_id, operation, key_hash, request_hash,
+			resource_type, resource_id, response_document, created_at, expires_at
+		) VALUES (
+			$1, $2, 'USER', $3, 'publish_initial', $4, $5,
+			'agent_version', $6, '{"version_number":1}'::jsonb, $7, $8
+		)
+	`, uuid.New(), personalSpaceID, userID, bytes.Repeat([]byte{0x93}, 32), bytes.Repeat([]byte{0x94}, 32), versionID, fixture.now, fixture.now.Add(24*time.Hour)); err != nil {
+		t.Fatalf("insert Agent idempotency fixture: %v", err)
+	}
+
+	auditID := uuid.New()
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		INSERT INTO audit_events (
+			id, event_type, actor_user_id, device_id, object_type, object_id, outcome, metadata, created_at
+		) VALUES (
+			$1, 'agent_version_published', $2, $3, 'agent_version', $4, 'success',
+			jsonb_build_object(
+				'tenant_id', $5::uuid::text,
+				'owner_scope', 'USER',
+				'owner_id', $2::uuid::text,
+				'agent_definition_id', $6::uuid::text,
+				'agent_version_id', $4::uuid::text,
+				'content_digest', encode($7::bytea, 'hex')
+			),
+			$8
+		)
+	`, auditID, userID, deviceID, versionID, personalSpaceID, definitionID, digest, fixture.now); err != nil {
+		t.Fatalf("insert Agent audit fixture: %v", err)
+	}
+	return auditID
 }
 
 func lifecycleOwnerColumn(table string) string {

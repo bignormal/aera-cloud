@@ -375,10 +375,20 @@ func (r *PostgresRepository) FinalizeDeletion(
 		SET actor_user_id = CASE WHEN actor_user_id = $1 THEN NULL ELSE actor_user_id END,
 			subject_user_id = CASE WHEN subject_user_id = $1 THEN NULL ELSE subject_user_id END,
 			device_id = CASE WHEN device_id IN (SELECT id FROM devices WHERE user_id = $1) THEN NULL ELSE device_id END,
+			metadata = CASE WHEN metadata->>'owner_id' = $1::text THEN '{}'::jsonb ELSE metadata END,
 			object_id = CASE
 				WHEN actor_user_id = $1 OR subject_user_id = $1 OR object_id = $1
 					OR device_id IN (SELECT id FROM devices WHERE user_id = $1)
-					OR object_id IN (SELECT id FROM devices WHERE user_id = $1) THEN NULL
+					OR object_id IN (SELECT id FROM devices WHERE user_id = $1)
+					OR metadata->>'owner_id' = $1::text
+					OR object_id IN (
+						SELECT id FROM agent_definitions WHERE owner_id = $1
+						UNION ALL SELECT id FROM agent_versions WHERE owner_id = $1
+						UNION ALL SELECT id FROM agent_version_revocations WHERE owner_id = $1
+						UNION ALL SELECT id FROM installations WHERE owner_id = $1
+						UNION ALL SELECT id FROM policy_snapshots WHERE owner_id = $1
+						UNION ALL SELECT id FROM runtime_binding_records WHERE owner_id = $1
+					) THEN NULL
 				ELSE object_id
 			END
 		WHERE actor_user_id = $1
@@ -386,8 +396,44 @@ func (r *PostgresRepository) FinalizeDeletion(
 		   OR device_id IN (SELECT id FROM devices WHERE user_id = $1)
 		   OR object_id = $1
 		   OR object_id IN (SELECT id FROM devices WHERE user_id = $1)
+		   OR metadata->>'owner_id' = $1::text
+		   OR object_id IN (
+				SELECT id FROM agent_definitions WHERE owner_id = $1
+				UNION ALL SELECT id FROM agent_versions WHERE owner_id = $1
+				UNION ALL SELECT id FROM agent_version_revocations WHERE owner_id = $1
+				UNION ALL SELECT id FROM installations WHERE owner_id = $1
+				UNION ALL SELECT id FROM policy_snapshots WHERE owner_id = $1
+				UNION ALL SELECT id FROM runtime_binding_records WHERE owner_id = $1
+		   )
 	`, userID); err != nil {
 		return ErrServiceUnavailable
+	}
+	for _, statement := range []string{
+		`DELETE FROM agent_control_idempotency_keys WHERE owner_id = $1`,
+		`DELETE FROM runtime_binding_records WHERE owner_id = $1`,
+		`DELETE FROM agent_version_revocations WHERE owner_id = $1`,
+	} {
+		if _, err := tx.Exec(ctx, statement, userID); err != nil {
+			return ErrServiceUnavailable
+		}
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE installations
+		SET status = 'archived', archived_at = COALESCE(archived_at, $2), updated_at = $2
+		WHERE owner_id = $1
+	`, userID, finalizedAt); err != nil {
+		return ErrServiceUnavailable
+	}
+	for _, statement := range []string{
+		`DELETE FROM policy_snapshots WHERE owner_id = $1`,
+		`DELETE FROM installations WHERE owner_id = $1`,
+		`UPDATE agent_definitions SET latest_version_id = NULL WHERE owner_id = $1`,
+		`DELETE FROM agent_versions WHERE owner_id = $1`,
+		`DELETE FROM agent_definitions WHERE owner_id = $1`,
+	} {
+		if _, err := tx.Exec(ctx, statement, userID); err != nil {
+			return ErrServiceUnavailable
+		}
 	}
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM verification_challenges vc
