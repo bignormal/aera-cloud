@@ -68,7 +68,9 @@ func TestLoadAcceptsLoopbackHTTPInDevelopment(t *testing.T) {
 	if cfg.AccessSigningKeyRing.ActiveKeyID != "access-dev-v1" ||
 		len(cfg.AccessSigningKeyRing.Keys["access-dev-v1"]) != ed25519.PrivateKeySize ||
 		cfg.OfflineSigningKeyRing.ActiveKeyID != "offline-dev-v1" ||
-		len(cfg.OfflineSigningKeyRing.Keys["offline-dev-v1"]) != ed25519.PrivateKeySize {
+		len(cfg.OfflineSigningKeyRing.Keys["offline-dev-v1"]) != ed25519.PrivateKeySize ||
+		cfg.AgentControlSigningKeyRing.ActiveKeyID != "agent-control-dev-v1" ||
+		len(cfg.AgentControlSigningKeyRing.Keys["agent-control-dev-v1"]) != ed25519.PrivateKeySize {
 		t.Fatal("desktop signing key rings were not decoded")
 	}
 	if cfg.OfflinePolicyVersion != 1 || cfg.ActiveDeviceLimit != 5 {
@@ -157,6 +159,8 @@ func TestLoadRejectsProductionCredentialsThatAreMissing(t *testing.T) {
 		{name: "access signing keys", key: "AGENTERA_CLOUD_ACCESS_SIGNING_KEYS"},
 		{name: "offline signing active key", key: "AGENTERA_CLOUD_OFFLINE_SIGNING_ACTIVE_KEY_ID"},
 		{name: "offline signing keys", key: "AGENTERA_CLOUD_OFFLINE_SIGNING_KEYS"},
+		{name: "Agent control signing active key", key: "AGENTERA_CLOUD_AGENT_CONTROL_SIGNING_ACTIVE_KEY_ID"},
+		{name: "Agent control signing keys", key: "AGENTERA_CLOUD_AGENT_CONTROL_SIGNING_KEYS"},
 		{name: "offline policy version", key: "AGENTERA_CLOUD_OFFLINE_POLICY_VERSION"},
 		{name: "active device limit", key: "AGENTERA_CLOUD_ACTIVE_DEVICE_LIMIT"},
 		{name: "browser cookie", key: "AGENTERA_CLOUD_BROWSER_COOKIE_NAME"},
@@ -197,6 +201,16 @@ func TestLoadRejectsReusedDesktopAuthorizationKeys(t *testing.T) {
 	_, err = Load(mapLookup(env))
 	if err == nil || !strings.Contains(err.Error(), "independent") {
 		t.Fatalf("Load() signing error = %v, want independent-key validation", err)
+	}
+
+	env = validEnvironment("production")
+	env["AGENTERA_CLOUD_AGENT_CONTROL_SIGNING_KEYS"] = encodedKeyRing(
+		"agent-control-dev-v1",
+		ed25519.NewKeyFromSeed(bytes.Repeat([]byte{11}, ed25519.SeedSize)),
+	)
+	_, err = Load(mapLookup(env))
+	if err == nil || !strings.Contains(err.Error(), "independent") {
+		t.Fatalf("Load() Agent control signing error = %v, want independent-key validation", err)
 	}
 }
 
@@ -397,6 +411,7 @@ func validEnvironment(environment string) map[string]string {
 
 	accessPrivateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{11}, ed25519.SeedSize))
 	offlinePrivateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{12}, ed25519.SeedSize))
+	agentControlPrivateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{13}, ed25519.SeedSize))
 	return map[string]string{
 		"AGENTERA_CLOUD_ENVIRONMENT":                          environment,
 		"AGENTERA_CLOUD_LISTEN_ADDR":                          listenAddr,
@@ -425,6 +440,8 @@ func validEnvironment(environment string) map[string]string {
 		"AGENTERA_CLOUD_ACCESS_SIGNING_KEYS":                  encodedKeyRing("access-dev-v1", accessPrivateKey),
 		"AGENTERA_CLOUD_OFFLINE_SIGNING_ACTIVE_KEY_ID":        "offline-dev-v1",
 		"AGENTERA_CLOUD_OFFLINE_SIGNING_KEYS":                 encodedKeyRing("offline-dev-v1", offlinePrivateKey),
+		"AGENTERA_CLOUD_AGENT_CONTROL_SIGNING_ACTIVE_KEY_ID":  "agent-control-dev-v1",
+		"AGENTERA_CLOUD_AGENT_CONTROL_SIGNING_KEYS":           encodedKeyRing("agent-control-dev-v1", agentControlPrivateKey),
 		"AGENTERA_CLOUD_OFFLINE_POLICY_VERSION":               "1",
 		"AGENTERA_CLOUD_ACTIVE_DEVICE_LIMIT":                  "5",
 		"AGENTERA_CLOUD_BROWSER_COOKIE_NAME":                  "agentera_test_session",

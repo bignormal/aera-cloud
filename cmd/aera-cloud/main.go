@@ -15,6 +15,7 @@ import (
 
 	"github.com/bignormal/aera-cloud/internal/abuse"
 	"github.com/bignormal/aera-cloud/internal/account"
+	"github.com/bignormal/aera-cloud/internal/agentcontrol"
 	"github.com/bignormal/aera-cloud/internal/audit"
 	"github.com/bignormal/aera-cloud/internal/browser"
 	"github.com/bignormal/aera-cloud/internal/config"
@@ -286,6 +287,13 @@ func buildOAuthHandler(
 	if err != nil {
 		return nil, err
 	}
+	agentControlSigner, err := agentcontrol.NewSigner(agentcontrol.SigningConfig{
+		Issuer: cfg.PublicURL, ActiveKeyID: cfg.AgentControlSigningKeyRing.ActiveKeyID,
+		SigningKeys: privateSigningKeys(cfg.AgentControlSigningKeyRing),
+	})
+	if err != nil {
+		return nil, err
+	}
 	sessions, err := session.NewService(session.ServiceConfig{
 		Repository: session.NewPostgresRepository(postgres), AccessTokens: accessSigner,
 		OfflineEntitlements: offlineEntitlements, RefreshHMACKey: cfg.RefreshTokenHMACKey,
@@ -315,7 +323,11 @@ func buildOAuthHandler(
 	return oauth.NewHandler(oauth.HTTPConfig{
 		OAuth: oauthService, Sessions: sessions, BrowserSessions: browserSessions,
 		SigningKeys: func() []oauth.PublishedKey {
-			published := make([]oauth.PublishedKey, 0, len(accessSigner.PublicKeys())+len(offlineEntitlements.PublicKeys()))
+			published := make(
+				[]oauth.PublishedKey,
+				0,
+				len(accessSigner.PublicKeys())+len(offlineEntitlements.PublicKeys())+2*len(agentControlSigner.PublicKeys()),
+			)
 			for _, key := range accessSigner.PublicKeys() {
 				published = append(published, oauth.PublishedKey{
 					KeyID: key.KeyID, KeyType: key.KeyType, Curve: key.Curve,
@@ -326,6 +338,16 @@ func buildOAuthHandler(
 				published = append(published, oauth.PublishedKey{
 					KeyID: key.KeyID, KeyType: key.KeyType, Curve: key.Curve,
 					Algorithm: key.Algorithm, Use: key.Use, Purpose: "offline_entitlement", X: key.X,
+				})
+			}
+			for _, key := range agentControlSigner.PublicKeys() {
+				published = append(published, oauth.PublishedKey{
+					KeyID: key.KeyID, KeyType: key.KeyType, Curve: key.Curve,
+					Algorithm: key.Algorithm, Use: key.Use, Purpose: string(agentcontrol.PurposeAgentVersion), X: key.X,
+				})
+				published = append(published, oauth.PublishedKey{
+					KeyID: key.KeyID, KeyType: key.KeyType, Curve: key.Curve,
+					Algorithm: key.Algorithm, Use: key.Use, Purpose: string(agentcontrol.PurposeAgentPolicy), X: key.X,
 				})
 			}
 			return published

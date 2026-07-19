@@ -160,7 +160,12 @@ func TestHTTPTokenRefreshRevokeAndSigningKeys(t *testing.T) {
 	handler := NewHandler(HTTPConfig{
 		OAuth: oauthService, Sessions: sessionService,
 		SigningKeys: func() []PublishedKey {
-			return []PublishedKey{{KeyID: "access-v1", KeyType: "OKP", Curve: "Ed25519", Algorithm: "EdDSA", Use: "sig", Purpose: "access", X: "opaque"}}
+			return []PublishedKey{
+				{KeyID: "access-v1", KeyType: "OKP", Curve: "Ed25519", Algorithm: "EdDSA", Use: "sig", Purpose: "access", X: "access"},
+				{KeyID: "offline-v1", KeyType: "OKP", Curve: "Ed25519", Algorithm: "EdDSA", Use: "sig", Purpose: "offline_entitlement", X: "offline"},
+				{KeyID: "agent-control-v1", KeyType: "OKP", Curve: "Ed25519", Algorithm: "EdDSA", Use: "sig", Purpose: "agent_version", X: "agent"},
+				{KeyID: "agent-control-v1", KeyType: "OKP", Curve: "Ed25519", Algorithm: "EdDSA", Use: "sig", Purpose: "agent_policy", X: "agent"},
+			}
 		},
 	})
 	installationID := uuid.New()
@@ -198,7 +203,11 @@ func TestHTTPTokenRefreshRevokeAndSigningKeys(t *testing.T) {
 	}
 	keysResponse := httptest.NewRecorder()
 	handler.ServeHTTP(keysResponse, httptest.NewRequest(http.MethodGet, "/.well-known/agentera-signing-keys.json", nil))
-	if keysResponse.Code != http.StatusOK || !strings.Contains(keysResponse.Body.String(), `"purpose":"access"`) {
+	if keysResponse.Code != http.StatusOK ||
+		!strings.Contains(keysResponse.Body.String(), `"purpose":"access"`) ||
+		!strings.Contains(keysResponse.Body.String(), `"purpose":"offline_entitlement"`) ||
+		!strings.Contains(keysResponse.Body.String(), `"purpose":"agent_version"`) ||
+		!strings.Contains(keysResponse.Body.String(), `"purpose":"agent_policy"`) {
 		t.Fatalf("keys response = %d %s", keysResponse.Code, keysResponse.Body.String())
 	}
 }

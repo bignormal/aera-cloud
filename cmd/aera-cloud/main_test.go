@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -207,7 +211,8 @@ func TestBuildOAuthHandlerWiresProtocolAndPublicSigningKeys(t *testing.T) {
 	if keysResponse.Code != http.StatusOK || json.Unmarshal(keysResponse.Body.Bytes(), &document) != nil {
 		t.Fatalf("signing keys response = %d %q", keysResponse.Code, keysResponse.Body.String())
 	}
-	if len(document.Keys) != 2 || document.Keys[0].Purpose != "access" || document.Keys[1].Purpose != "offline_entitlement" {
+	if len(document.Keys) != 4 || document.Keys[0].Purpose != "access" || document.Keys[1].Purpose != "offline_entitlement" ||
+		document.Keys[2].Purpose != "agent_version" || document.Keys[3].Purpose != "agent_policy" {
 		t.Fatalf("published signing keys = %+v", document.Keys)
 	}
 	for _, key := range document.Keys {
@@ -285,6 +290,7 @@ func TestBuildMaintenanceRunnerUsesConfiguredStores(t *testing.T) {
 }
 
 func integrationLookup(services testkit.Services) config.LookupEnv {
+	agentControlPrivateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{13}, ed25519.SeedSize))
 	values := map[string]string{
 		"AGENTERA_CLOUD_ENVIRONMENT":                          "development",
 		"AGENTERA_CLOUD_LISTEN_ADDR":                          "127.0.0.1:0",
@@ -313,26 +319,31 @@ func integrationLookup(services testkit.Services) config.LookupEnv {
 		"AGENTERA_CLOUD_ACCESS_SIGNING_KEYS":                  `{"access-test-v1":"CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwtmvn4zLHpFMzK9nQp/fbBV9cXvGgatpm2Ys5+2gQxHOg=="}`,
 		"AGENTERA_CLOUD_OFFLINE_SIGNING_ACTIVE_KEY_ID":        "offline-test-v1",
 		"AGENTERA_CLOUD_OFFLINE_SIGNING_KEYS":                 `{"offline-test-v1":"DAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwLUTrZtJJAFcoJAu0HkETTrF2+wjBvBpSMENqOtuOfLQ=="}`,
-		"AGENTERA_CLOUD_OFFLINE_POLICY_VERSION":               "1",
-		"AGENTERA_CLOUD_ACTIVE_DEVICE_LIMIT":                  "5",
-		"AGENTERA_CLOUD_BROWSER_COOKIE_NAME":                  "agentera_test_session",
-		"AGENTERA_CLOUD_BROWSER_SESSION_TTL_SECONDS":          "900",
-		"AGENTERA_CLOUD_LOGIN_IDENTITY_LIMIT":                 "5",
-		"AGENTERA_CLOUD_LOGIN_IP_LIMIT":                       "20",
-		"AGENTERA_CLOUD_LOGIN_WINDOW_SECONDS":                 "600",
-		"AGENTERA_CLOUD_TERMS_VERSION":                        "terms-2026-07",
-		"AGENTERA_CLOUD_PRIVACY_VERSION":                      "privacy-2026-07",
-		"AGENTERA_CLOUD_SMTP_HOST":                            "smtp.agentera.invalid",
-		"AGENTERA_CLOUD_SMTP_PORT":                            "587",
-		"AGENTERA_CLOUD_SMTP_USERNAME":                        "smtp-user",
-		"AGENTERA_CLOUD_SMTP_PASSWORD":                        "smtp-secret",
-		"AGENTERA_CLOUD_SMTP_FROM_ADDRESS":                    "accounts@agentera.invalid",
-		"AGENTERA_CLOUD_SMTP_FROM_NAME":                       "AgentEra",
-		"AGENTERA_CLOUD_SMS_ENDPOINT":                         "https://sms.agentera.invalid/v1/messages",
-		"AGENTERA_CLOUD_SMS_API_KEY":                          "sms-secret",
-		"AGENTERA_CLOUD_SMS_SENDER_ID":                        "AgentEra",
-		"AGENTERA_CLOUD_CAPTCHA_ENDPOINT":                     "https://captcha.agentera.invalid/siteverify",
-		"AGENTERA_CLOUD_CAPTCHA_SECRET":                       "captcha-secret",
+		"AGENTERA_CLOUD_AGENT_CONTROL_SIGNING_ACTIVE_KEY_ID":  "agent-control-test-v1",
+		"AGENTERA_CLOUD_AGENT_CONTROL_SIGNING_KEYS": fmt.Sprintf(
+			`{"agent-control-test-v1":"%s"}`,
+			base64.StdEncoding.EncodeToString(agentControlPrivateKey),
+		),
+		"AGENTERA_CLOUD_OFFLINE_POLICY_VERSION":      "1",
+		"AGENTERA_CLOUD_ACTIVE_DEVICE_LIMIT":         "5",
+		"AGENTERA_CLOUD_BROWSER_COOKIE_NAME":         "agentera_test_session",
+		"AGENTERA_CLOUD_BROWSER_SESSION_TTL_SECONDS": "900",
+		"AGENTERA_CLOUD_LOGIN_IDENTITY_LIMIT":        "5",
+		"AGENTERA_CLOUD_LOGIN_IP_LIMIT":              "20",
+		"AGENTERA_CLOUD_LOGIN_WINDOW_SECONDS":        "600",
+		"AGENTERA_CLOUD_TERMS_VERSION":               "terms-2026-07",
+		"AGENTERA_CLOUD_PRIVACY_VERSION":             "privacy-2026-07",
+		"AGENTERA_CLOUD_SMTP_HOST":                   "smtp.agentera.invalid",
+		"AGENTERA_CLOUD_SMTP_PORT":                   "587",
+		"AGENTERA_CLOUD_SMTP_USERNAME":               "smtp-user",
+		"AGENTERA_CLOUD_SMTP_PASSWORD":               "smtp-secret",
+		"AGENTERA_CLOUD_SMTP_FROM_ADDRESS":           "accounts@agentera.invalid",
+		"AGENTERA_CLOUD_SMTP_FROM_NAME":              "AgentEra",
+		"AGENTERA_CLOUD_SMS_ENDPOINT":                "https://sms.agentera.invalid/v1/messages",
+		"AGENTERA_CLOUD_SMS_API_KEY":                 "sms-secret",
+		"AGENTERA_CLOUD_SMS_SENDER_ID":               "AgentEra",
+		"AGENTERA_CLOUD_CAPTCHA_ENDPOINT":            "https://captcha.agentera.invalid/siteverify",
+		"AGENTERA_CLOUD_CAPTCHA_SECRET":              "captcha-secret",
 	}
 	return func(key string) (string, bool) {
 		value, ok := values[key]

@@ -43,6 +43,8 @@ const (
 	envAccessSigningKeys               = "AGENTERA_CLOUD_ACCESS_SIGNING_KEYS"
 	envOfflineSigningActiveKeyID       = "AGENTERA_CLOUD_OFFLINE_SIGNING_ACTIVE_KEY_ID"
 	envOfflineSigningKeys              = "AGENTERA_CLOUD_OFFLINE_SIGNING_KEYS"
+	envAgentControlSigningActiveKeyID  = "AGENTERA_CLOUD_AGENT_CONTROL_SIGNING_ACTIVE_KEY_ID"
+	envAgentControlSigningKeys         = "AGENTERA_CLOUD_AGENT_CONTROL_SIGNING_KEYS"
 	envOfflinePolicyVersion            = "AGENTERA_CLOUD_OFFLINE_POLICY_VERSION"
 	envActiveDeviceLimit               = "AGENTERA_CLOUD_ACTIVE_DEVICE_LIMIT"
 	envBrowserCookieName               = "AGENTERA_CLOUD_BROWSER_COOKIE_NAME"
@@ -93,6 +95,7 @@ type Config struct {
 	RefreshTokenHMACKey         []byte
 	AccessSigningKeyRing        KeyRing
 	OfflineSigningKeyRing       KeyRing
+	AgentControlSigningKeyRing  KeyRing
 	OfflinePolicyVersion        int
 	ActiveDeviceLimit           int
 	BrowserCookieName           string
@@ -242,6 +245,14 @@ func Load(lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	agentControlSigningKeyRing, err := loadPrivateSigningKeyRing(
+		lookup,
+		envAgentControlSigningActiveKeyID,
+		envAgentControlSigningKeys,
+	)
+	if err != nil {
+		return Config{}, err
+	}
 	offlinePolicyVersion, err := requiredInteger(lookup, envOfflinePolicyVersion, 1, 1_000_000)
 	if err != nil {
 		return Config{}, err
@@ -263,6 +274,7 @@ func Load(lookup LookupEnv) (Config, error) {
 		"refresh token HMAC":     refreshTokenHMACKey,
 		"access signing":         accessSigningKeyRing.Keys[accessSigningKeyRing.ActiveKeyID],
 		"offline signing":        offlineSigningKeyRing.Keys[offlineSigningKeyRing.ActiveKeyID],
+		"Agent control signing":  agentControlSigningKeyRing.Keys[agentControlSigningKeyRing.ActiveKeyID],
 	}); err != nil {
 		return Config{}, err
 	}
@@ -376,6 +388,7 @@ func Load(lookup LookupEnv) (Config, error) {
 		RefreshTokenHMACKey:         refreshTokenHMACKey,
 		AccessSigningKeyRing:        accessSigningKeyRing,
 		OfflineSigningKeyRing:       offlineSigningKeyRing,
+		AgentControlSigningKeyRing:  agentControlSigningKeyRing,
 		OfflinePolicyVersion:        offlinePolicyVersion,
 		ActiveDeviceLimit:           activeDeviceLimit,
 		BrowserCookieName:           browserCookieName,
