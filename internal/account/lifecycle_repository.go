@@ -546,6 +546,20 @@ func (r *PostgresRepository) FinalizeDeletion(
 		return ErrServiceUnavailable
 	}
 	if _, err := tx.Exec(ctx, `
+		UPDATE experience_candidates
+		SET submitted_by_user_id = NULL
+		WHERE submitted_by_user_id = $1
+	`, userID); err != nil {
+		return ErrServiceUnavailable
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE experience_candidate_reviews
+		SET reviewed_by_user_id = NULL
+		WHERE reviewed_by_user_id = $1
+	`, userID); err != nil {
+		return ErrServiceUnavailable
+	}
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO audit_events (id, event_type, outcome, metadata, created_at)
 		VALUES ($1, 'account_deletion_finalized', 'success', '{}'::jsonb, $2)
 	`, auditEventID, finalizedAt); err != nil {

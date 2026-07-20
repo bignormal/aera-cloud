@@ -34,6 +34,7 @@ var (
 		"agent_definition_id": {}, "agent_version_id": {},
 		"agent_installation_id": {}, "policy_snapshot_id": {},
 		"content_digest": {}, "source_owner_scope": {}, "source_workspace_id": {},
+		"experience_candidate_id": {}, "decision": {}, "reason_code": {},
 	}
 	workspaceMetadataKeys = map[string]struct{}{
 		"workspace_id": {}, "membership_user_id": {}, "invitation_id": {},
@@ -188,7 +189,8 @@ func validMetadata(eventType string, metadata map[string]string) bool {
 			if !hasWorkspaceID || hasTenantID || hasOwnerID {
 				return false
 			}
-			if eventType != "agent_definition_published" && eventType != "agent_version_published" {
+			if eventType != "agent_definition_published" && eventType != "agent_version_published" &&
+				!strings.HasPrefix(eventType, "agent_experience_candidate_") {
 				return false
 			}
 		default:
@@ -222,12 +224,26 @@ func validMetadata(eventType string, metadata map[string]string) bool {
 		switch key {
 		case "owner_scope", "source_owner_scope":
 			continue
+		case "decision":
+			if !strings.HasPrefix(eventType, "agent_experience_candidate_") ||
+				(value != "APPROVED" && value != "REJECTED") {
+				return false
+			}
+			continue
+		case "reason_code":
+			if !strings.HasPrefix(eventType, "agent_experience_candidate_") || !namePattern.MatchString(value) {
+				return false
+			}
+			continue
 		case "content_digest":
 			decoded, err := hex.DecodeString(value)
 			if err != nil || len(decoded) != 32 || value != strings.ToLower(value) {
 				return false
 			}
 		default:
+			if key == "experience_candidate_id" && !strings.HasPrefix(eventType, "agent_experience_candidate_") {
+				return false
+			}
 			if _, err := uuid.Parse(value); err != nil {
 				return false
 			}

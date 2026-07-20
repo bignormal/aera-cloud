@@ -125,6 +125,62 @@ func TestPostgresRecorderPersistsBoundedWorkspaceAgentMetadataDeterministically(
 	}
 }
 
+func TestPostgresRecorderAllowsOnlyBoundedExperienceCandidateMetadata(t *testing.T) {
+	workspaceID := uuid.New()
+	definitionID := uuid.New()
+	versionID := uuid.New()
+	candidateID := uuid.New()
+	metadata := map[string]string{
+		"owner_scope":             "WORKSPACE",
+		"workspace_id":            workspaceID.String(),
+		"agent_definition_id":     definitionID.String(),
+		"agent_version_id":        versionID.String(),
+		"experience_candidate_id": candidateID.String(),
+		"content_digest":          strings.Repeat("c", 64),
+		"decision":                "APPROVED",
+	}
+	executor := &fakeExecutor{}
+	recorder, err := NewRecorder(executor)
+	if err != nil {
+		t.Fatalf("NewRecorder() error = %v", err)
+	}
+	if err := recorder.Record(context.Background(), Event{
+		EventType: "agent_experience_candidate_review_approved", Outcome: OutcomeSuccess, Metadata: metadata,
+	}); err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+	encoded, ok := executor.arguments[10].(string)
+	if !ok {
+		t.Fatalf("metadata argument type = %T", executor.arguments[10])
+	}
+	for _, expected := range []string{candidateID.String(), definitionID.String(), versionID.String(), "APPROVED"} {
+		if !strings.Contains(encoded, expected) {
+			t.Fatalf("metadata JSON %s does not contain %q", encoded, expected)
+		}
+	}
+
+	for _, unsafe := range []map[string]string{
+		{
+			"owner_scope": "WORKSPACE", "workspace_id": workspaceID.String(),
+			"experience_candidate_id": candidateID.String(), "candidate_content": "secret body",
+		},
+		{
+			"owner_scope": "WORKSPACE", "workspace_id": workspaceID.String(),
+			"experience_candidate_id": candidateID.String(), "source_path": "/Users/alice/.hermes/skills/private",
+		},
+		{
+			"owner_scope": "WORKSPACE", "workspace_id": workspaceID.String(),
+			"experience_candidate_id": candidateID.String(), "decision": "OVERRIDE",
+		},
+	} {
+		if err := (&PostgresRecorder{executor: &fakeExecutor{}}).Record(context.Background(), Event{
+			EventType: "agent_experience_candidate_review_approved", Outcome: OutcomeSuccess, Metadata: unsafe,
+		}); !errors.Is(err, ErrInvalidEvent) {
+			t.Fatalf("unsafe candidate metadata Record() error = %v", err)
+		}
+	}
+}
+
 func TestPostgresRecorderPersistsWorkspaceSourcedUserInstallationMetadata(t *testing.T) {
 	executor := &fakeExecutor{}
 	recorder, err := NewRecorder(executor)

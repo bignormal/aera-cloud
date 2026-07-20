@@ -55,6 +55,8 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 		"workspace_memberships",
 		"workspace_invitations",
 		"workspace_idempotency_records",
+		"experience_candidates",
+		"experience_candidate_reviews",
 	}
 	for _, table := range tables {
 		var exists bool
@@ -72,6 +74,8 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	assertUniqueConstraint(t, ctx, postgres, "agent_versions", "agent_versions_definition_version_key", []string{"definition_id", "version_number"})
 	assertUniqueConstraint(t, ctx, postgres, "agent_version_revocations", "agent_version_revocations_version_key", []string{"version_id"})
 	assertUniqueConstraint(t, ctx, postgres, "policy_snapshots", "policy_snapshots_installation_version_key", []string{"installation_id", "policy_version"})
+	assertUniqueConstraint(t, ctx, postgres, "experience_candidates", "experience_candidates_id_workspace_key", []string{"id", "workspace_id"})
+	assertUniqueConstraint(t, ctx, postgres, "experience_candidate_reviews", "experience_candidate_reviews_candidate_id_key", []string{"candidate_id"})
 	assertCheckConstraintContains(t, ctx, postgres, "agent_versions", "agent_versions_content_digest_length_check", "octet_length(content_digest) = 32")
 	assertCheckConstraintContains(t, ctx, postgres, "agent_versions", "agent_versions_signature_length_check", "octet_length(signature) = 64")
 	assertCheckConstraintContains(t, ctx, postgres, "policy_snapshots", "policy_snapshots_content_digest_length_check", "octet_length(content_digest) = 32")
@@ -96,6 +100,16 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	assertCheckConstraintContains(t, ctx, postgres, "agent_definitions", "agent_definitions_owner_variant_check", "workspace_id")
 	assertCheckConstraintContains(t, ctx, postgres, "agent_versions", "agent_versions_owner_variant_check", "WORKSPACE")
 	assertCheckConstraintContains(t, ctx, postgres, "agent_control_idempotency_keys", "agent_control_idempotency_owner_variant_check", "WORKSPACE")
+	assertCheckConstraintContains(t, ctx, postgres, "experience_candidates", "experience_candidates_kind_check", "SKILL")
+	assertCheckConstraintContains(t, ctx, postgres, "experience_candidates", "experience_candidates_skill_name_check", "char_length(skill_name)")
+	assertCheckConstraintContains(t, ctx, postgres, "experience_candidates", "experience_candidates_schema_version_check", "schema_version = 1")
+	assertCheckConstraintContains(t, ctx, postgres, "experience_candidates", "experience_candidates_dlp_contract_version_check", "experience-candidate-dlp-v1")
+	assertCheckConstraintContains(t, ctx, postgres, "experience_candidates", "experience_candidates_content_digest_length_check", "octet_length(content_digest) = 32")
+	assertCheckConstraintContains(t, ctx, postgres, "experience_candidates", "experience_candidates_bundle_document_check", "jsonb_typeof(bundle_document)")
+	assertCheckConstraintContains(t, ctx, postgres, "experience_candidate_reviews", "experience_candidate_reviews_decision_check", "APPROVED")
+	assertCheckConstraintContains(t, ctx, postgres, "experience_candidate_reviews", "experience_candidate_reviews_decision_check", "REJECTED")
+	assertCheckConstraintContains(t, ctx, postgres, "experience_candidate_reviews", "experience_candidate_reviews_rejection_check", "reason_code")
+	assertCheckConstraintContains(t, ctx, postgres, "experience_candidate_reviews", "experience_candidate_reviews_rejection_check", "safe_note")
 
 	assertForeignKeyConstraintContains(t, ctx, postgres, "workspaces", "workspaces_owner_user_fk", "ON DELETE RESTRICT")
 	assertForeignKeyConstraintContains(t, ctx, postgres, "workspace_memberships", "workspace_memberships_workspace_fk", "ON DELETE CASCADE")
@@ -105,6 +119,14 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	assertForeignKeyConstraintContains(t, ctx, postgres, "agent_definitions", "agent_definitions_workspace_fk", "ON DELETE RESTRICT")
 	assertForeignKeyConstraintContains(t, ctx, postgres, "agent_versions", "agent_versions_workspace_fk", "ON DELETE RESTRICT")
 	assertForeignKeyConstraintContains(t, ctx, postgres, "agent_control_idempotency_keys", "agent_control_idempotency_workspace_fk", "ON DELETE CASCADE")
+	assertForeignKeyConstraintContains(t, ctx, postgres, "experience_candidates", "experience_candidates_workspace_fk", "ON DELETE RESTRICT")
+	assertForeignKeyConstraintContains(t, ctx, postgres, "experience_candidates", "experience_candidates_definition_fk", "ON DELETE RESTRICT")
+	assertForeignKeyConstraintContains(t, ctx, postgres, "experience_candidates", "experience_candidates_source_version_fk", "ON DELETE RESTRICT")
+	assertForeignKeyConstraintContains(t, ctx, postgres, "experience_candidates", "experience_candidates_submitted_by_user_fk", "ON DELETE SET NULL")
+	assertForeignKeyConstraintContains(t, ctx, postgres, "experience_candidates", "experience_candidates_submitted_from_device_fk", "ON DELETE SET NULL")
+	assertForeignKeyConstraintContains(t, ctx, postgres, "experience_candidate_reviews", "experience_candidate_reviews_workspace_fk", "ON DELETE RESTRICT")
+	assertForeignKeyConstraintContains(t, ctx, postgres, "experience_candidate_reviews", "experience_candidate_reviews_candidate_workspace_fk", "ON DELETE RESTRICT")
+	assertForeignKeyConstraintContains(t, ctx, postgres, "experience_candidate_reviews", "experience_candidate_reviews_reviewed_by_user_fk", "ON DELETE SET NULL")
 
 	assertIndexDefinitionContains(t, ctx, postgres, "workspace_memberships_one_owner_idx", "UNIQUE", "workspace_id", "WHERE", "owner")
 	assertIndexDefinitionContains(t, ctx, postgres, "workspaces_owner_active_idx", "owner_user_id", "WHERE", "active")
@@ -113,6 +135,10 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	assertIndexDefinitionContains(t, ctx, postgres, "workspace_idempotency_expiry_idx", "expires_at")
 	assertIndexDefinitionContains(t, ctx, postgres, "agent_control_idempotency_user_operation_key", "UNIQUE", "tenant_id", "owner_id", "operation", "key_hash", "USER")
 	assertIndexDefinitionContains(t, ctx, postgres, "agent_control_idempotency_workspace_operation_key", "UNIQUE", "workspace_id", "operation", "key_hash", "WORKSPACE")
+	assertIndexDefinitionContains(t, ctx, postgres, "experience_candidates_workspace_created_idx", "workspace_id", "created_at", "id")
+	assertIndexDefinitionContains(t, ctx, postgres, "experience_candidates_submitter_created_idx", "submitted_by_user_id", "created_at")
+	assertIndexDefinitionContains(t, ctx, postgres, "experience_candidates_definition_created_idx", "agent_definition_id", "created_at")
+	assertIndexDefinitionContains(t, ctx, postgres, "experience_candidate_reviews_workspace_reviewed_idx", "workspace_id", "reviewed_at", "candidate_id")
 
 	assertColumns(t, ctx, postgres, "agent_definitions", []string{
 		"id", "tenant_id", "owner_scope", "owner_id", "display_name", "icon_media_type", "icon_data",
@@ -148,6 +174,18 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 		"actor_user_id", "workspace_id", "operation", "key_digest", "request_digest", "resource_type",
 		"resource_id", "created_at", "expires_at",
 	})
+	assertColumns(t, ctx, postgres, "experience_candidates", []string{
+		"id", "workspace_id", "agent_definition_id", "source_agent_version_id", "submitted_by_user_id",
+		"submitted_from_device_id", "kind", "skill_name", "schema_version", "dlp_contract_version",
+		"content_digest", "bundle_document", "created_at",
+	})
+	assertColumns(t, ctx, postgres, "experience_candidate_reviews", []string{
+		"id", "candidate_id", "workspace_id", "decision", "reviewed_by_user_id", "reason_code",
+		"safe_note", "reviewed_at",
+	})
+	assertColumnNullable(t, ctx, postgres, "experience_candidates", "submitted_by_user_id", true)
+	assertColumnNullable(t, ctx, postgres, "experience_candidates", "submitted_from_device_id", true)
+	assertColumnNullable(t, ctx, postgres, "experience_candidate_reviews", "reviewed_by_user_id", true)
 
 	for table, trigger := range map[string]string{
 		"agent_versions":            "agent_versions_immutable_trigger",
@@ -159,6 +197,8 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	}
 	assertTriggerExists(t, ctx, postgres, "workspaces", "workspaces_owner_user_immutable_trigger")
 	assertTriggerExists(t, ctx, postgres, "workspace_invitations", "workspace_invitations_lifecycle_trigger")
+	assertTriggerExists(t, ctx, postgres, "experience_candidates", "experience_candidates_immutable_trigger")
+	assertTriggerExists(t, ctx, postgres, "experience_candidate_reviews", "experience_candidate_reviews_immutable_trigger")
 	assertDeferredConstraintTrigger(t, ctx, postgres, "workspaces", "workspaces_owner_membership_constraint_trigger")
 	assertDeferredConstraintTrigger(t, ctx, postgres, "workspace_memberships", "workspace_memberships_owner_constraint_trigger")
 
@@ -166,8 +206,8 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	if err := postgres.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if applied != 10 {
-		t.Fatalf("applied migration count = %d, want 10", applied)
+	if applied != 11 {
+		t.Fatalf("applied migration count = %d, want 11", applied)
 	}
 	var receiptConsumedColumn bool
 	if err := postgres.QueryRow(ctx, `

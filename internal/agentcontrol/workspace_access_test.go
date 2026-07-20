@@ -29,6 +29,21 @@ func TestRequireWorkspaceAgentAccessFailsClosedForDiscoveryAndMutation(t *testin
 			mode: workspaceAgentPublish, wanted: ErrWorkspaceForbidden,
 		},
 		{
+			name: "member can contribute a candidate",
+			row:  workspaceAccessRow{workspaceStatus: "active", ownerStatus: "active", role: "member", actorStatus: "active", deviceActive: true, fixedOwner: true},
+			mode: workspaceAgentContribute,
+		},
+		{
+			name: "member cannot review a candidate",
+			row:  workspaceAccessRow{workspaceStatus: "active", ownerStatus: "active", role: "member", actorStatus: "active", deviceActive: true, fixedOwner: true},
+			mode: workspaceAgentReview, wanted: ErrWorkspaceForbidden,
+		},
+		{
+			name: "admin can review a candidate",
+			row:  workspaceAccessRow{workspaceStatus: "active", ownerStatus: "active", role: "admin", actorStatus: "active", deviceActive: true, fixedOwner: true},
+			mode: workspaceAgentReview,
+		},
+		{
 			name: "archived discovery is blocked",
 			row:  workspaceAccessRow{workspaceStatus: "archived", ownerStatus: "active", role: "owner", actorStatus: "active", deviceActive: true, fixedOwner: true},
 			mode: workspaceAgentRead, wanted: ErrWorkspaceArchived,

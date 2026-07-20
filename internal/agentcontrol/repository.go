@@ -36,16 +36,18 @@ var (
 )
 
 const (
-	operationPublishInitial     = "publish_initial"
-	operationPublishNext        = "publish_next"
-	operationCreateInstallation = "create_installation"
-	operationRevokeVersion      = "revoke_version"
-	definitionStatusActive      = "active"
-	definitionStatusArchived    = "archived"
-	InstallationStatusPending   = "pending"
-	InstallationStatusActive    = "active"
-	InstallationStatusArchived  = "archived"
-	installationUpdatePolicy    = "manual"
+	operationPublishInitial            = "publish_initial"
+	operationPublishNext               = "publish_next"
+	operationCreateInstallation        = "create_installation"
+	operationRevokeVersion             = "revoke_version"
+	operationSubmitExperienceCandidate = "submit_experience_candidate"
+	operationReviewExperienceCandidate = "review_experience_candidate"
+	definitionStatusActive             = "active"
+	definitionStatusArchived           = "archived"
+	InstallationStatusPending          = "pending"
+	InstallationStatusActive           = "active"
+	InstallationStatusArchived         = "archived"
+	installationUpdatePolicy           = "manual"
 )
 
 type workspaceAgentAccessMode uint8
@@ -54,6 +56,8 @@ const (
 	workspaceAgentRead workspaceAgentAccessMode = iota
 	workspaceAgentPublish
 	workspaceAgentInstall
+	workspaceAgentContribute
+	workspaceAgentReview
 )
 
 type Principal struct {
@@ -1673,10 +1677,16 @@ func requireWorkspaceAgentAccess(
 	if ownerStatus != "active" {
 		return "", ErrWorkspaceOwnerUnavailable
 	}
-	if mode == workspaceAgentPublish && role != "owner" && role != "admin" {
-		return "", ErrWorkspaceForbidden
-	}
 	if role != "owner" && role != "admin" && role != "member" {
+		return "", ErrServiceUnavailable
+	}
+	switch mode {
+	case workspaceAgentRead, workspaceAgentInstall, workspaceAgentContribute:
+	case workspaceAgentPublish, workspaceAgentReview:
+		if role != "owner" && role != "admin" {
+			return "", ErrWorkspaceForbidden
+		}
+	default:
 		return "", ErrServiceUnavailable
 	}
 	return role, nil
@@ -1955,6 +1965,8 @@ type idempotencyResponse struct {
 	VersionID        uuid.UUID `json:"version_id,omitempty"`
 	InstallationID   uuid.UUID `json:"installation_id,omitempty"`
 	PolicySnapshotID uuid.UUID `json:"policy_snapshot_id,omitempty"`
+	CandidateID      uuid.UUID `json:"candidate_id,omitempty"`
+	ReviewID         uuid.UUID `json:"review_id,omitempty"`
 }
 
 func lockAndReadIdempotency(
