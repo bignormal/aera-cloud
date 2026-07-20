@@ -128,6 +128,67 @@ func TestPostgresRecorderRejectsUnsafeAgentMetadata(t *testing.T) {
 	}
 }
 
+func TestPostgresRecorderPersistsBoundedWorkspaceMetadata(t *testing.T) {
+	executor := &fakeExecutor{}
+	recorder, err := NewRecorder(executor)
+	if err != nil {
+		t.Fatalf("NewRecorder() error = %v", err)
+	}
+	workspaceID := uuid.New()
+	membershipUserID := uuid.New()
+	invitationID := uuid.New()
+	metadata := map[string]string{
+		"workspace_id":       workspaceID.String(),
+		"membership_user_id": membershipUserID.String(),
+		"invitation_id":      invitationID.String(),
+		"role":               "admin",
+		"previous_role":      "member",
+	}
+	if err := recorder.Record(context.Background(), Event{
+		EventType: "workspace_member_role_changed", Outcome: OutcomeSuccess, Metadata: metadata,
+	}); err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+	encoded, ok := executor.arguments[10].(string)
+	if !ok {
+		t.Fatalf("metadata argument type = %T", executor.arguments[10])
+	}
+	want := `{"invitation_id":"` + invitationID.String() + `","membership_user_id":"` + membershipUserID.String() + `","previous_role":"member","role":"admin","workspace_id":"` + workspaceID.String() + `"}`
+	if encoded != want {
+		t.Fatalf("workspace metadata JSON = %s, want %s", encoded, want)
+	}
+}
+
+func TestPostgresRecorderRejectsUnsafeWorkspaceMetadata(t *testing.T) {
+	workspaceID := uuid.NewString()
+	tests := []struct {
+		name      string
+		eventType string
+		metadata  map[string]string
+	}{
+		{name: "unknown key", eventType: "workspace_created", metadata: map[string]string{"display_name": "Research Team"}},
+		{name: "raw token", eventType: "workspace_invitation_created", metadata: map[string]string{"token": "opaque-secret-token"}},
+		{name: "invite URL", eventType: "workspace_invitation_created", metadata: map[string]string{"invitation_id": "agentera://workspace-invitation#secret"}},
+		{name: "email", eventType: "workspace_member_added", metadata: map[string]string{"membership_user_id": "alice@example.com"}},
+		{name: "path", eventType: "workspace_created", metadata: map[string]string{"workspace_id": "/Users/alice/workspace"}},
+		{name: "invalid role", eventType: "workspace_member_role_changed", metadata: map[string]string{"workspace_id": workspaceID, "role": "viewer"}},
+		{name: "mixed Agent key", eventType: "workspace_created", metadata: map[string]string{"workspace_id": workspaceID, "owner_scope": "USER"}},
+		{name: "workspace metadata on Agent event", eventType: "agent_version_published", metadata: map[string]string{"workspace_id": workspaceID}},
+		{name: "workspace metadata on browser event", eventType: "browser_login", metadata: map[string]string{"workspace_id": workspaceID}},
+		{name: "oversized value", eventType: "workspace_created", metadata: map[string]string{"workspace_id": strings.Repeat("a", 129)}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := &PostgresRecorder{executor: &fakeExecutor{}}
+			if err := recorder.Record(context.Background(), Event{
+				EventType: test.eventType, Outcome: OutcomeDenied, Metadata: test.metadata,
+			}); !errors.Is(err, ErrInvalidEvent) {
+				t.Fatalf("Record() error = %v, want ErrInvalidEvent", err)
+			}
+		})
+	}
+}
+
 func TestPostgresRecorderRejectsUnstructuredOrSensitiveShapedValues(t *testing.T) {
 	tests := []Event{
 		{EventType: "", Outcome: OutcomeSuccess},

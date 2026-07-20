@@ -34,6 +34,10 @@ var (
 		"agent_installation_id": {}, "policy_snapshot_id": {},
 		"content_digest": {},
 	}
+	workspaceMetadataKeys = map[string]struct{}{
+		"workspace_id": {}, "membership_user_id": {}, "invitation_id": {},
+		"role": {}, "previous_role": {},
+	}
 )
 
 type Event struct {
@@ -155,7 +159,13 @@ func validMetadata(eventType string, metadata map[string]string) bool {
 	if len(metadata) == 0 {
 		return true
 	}
-	if len(metadata) > 12 || (!strings.HasPrefix(eventType, "agent_") && !strings.HasPrefix(eventType, "runtime_binding_")) {
+	if len(metadata) > 12 {
+		return false
+	}
+	if strings.HasPrefix(eventType, "workspace_") {
+		return validWorkspaceMetadata(metadata)
+	}
+	if !strings.HasPrefix(eventType, "agent_") && !strings.HasPrefix(eventType, "runtime_binding_") {
 		return false
 	}
 	for key, value := range metadata {
@@ -173,6 +183,31 @@ func validMetadata(eventType string, metadata map[string]string) bool {
 		case "content_digest":
 			decoded, err := hex.DecodeString(value)
 			if err != nil || len(decoded) != 32 || value != strings.ToLower(value) {
+				return false
+			}
+		default:
+			if _, err := uuid.Parse(value); err != nil {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func validWorkspaceMetadata(metadata map[string]string) bool {
+	if len(metadata) > len(workspaceMetadataKeys) {
+		return false
+	}
+	for key, value := range metadata {
+		if !namePattern.MatchString(key) || !safeMetadataValue(value) {
+			return false
+		}
+		if _, allowed := workspaceMetadataKeys[key]; !allowed {
+			return false
+		}
+		switch key {
+		case "role", "previous_role":
+			if value != "owner" && value != "admin" && value != "member" {
 				return false
 			}
 		default:
