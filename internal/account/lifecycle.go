@@ -115,6 +115,8 @@ func (s *Service) RequestDeletion(
 	switch {
 	case err == nil:
 		return nil
+	case errors.Is(err, ErrOrganizationOwnerTransferRequired):
+		return err
 	case errors.Is(err, ErrReceiptUnavailable):
 		return ErrVerificationRequired
 	case errors.Is(err, ErrAccountNotFound):

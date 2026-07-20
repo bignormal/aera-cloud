@@ -21,11 +21,11 @@ func TestEmbeddedMigrationsIncludeOrganizationFoundation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadMigrations() error = %v", err)
 	}
-	if len(loaded) != 12 {
-		t.Fatalf("embedded migration count = %d, want 12", len(loaded))
+	if len(loaded) != 13 {
+		t.Fatalf("embedded migration count = %d, want 13", len(loaded))
 	}
 	last := loaded[len(loaded)-1]
-	if last.version != 12 || last.name != "000012_organization_foundation.sql" {
+	if last.version != 13 || last.name != "000013_organization_account_lifecycle.sql" {
 		t.Fatalf("last embedded migration = %d/%s", last.version, last.name)
 	}
 }
@@ -145,7 +145,8 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	assertCheckConstraintContains(t, ctx, postgres, "organization_departments", "organization_departments_lifecycle_check", "archived_at")
 	assertCheckConstraintContains(t, ctx, postgres, "organization_invitations", "organization_invitations_token_digest_length_check", "octet_length(token_digest) = 32")
 	assertCheckConstraintContains(t, ctx, postgres, "organization_invitations", "organization_invitations_expiry_check", "7 days")
-	assertCheckConstraintContains(t, ctx, postgres, "organization_invitations", "organization_invitations_lifecycle_check", "accepted_by_user_id")
+	assertCheckConstraintContains(t, ctx, postgres, "organization_invitations", "organization_invitations_lifecycle_check", "accepted_at IS NOT NULL")
+	assertCheckConstraintExcludes(t, ctx, postgres, "organization_invitations", "organization_invitations_lifecycle_check", "accepted_by_user_id IS NOT NULL")
 	assertCheckConstraintContains(t, ctx, postgres, "organization_policy_snapshots", "organization_policy_snapshots_schema_version_check", "schema_version = 1")
 	assertCheckConstraintContains(t, ctx, postgres, "organization_policy_snapshots", "organization_policy_snapshots_content_digest_length_check", "octet_length(content_digest) = 32")
 	assertCheckConstraintContains(t, ctx, postgres, "organization_policy_snapshots", "organization_policy_snapshots_signature_length_check", "octet_length(signature) = 64")
@@ -294,8 +295,8 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	if err := postgres.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if applied != 12 {
-		t.Fatalf("applied migration count = %d, want 12", applied)
+	if applied != 13 {
+		t.Fatalf("applied migration count = %d, want 13", applied)
 	}
 	var receiptConsumedColumn bool
 	if err := postgres.QueryRow(ctx, `

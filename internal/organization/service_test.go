@@ -119,6 +119,34 @@ func TestServiceOrganizationOwnerTransferIsActorBoundIdempotent(t *testing.T) {
 	}
 }
 
+func TestServiceOrganizationOwnerTransferRejectsPendingDeletionTarget(t *testing.T) {
+	fixture := newOrganizationRepositoryFixture(t)
+	actors, organization := fixture.organizationWithRoles(t, 204)
+	target := actors[RoleAdmin]
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		UPDATE users
+		SET status = 'pending_deletion', deletion_requested_at = $2, updated_at = $2
+		WHERE id = $1
+	`, target.UserID, fixture.now.Add(time.Hour)); err != nil {
+		t.Fatalf("mark transfer target pending deletion: %v", err)
+	}
+	service := fixture.organizationService(t, 50)
+	_, err := service.TransferOwner(t.Context(), actors[RoleOwner], OwnerTransferCommand{
+		OrganizationID: organization.ID, TargetUserID: target.UserID,
+		ExpectedOrganizationRevision: organization.Revision, ExpectedOwnerRevision: 1, ExpectedTargetRevision: 1,
+		Confirmation: TransferOrganizationOwnerConfirmation, IdempotencyKey: "owner-transfer-pending-deletion", RequestID: "owner-transfer-pending-deletion",
+	})
+	if !errors.Is(err, ErrOwnerTransferTargetInvalid) {
+		t.Fatalf("TransferOwner(pending deletion target) error = %v", err)
+	}
+	var ownerUserID uuid.UUID
+	if err := fixture.postgres.QueryRow(fixture.ctx, `
+		SELECT user_id FROM organization_memberships WHERE organization_id = $1 AND role = 'owner'
+	`, organization.ID).Scan(&ownerUserID); err != nil || ownerUserID != actors[RoleOwner].UserID {
+		t.Fatalf("retained Owner = %s, error = %v", ownerUserID, err)
+	}
+}
+
 func TestServiceOrganizationInvitationIsSecretOnceFragmentOnlyAndActorBound(t *testing.T) {
 	fixture := newOrganizationRepositoryFixture(t)
 	actors, organization := fixture.organizationWithRoles(t, 100)

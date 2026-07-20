@@ -230,6 +230,7 @@ type fakeAccountRepository struct {
 	removeIdentityErr  error
 	passwordChanges    []PasswordChangeRecord
 	deletionRequests   []DeletionRequestRecord
+	requestDeletionErr error
 	deletionRecoveries []DeletionRecoveryRecord
 	profile            Profile
 	profileFound       bool
@@ -296,7 +297,7 @@ func (f *fakeAccountRepository) ChangePassword(_ context.Context, record Passwor
 
 func (f *fakeAccountRepository) RequestDeletion(_ context.Context, record DeletionRequestRecord) error {
 	f.deletionRequests = append(f.deletionRequests, record)
-	return nil
+	return f.requestDeletionErr
 }
 
 func (f *fakeAccountRepository) RecoverDeletion(_ context.Context, record DeletionRecoveryRecord) error {

@@ -390,11 +390,39 @@ func writeMappedAccountError(response http.ResponseWriter, err error) {
 		writeAccountError(response, http.StatusConflict, "last_identity")
 	case errors.Is(err, ErrDeletionWindowExpired):
 		writeAccountError(response, http.StatusGone, "deletion_window_expired")
+	case errors.Is(err, ErrOrganizationOwnerTransferRequired):
+		var ownership *OrganizationOwnerTransferRequiredError
+		if errors.As(err, &ownership) && ownership.OwnedOrganizationCount > 0 {
+			writeAccountOrganizationOwnershipError(response, ownership.OwnedOrganizationCount)
+			return
+		}
+		writeAccountError(response, http.StatusConflict, "organization_owner_transfer_required")
 	case errors.Is(err, ErrAccountNotFound):
 		writeAccountError(response, http.StatusNotFound, "account_not_found")
 	default:
 		writeAccountError(response, http.StatusServiceUnavailable, "service_unavailable")
 	}
+}
+
+func writeAccountOrganizationOwnershipError(response http.ResponseWriter, ownedOrganizationCount int) {
+	writeAccountJSON(response, http.StatusConflict, struct {
+		Error struct {
+			Code                   string `json:"code"`
+			Message                string `json:"message"`
+			RequestID              string `json:"request_id"`
+			OwnedOrganizationCount int    `json:"owned_organization_count"`
+		} `json:"error"`
+	}{
+		Error: struct {
+			Code                   string `json:"code"`
+			Message                string `json:"message"`
+			RequestID              string `json:"request_id"`
+			OwnedOrganizationCount int    `json:"owned_organization_count"`
+		}{
+			Code: "organization_owner_transfer_required", Message: "localized by the client",
+			RequestID: newRequestID(), OwnedOrganizationCount: ownedOrganizationCount,
+		},
+	})
 }
 
 func writeAccountNoContent(response http.ResponseWriter) {

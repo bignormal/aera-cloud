@@ -431,6 +431,197 @@ func TestPostgresLifecycleFinalizationCleansWorkspaceOwnershipAndMembershipBound
 	}
 }
 
+func TestPostgresDeletionRequestBlocksOrganizationOwnerWithoutConsumingReceipt(t *testing.T) {
+	fixture := newRepositoryFixture(t)
+	claims := fixture.verifiedReceipt(t, secure.IdentityEmail, "organization-owner-delete@example.com", verification.PurposeRegistration, 101)
+	owner := fixture.registrationRecord(t, claims, "Organization Owner")
+	if _, err := fixture.repository.Register(fixture.ctx, owner); err != nil {
+		t.Fatalf("Register(owner) error = %v", err)
+	}
+	seedLifecycleOrganization(t, fixture, owner.UserID, "active")
+	seedLifecycleOrganization(t, fixture, owner.UserID, "archived")
+
+	deletionClaims := fixture.verifiedReceipt(t, secure.IdentityEmail, "organization-owner-delete@example.com", verification.PurposeAccountDeletion, 102)
+	err := fixture.repository.RequestDeletion(fixture.ctx, DeletionRequestRecord{
+		ReceiptClaims: deletionClaims, UserID: owner.UserID, AuditEventID: uuid.New(), RequestedAt: fixture.now.Add(time.Hour),
+	})
+	var ownership *OrganizationOwnerTransferRequiredError
+	if !errors.As(err, &ownership) || ownership.OwnedOrganizationCount != 2 {
+		t.Fatalf("RequestDeletion() error = %#v", err)
+	}
+	var status string
+	if err := fixture.postgres.QueryRow(fixture.ctx, `SELECT status FROM users WHERE id = $1`, owner.UserID).Scan(&status); err != nil || status != "active" {
+		t.Fatalf("user status = %q, error = %v", status, err)
+	}
+	fixture.requireReceiptAvailable(t, deletionClaims.ChallengeID)
+}
+
+func TestPostgresLifecycleFinalizationRechecksOrganizationOwnership(t *testing.T) {
+	fixture := newRepositoryFixture(t)
+	claims := fixture.verifiedReceipt(t, secure.IdentityEmail, "organization-owner-finalize@example.com", verification.PurposeRegistration, 107)
+	owner := fixture.registrationRecord(t, claims, "Organization Owner Finalize")
+	if _, err := fixture.repository.Register(fixture.ctx, owner); err != nil {
+		t.Fatalf("Register(owner) error = %v", err)
+	}
+	deletionClaims := fixture.verifiedReceipt(t, secure.IdentityEmail, "organization-owner-finalize@example.com", verification.PurposeAccountDeletion, 108)
+	requestedAt := fixture.now.Add(time.Hour)
+	if err := fixture.repository.RequestDeletion(fixture.ctx, DeletionRequestRecord{
+		ReceiptClaims: deletionClaims, UserID: owner.UserID, AuditEventID: uuid.New(), RequestedAt: requestedAt,
+	}); err != nil {
+		t.Fatalf("RequestDeletion() error = %v", err)
+	}
+	organizationID := seedLifecycleOrganization(t, fixture, owner.UserID, "active")
+
+	err := fixture.repository.FinalizeDeletion(fixture.ctx, owner.UserID, uuid.New(), requestedAt.Add(7*24*time.Hour))
+	var ownership *OrganizationOwnerTransferRequiredError
+	if !errors.As(err, &ownership) || ownership.OwnedOrganizationCount != 1 {
+		t.Fatalf("FinalizeDeletion() error = %#v", err)
+	}
+	var status string
+	var organizationCount int
+	if err := fixture.postgres.QueryRow(fixture.ctx, `SELECT status FROM users WHERE id = $1`, owner.UserID).Scan(&status); err != nil {
+		t.Fatalf("read user status: %v", err)
+	}
+	if err := fixture.postgres.QueryRow(fixture.ctx, `SELECT count(*) FROM organizations WHERE id = $1`, organizationID).Scan(&organizationCount); err != nil {
+		t.Fatalf("read Organization: %v", err)
+	}
+	if status != "pending_deletion" || organizationCount != 1 {
+		t.Fatalf("finalization boundary status=%s organization_count=%d", status, organizationCount)
+	}
+}
+
+func TestPostgresLifecycleFinalizationRemovesOnlyDeletedOrganizationMemberIdentity(t *testing.T) {
+	fixture := newRepositoryFixture(t)
+	targetClaims := fixture.verifiedReceipt(t, secure.IdentityEmail, "organization-member-delete@example.com", verification.PurposeRegistration, 103)
+	target := fixture.registrationRecord(t, targetClaims, "Organization Member Delete")
+	if _, err := fixture.repository.Register(fixture.ctx, target); err != nil {
+		t.Fatalf("Register(target) error = %v", err)
+	}
+	ownerClaims := fixture.verifiedReceipt(t, secure.IdentityEmail, "organization-owner-keep@example.com", verification.PurposeRegistration, 104)
+	owner := fixture.registrationRecord(t, ownerClaims, "Organization Owner Keep")
+	if _, err := fixture.repository.Register(fixture.ctx, owner); err != nil {
+		t.Fatalf("Register(owner) error = %v", err)
+	}
+	otherClaims := fixture.verifiedReceipt(t, secure.IdentityEmail, "organization-member-keep@example.com", verification.PurposeRegistration, 105)
+	other := fixture.registrationRecord(t, otherClaims, "Organization Member Keep")
+	if _, err := fixture.repository.Register(fixture.ctx, other); err != nil {
+		t.Fatalf("Register(other) error = %v", err)
+	}
+	organizationID := seedLifecycleOrganization(t, fixture, owner.UserID, "active", target.UserID, other.UserID)
+	departmentID := uuid.New()
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		INSERT INTO organization_departments (
+			organization_id, id, display_name, name_key, status, revision, created_at, updated_at
+		) VALUES ($1, $2, 'Research', 'research', 'active', 1, $3, $3)
+	`, organizationID, departmentID, fixture.now); err != nil {
+		t.Fatalf("insert Department: %v", err)
+	}
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		UPDATE organization_memberships SET department_id = $3, revision = 2, updated_at = $4
+		WHERE organization_id = $1 AND user_id = $2
+	`, organizationID, target.UserID, departmentID, fixture.now.Add(time.Minute)); err != nil {
+		t.Fatalf("assign target Department: %v", err)
+	}
+	createdInvitationID := uuid.New()
+	acceptedInvitationID := uuid.New()
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		INSERT INTO organization_invitations (
+			id, organization_id, token_digest, created_by_user_id, status, created_at, expires_at
+		) VALUES ($1, $2, $3, $4, 'pending', $5, $6)
+	`, createdInvitationID, organizationID, bytes.Repeat([]byte{0xd1}, 32), target.UserID,
+		fixture.now, fixture.now.Add(7*24*time.Hour)); err != nil {
+		t.Fatalf("insert created invitation: %v", err)
+	}
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		INSERT INTO organization_invitations (
+			id, organization_id, token_digest, created_by_user_id, status, accepted_by_user_id,
+			created_at, expires_at, accepted_at
+		) VALUES ($1, $2, $3, $4, 'accepted', $5, $6, $7, $8)
+	`, acceptedInvitationID, organizationID, bytes.Repeat([]byte{0xd2}, 32), owner.UserID, target.UserID,
+		fixture.now, fixture.now.Add(7*24*time.Hour), fixture.now.Add(time.Hour)); err != nil {
+		t.Fatalf("insert accepted invitation: %v", err)
+	}
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		INSERT INTO organization_idempotency_records (
+			actor_user_id, organization_id, operation, key_digest, request_digest,
+			resource_type, resource_id, created_at, expires_at
+		) VALUES ($1, $2, 'organization_invitation_accept', $3, $4, 'organization_membership', $1, $5, $6)
+	`, target.UserID, organizationID, bytes.Repeat([]byte{0xd3}, 32), bytes.Repeat([]byte{0xd4}, 32),
+		fixture.now, fixture.now.Add(24*time.Hour)); err != nil {
+		t.Fatalf("insert Organization idempotency: %v", err)
+	}
+	auditID := uuid.New()
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		INSERT INTO audit_events (
+			id, event_type, actor_user_id, subject_user_id, organization_id,
+			object_type, object_id, outcome, metadata, created_at
+		) VALUES (
+			$1, 'organization_member_patched', $2, $2, $3,
+			'organization_membership', $2, 'success',
+			jsonb_build_object('organization_id', $3::uuid::text, 'membership_user_id', $2::uuid::text, 'role', 'member'), $4
+		)
+	`, auditID, target.UserID, organizationID, fixture.now); err != nil {
+		t.Fatalf("insert Organization audit: %v", err)
+	}
+
+	deletionClaims := fixture.verifiedReceipt(t, secure.IdentityEmail, "organization-member-delete@example.com", verification.PurposeAccountDeletion, 106)
+	requestedAt := fixture.now.Add(2 * time.Hour)
+	if err := fixture.repository.RequestDeletion(fixture.ctx, DeletionRequestRecord{
+		ReceiptClaims: deletionClaims, UserID: target.UserID, AuditEventID: uuid.New(), RequestedAt: requestedAt,
+	}); err != nil {
+		t.Fatalf("RequestDeletion() error = %v", err)
+	}
+	if err := fixture.repository.FinalizeDeletion(fixture.ctx, target.UserID, uuid.New(), requestedAt.Add(7*24*time.Hour)); err != nil {
+		t.Fatalf("FinalizeDeletion() error = %v", err)
+	}
+
+	for _, test := range []struct {
+		name  string
+		query string
+		args  []any
+		want  int
+	}{
+		{name: "Organization", query: `SELECT count(*) FROM organizations WHERE id = $1`, args: []any{organizationID}, want: 1},
+		{name: "Owner", query: `SELECT count(*) FROM organization_memberships WHERE organization_id = $1 AND user_id = $2 AND role = 'owner'`, args: []any{organizationID, owner.UserID}, want: 1},
+		{name: "other Member", query: `SELECT count(*) FROM organization_memberships WHERE organization_id = $1 AND user_id = $2`, args: []any{organizationID, other.UserID}, want: 1},
+		{name: "deleted Member", query: `SELECT count(*) FROM organization_memberships WHERE organization_id = $1 AND user_id = $2`, args: []any{organizationID, target.UserID}, want: 0},
+		{name: "Department", query: `SELECT count(*) FROM organization_departments WHERE organization_id = $1 AND id = $2`, args: []any{organizationID, departmentID}, want: 1},
+		{name: "idempotency", query: `SELECT count(*) FROM organization_idempotency_records WHERE actor_user_id = $1`, args: []any{target.UserID}, want: 0},
+	} {
+		var count int
+		if err := fixture.postgres.QueryRow(fixture.ctx, test.query, test.args...).Scan(&count); err != nil || count != test.want {
+			t.Fatalf("%s count = %d, error = %v", test.name, count, err)
+		}
+	}
+	var creatorCleared, acceptorCleared bool
+	var acceptedStatus string
+	var retainedAcceptedAt pgtype.Timestamptz
+	if err := fixture.postgres.QueryRow(fixture.ctx, `SELECT created_by_user_id IS NULL FROM organization_invitations WHERE id = $1`, createdInvitationID).Scan(&creatorCleared); err != nil {
+		t.Fatalf("read invitation creator: %v", err)
+	}
+	if err := fixture.postgres.QueryRow(fixture.ctx, `
+		SELECT accepted_by_user_id IS NULL, status, accepted_at
+		FROM organization_invitations WHERE id = $1
+	`, acceptedInvitationID).Scan(&acceptorCleared, &acceptedStatus, &retainedAcceptedAt); err != nil {
+		t.Fatalf("read invitation acceptor: %v", err)
+	}
+	if !creatorCleared || !acceptorCleared || acceptedStatus != "accepted" || !retainedAcceptedAt.Valid {
+		t.Fatalf("invitation references creator=%v acceptor=%v status=%s accepted_at=%v", creatorCleared, acceptorCleared, acceptedStatus, retainedAcceptedAt.Valid)
+	}
+	var actorCleared, subjectCleared, objectCleared, metadataCleared bool
+	var retainedOrganizationID uuid.UUID
+	if err := fixture.postgres.QueryRow(fixture.ctx, `
+		SELECT actor_user_id IS NULL, subject_user_id IS NULL, object_id IS NULL,
+		       metadata = '{}'::jsonb, organization_id
+		FROM audit_events WHERE id = $1
+	`, auditID).Scan(&actorCleared, &subjectCleared, &objectCleared, &metadataCleared, &retainedOrganizationID); err != nil {
+		t.Fatalf("read Organization audit: %v", err)
+	}
+	if !actorCleared || !subjectCleared || !objectCleared || !metadataCleared || retainedOrganizationID != organizationID {
+		t.Fatalf("audit cleared actor=%v subject=%v object=%v metadata=%v organization=%s", actorCleared, subjectCleared, objectCleared, metadataCleared, retainedOrganizationID)
+	}
+}
+
 func TestPostgresDeletionRecoveryAtSevenDayBoundaryIsRejectedWithoutConsumingReceipt(t *testing.T) {
 	fixture := newRepositoryFixture(t)
 	registrationClaims := fixture.verifiedReceipt(t, secure.IdentityEmail, "boundary@example.com", verification.PurposeRegistration, 71)
@@ -511,6 +702,67 @@ func seedLifecycleWorkspace(
 		t.Fatalf("commit workspace fixture: %v", err)
 	}
 	return workspaceID
+}
+
+func seedLifecycleOrganization(
+	t *testing.T,
+	fixture *repositoryFixture,
+	ownerUserID uuid.UUID,
+	status string,
+	memberUserIDs ...uuid.UUID,
+) uuid.UUID {
+	t.Helper()
+	organizationID := uuid.New()
+	policyID := uuid.New()
+	tx, err := fixture.postgres.BeginTx(fixture.ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin Organization fixture: %v", err)
+	}
+	defer func() { _ = tx.Rollback(fixture.ctx) }()
+	var archivedAt any
+	if status == "archived" {
+		archivedAt = fixture.now
+	}
+	if _, err := tx.Exec(fixture.ctx, `
+		INSERT INTO organizations (
+			id, display_name, status, revision, current_policy_snapshot_id,
+			created_at, updated_at, archived_at
+		) VALUES ($1, 'Lifecycle Organization', $2, 1, $3, $4, $4, $5)
+	`, organizationID, status, policyID, fixture.now, archivedAt); err != nil {
+		t.Fatalf("insert Organization fixture: %v", err)
+	}
+	if _, err := tx.Exec(fixture.ctx, `
+		INSERT INTO organization_memberships (
+			organization_id, user_id, role, revision, joined_at, updated_at
+		) VALUES ($1, $2, 'owner', 1, $3, $3)
+	`, organizationID, ownerUserID, fixture.now); err != nil {
+		t.Fatalf("insert Organization Owner fixture: %v", err)
+	}
+	for _, memberUserID := range memberUserIDs {
+		if _, err := tx.Exec(fixture.ctx, `
+			INSERT INTO organization_memberships (
+				organization_id, user_id, role, revision, joined_at, updated_at
+			) VALUES ($1, $2, 'member', 1, $3, $3)
+		`, organizationID, memberUserID, fixture.now); err != nil {
+			t.Fatalf("insert Organization Member fixture: %v", err)
+		}
+	}
+	if _, err := tx.Exec(fixture.ctx, `
+		INSERT INTO organization_policy_snapshots (
+			id, organization_id, policy_version, schema_version, policy_document,
+			content_digest, issuer, signing_key_id, signature, issued_by_user_id, created_at
+		) VALUES (
+			$1, $2, 1, 1,
+			'{"schema_version":1,"models":{"allowlist":null},"tools":{"allowlist":null},"experience_candidates":{"mode":"manual_review"},"official_agents":{"installation":"allowed"}}'::jsonb,
+			$3, 'https://accounts.example.com', 'organization-v1', $4, $5, $6
+		)
+	`, policyID, organizationID, bytes.Repeat([]byte{0xc1}, 32), bytes.Repeat([]byte{0xc2}, 64), ownerUserID, fixture.now); err != nil {
+		t.Fatalf("insert Organization policy fixture: %v", err)
+	}
+	if err := tx.Commit(fixture.ctx); err != nil {
+		t.Fatalf("commit Organization fixture: %v", err)
+	}
+	return organizationID
 }
 
 func seedLifecycleSession(t *testing.T, fixture *repositoryFixture, userID uuid.UUID, discriminator byte) uuid.UUID {

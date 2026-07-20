@@ -10,18 +10,31 @@ import (
 )
 
 var (
-	ErrInvalidRequest         = errors.New("account request is invalid")
-	ErrVerificationRequired   = errors.New("identity verification is required")
-	ErrIdentityConflict       = errors.New("identity is already registered")
-	ErrInvalidCredentials     = errors.New("credentials are invalid")
-	ErrAccountPendingDeletion = errors.New("account is pending deletion")
-	ErrAccountDisabled        = errors.New("account is disabled")
-	ErrServiceUnavailable     = errors.New("account service is unavailable")
-	ErrReceiptUnavailable     = errors.New("verification receipt is unavailable")
-	ErrAccountNotFound        = errors.New("account was not found")
-	ErrLastIdentity           = errors.New("the last login identity cannot be removed")
-	ErrDeletionWindowExpired  = errors.New("account deletion recovery window expired")
+	ErrInvalidRequest                    = errors.New("account request is invalid")
+	ErrVerificationRequired              = errors.New("identity verification is required")
+	ErrIdentityConflict                  = errors.New("identity is already registered")
+	ErrInvalidCredentials                = errors.New("credentials are invalid")
+	ErrAccountPendingDeletion            = errors.New("account is pending deletion")
+	ErrAccountDisabled                   = errors.New("account is disabled")
+	ErrServiceUnavailable                = errors.New("account service is unavailable")
+	ErrReceiptUnavailable                = errors.New("verification receipt is unavailable")
+	ErrAccountNotFound                   = errors.New("account was not found")
+	ErrLastIdentity                      = errors.New("the last login identity cannot be removed")
+	ErrDeletionWindowExpired             = errors.New("account deletion recovery window expired")
+	ErrOrganizationOwnerTransferRequired = errors.New("organization ownership must be transferred before account deletion")
 )
+
+type OrganizationOwnerTransferRequiredError struct {
+	OwnedOrganizationCount int
+}
+
+func (e *OrganizationOwnerTransferRequiredError) Error() string {
+	return ErrOrganizationOwnerTransferRequired.Error()
+}
+
+func (e *OrganizationOwnerTransferRequiredError) Unwrap() error {
+	return ErrOrganizationOwnerTransferRequired
+}
 
 type RegisterCommand struct {
 	Kind                secure.IdentityKind

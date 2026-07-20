@@ -873,6 +873,22 @@ func lockActiveOrganizationActor(ctx context.Context, tx pgx.Tx, actor Actor) er
 	return nil
 }
 
+func lockActiveOrganizationUser(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
+	var status string
+	if err := tx.QueryRow(ctx, `
+		SELECT status FROM users WHERE id = $1 FOR UPDATE
+	`, userID).Scan(&status); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrOwnerTransferTargetInvalid
+		}
+		return ErrServiceUnavailable
+	}
+	if status != "active" {
+		return ErrOwnerTransferTargetInvalid
+	}
+	return nil
+}
+
 func lockOrganizationCreationQuota(ctx context.Context, tx pgx.Tx, actorUserID uuid.UUID) error {
 	if _, err := tx.Exec(ctx, `
 		SELECT pg_advisory_xact_lock(hashtextextended('organization-owned:' || $1::text, 0))
@@ -1552,6 +1568,9 @@ func (r *PostgresRepository) transferOwner(
 	if organization.Revision != command.ExpectedOrganizationRevision ||
 		organization.ActorRevision != command.ExpectedOwnerRevision {
 		return OrganizationSummary{}, ErrOrganizationConflict
+	}
+	if err := lockActiveOrganizationUser(ctx, tx, command.TargetUserID); err != nil {
+		return OrganizationSummary{}, err
 	}
 	target, err := loadOrganizationMember(ctx, tx, command.OrganizationID, command.TargetUserID, true)
 	if err != nil {
