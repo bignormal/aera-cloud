@@ -1249,6 +1249,8 @@ paths:
           $ref: '#/components/responses/ExperienceCandidateError'
         '409':
           $ref: '#/components/responses/ExperienceCandidateError'
+        '413':
+          $ref: '#/components/responses/ExperienceCandidateError'
         '503':
           $ref: '#/components/responses/ExperienceCandidateError'
   /api/v1/agent-definitions:

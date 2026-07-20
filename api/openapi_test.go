@@ -233,6 +233,18 @@ func TestOpenAPIContainsStrictExperienceCandidateContract(t *testing.T) {
 			t.Fatalf("OpenAPI is missing candidate error code %q", code)
 		}
 	}
+	reviewStart := strings.Index(document, "  /api/v1/workspaces/{workspace_id}/experience-candidates/{candidate_id}/review:\n")
+	if reviewStart < 0 {
+		t.Fatal("OpenAPI is missing bounded candidate review operation")
+	}
+	reviewEnd := strings.Index(document[reviewStart:], "  /api/v1/agent-definitions:\n")
+	if reviewEnd < 0 {
+		t.Fatal("OpenAPI candidate review operation has no deterministic boundary")
+	}
+	reviewOperation := document[reviewStart : reviewStart+reviewEnd]
+	if !strings.Contains(reviewOperation, "        '413':\n") {
+		t.Fatal("candidate review operation does not document its 65536-byte body limit")
+	}
 	start := strings.Index(document, "    SubmitExperienceCandidateRequest:\n")
 	end := strings.Index(document, "    ReviewExperienceCandidateRequest:\n")
 	if start < 0 || end <= start {
