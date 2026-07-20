@@ -12,5 +12,6 @@ test-results/
 *.log
 /deploy/secrets/
 /backups/
+.worktrees/
 *.dump.age
 *.dump.age.sha256
