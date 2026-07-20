@@ -298,6 +298,11 @@ func TestWorkspaceAgentRoutesReachAgentControlBeforeWorkspaceWildcard(t *testing
 		"/api/v1/workspaces/workspace-id/agent-definitions",
 		"/api/v1/workspaces/workspace-id/agent-definitions/definition-id",
 		"/api/v1/workspaces/workspace-id/agent-definitions/definition-id/versions",
+		"/api/v1/workspaces/workspace-id/agent-definitions/definition-id/experience-candidates",
+		"/api/v1/workspaces/workspace-id/experience-candidates",
+		"/api/v1/workspaces/workspace-id/experience-candidates/mine",
+		"/api/v1/workspaces/workspace-id/experience-candidates/candidate-id",
+		"/api/v1/workspaces/workspace-id/experience-candidates/candidate-id/review",
 	} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
@@ -309,7 +314,7 @@ func TestWorkspaceAgentRoutesReachAgentControlBeforeWorkspaceWildcard(t *testing
 	handler.ServeHTTP(workspaceResponse, httptest.NewRequest(
 		http.MethodGet, "/api/v1/workspaces/workspace-id/members", nil,
 	))
-	if workspaceResponse.Code != http.StatusTeapot || agentCalls != 3 || workspaceCalls != 1 {
+	if workspaceResponse.Code != http.StatusTeapot || agentCalls != 8 || workspaceCalls != 1 {
 		t.Fatalf("routing calls Agent=%d Workspace=%d status=%d", agentCalls, workspaceCalls, workspaceResponse.Code)
 	}
 }
