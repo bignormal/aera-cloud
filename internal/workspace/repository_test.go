@@ -257,6 +257,308 @@ func TestWorkspaceRepositoryLifecycleRollsBackWhenAuditInsertionFails(t *testing
 	}
 }
 
+func TestWorkspaceRepositoryMemberRolesRemovalAndLeave(t *testing.T) {
+	fixture := newWorkspaceRepositoryFixture(t)
+	owner := fixture.actor(t, 40)
+	admin := fixture.actor(t, 41)
+	member := fixture.actor(t, 42)
+	created, _, err := fixture.repository.Create(fixture.ctx, owner, fixture.createCommand("Membership Workspace", 40, 10))
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	fixture.addMembership(t, created.ID, admin.UserID, RoleAdmin, 1)
+	fixture.addMembership(t, created.ID, member.UserID, RoleMember, 1)
+
+	members, err := fixture.repository.ListMembers(fixture.ctx, owner, created.ID)
+	if err != nil || len(members) != 3 {
+		t.Fatalf("ListMembers() = %+v, %v", members, err)
+	}
+	promoted, err := fixture.repository.ChangeMemberRole(fixture.ctx, owner, ChangeRoleCommand{
+		WorkspaceID: created.ID, UserID: member.UserID, Role: RoleAdmin, ExpectedRevision: 1,
+		Audit: fixture.auditEvidence(43), ChangedAt: fixture.now.Add(43 * time.Minute),
+	})
+	if err != nil || promoted.Role != RoleAdmin || promoted.Revision != 2 {
+		t.Fatalf("ChangeMemberRole(promote) = %+v, %v", promoted, err)
+	}
+	if _, err := fixture.repository.ChangeMemberRole(fixture.ctx, admin, ChangeRoleCommand{
+		WorkspaceID: created.ID, UserID: member.UserID, Role: RoleMember, ExpectedRevision: 2,
+		Audit: fixture.auditEvidence(44), ChangedAt: fixture.now.Add(44 * time.Minute),
+	}); !errors.Is(err, ErrWorkspaceForbidden) {
+		t.Fatalf("ChangeMemberRole(Admin manages Admin) error = %v", err)
+	}
+	demoted, err := fixture.repository.ChangeMemberRole(fixture.ctx, owner, ChangeRoleCommand{
+		WorkspaceID: created.ID, UserID: member.UserID, Role: RoleMember, ExpectedRevision: 2,
+		Audit: fixture.auditEvidence(45), ChangedAt: fixture.now.Add(45 * time.Minute),
+	})
+	if err != nil || demoted.Role != RoleMember || demoted.Revision != 3 {
+		t.Fatalf("ChangeMemberRole(demote) = %+v, %v", demoted, err)
+	}
+	if err := fixture.repository.RemoveMember(fixture.ctx, admin, RemoveMemberCommand{
+		WorkspaceID: created.ID, UserID: member.UserID, ExpectedRevision: 3,
+		Audit: fixture.auditEvidence(46), RemovedAt: fixture.now.Add(46 * time.Minute),
+	}); err != nil {
+		t.Fatalf("RemoveMember(Admin removes Member) error = %v", err)
+	}
+	if _, err := fixture.repository.ListMembers(fixture.ctx, member, created.ID); !errors.Is(err, ErrWorkspaceNotFound) {
+		t.Fatalf("removed member ListMembers() error = %v", err)
+	}
+	if err := fixture.repository.Leave(fixture.ctx, admin, created.ID); err != nil {
+		t.Fatalf("Leave(Admin) error = %v", err)
+	}
+	if err := fixture.repository.Leave(fixture.ctx, owner, created.ID); !errors.Is(err, ErrWorkspaceForbidden) {
+		t.Fatalf("Leave(Owner) error = %v", err)
+	}
+}
+
+func TestWorkspaceRepositoryInvitationQuotaIsAtomicAndSecretOnce(t *testing.T) {
+	fixture := newWorkspaceRepositoryFixture(t)
+	owner := fixture.actor(t, 50)
+	created, _, err := fixture.repository.Create(fixture.ctx, owner, fixture.createCommand("Invitation Quota", 50, 10))
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	for index := byte(1); index <= 19; index++ {
+		command := fixture.invitationCommand(t, created.ID, index, 20)
+		if _, _, err := fixture.repository.CreateInvitation(fixture.ctx, owner, command); err != nil {
+			t.Fatalf("CreateInvitation(seed %d) error = %v", index, err)
+		}
+	}
+	commands := []CreateInvitationCommand{
+		fixture.invitationCommand(t, created.ID, 20, 20),
+		fixture.invitationCommand(t, created.ID, 21, 20),
+	}
+	start := make(chan struct{})
+	results := make(chan struct {
+		creation InvitationCreation
+		replay   IdempotencyReplay
+		err      error
+	}, len(commands))
+	for _, command := range commands {
+		command := command
+		go func() {
+			<-start
+			creation, replay, createErr := fixture.repository.CreateInvitation(fixture.ctx, owner, command)
+			results <- struct {
+				creation InvitationCreation
+				replay   IdempotencyReplay
+				err      error
+			}{creation: creation, replay: replay, err: createErr}
+		}()
+	}
+	close(start)
+	successes := 0
+	limits := 0
+	var winningCommand CreateInvitationCommand
+	for range commands {
+		result := <-results
+		switch {
+		case result.err == nil:
+			successes++
+			if result.replay != IdempotencyFresh || result.creation.Secret == nil ||
+				result.creation.Secret.RawToken == "" {
+				t.Fatalf("fresh invitation result = %+v replay=%q", result.creation, result.replay)
+			}
+			for _, command := range commands {
+				if command.InvitationID == result.creation.Invitation.ID {
+					winningCommand = command
+				}
+			}
+		case errors.Is(result.err, ErrInvitationLimitReached):
+			limits++
+		default:
+			t.Fatalf("concurrent CreateInvitation() error = %v", result.err)
+		}
+	}
+	if successes != 1 || limits != 1 {
+		t.Fatalf("concurrent invitation successes=%d limits=%d", successes, limits)
+	}
+	var pending int
+	if err := fixture.postgres.QueryRow(fixture.ctx, `
+		SELECT count(*) FROM workspace_invitations WHERE workspace_id = $1 AND status = 'pending'
+	`, created.ID).Scan(&pending); err != nil || pending != 20 {
+		t.Fatalf("pending invitations = %d, error = %v", pending, err)
+	}
+	replayed, replay, err := fixture.repository.CreateInvitation(fixture.ctx, owner, winningCommand)
+	if err != nil || replay != IdempotencyReplayed || replayed.Secret != nil || replayed.Invitation.ID != winningCommand.InvitationID {
+		t.Fatalf("CreateInvitation(replay) = %+v replay=%q error=%v", replayed, replay, err)
+	}
+}
+
+func TestWorkspaceRepositoryMemberQuotaIsAtomicAcrossInvitationAcceptance(t *testing.T) {
+	fixture := newWorkspaceRepositoryFixture(t)
+	owner := fixture.actor(t, 150)
+	created, _, err := fixture.repository.Create(fixture.ctx, owner, fixture.createCommand("Member Quota", 150, 10))
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	for discriminator := byte(1); discriminator <= 98; discriminator++ {
+		member := fixture.actor(t, discriminator)
+		fixture.addMembership(t, created.ID, member.UserID, RoleMember, 1)
+	}
+	candidates := []Actor{fixture.actor(t, 101), fixture.actor(t, 102)}
+	commands := make([]AcceptInvitationCommand, 0, 2)
+	for index, actor := range candidates {
+		invitation := fixture.invitationCommand(t, created.ID, byte(110+index), 20)
+		if _, _, err := fixture.repository.CreateInvitation(fixture.ctx, owner, invitation); err != nil {
+			t.Fatalf("CreateInvitation(candidate %d) error = %v", index, err)
+		}
+		commands = append(commands, fixture.acceptCommand(invitation.Secret.Digest, byte(120+index), 100))
+		_ = actor
+	}
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for index, actor := range candidates {
+		index, actor := index, actor
+		go func() {
+			<-start
+			_, acceptErr := fixture.repository.AcceptInvitation(fixture.ctx, actor, commands[index])
+			results <- acceptErr
+		}()
+	}
+	close(start)
+	successes := 0
+	limits := 0
+	for range candidates {
+		err := <-results
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrMemberLimitReached):
+			limits++
+		default:
+			t.Fatalf("concurrent AcceptInvitation() error = %v", err)
+		}
+	}
+	if successes != 1 || limits != 1 {
+		t.Fatalf("concurrent acceptance successes=%d limits=%d", successes, limits)
+	}
+	var memberCount int
+	if err := fixture.postgres.QueryRow(fixture.ctx, `
+		SELECT count(*) FROM workspace_memberships WHERE workspace_id = $1
+	`, created.ID).Scan(&memberCount); err != nil || memberCount != 100 {
+		t.Fatalf("member count = %d, error = %v", memberCount, err)
+	}
+}
+
+func TestWorkspaceRepositoryInvitationIsSingleUseGenericAndReplayFirst(t *testing.T) {
+	fixture := newWorkspaceRepositoryFixture(t)
+	owner := fixture.actor(t, 160)
+	member := fixture.actor(t, 161)
+	other := fixture.actor(t, 162)
+	created, _, err := fixture.repository.Create(fixture.ctx, owner, fixture.createCommand("Invitation Lifecycle", 160, 10))
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	invitation := fixture.invitationCommand(t, created.ID, 163, 20)
+	creation, _, err := fixture.repository.CreateInvitation(fixture.ctx, owner, invitation)
+	if err != nil {
+		t.Fatalf("CreateInvitation() error = %v", err)
+	}
+	if creation.Invitation.ExpiresAt.Sub(creation.Invitation.CreatedAt) != 7*24*time.Hour {
+		t.Fatalf("invitation validity = %v", creation.Invitation.ExpiresAt.Sub(creation.Invitation.CreatedAt))
+	}
+	accept := fixture.acceptCommand(invitation.Secret.Digest, 164, 100)
+	accepted, err := fixture.repository.AcceptInvitation(fixture.ctx, member, accept)
+	if err != nil || accepted.Member.UserID != member.UserID || accepted.Member.Role != RoleMember || accepted.Workspace.ID != created.ID {
+		t.Fatalf("AcceptInvitation() = %+v, %v", accepted, err)
+	}
+	replayBeforeToken := accept
+	replayBeforeToken.TokenDigest = sha256.Sum256([]byte("unavailable token after replay lookup"))
+	replayed, err := fixture.repository.AcceptInvitation(fixture.ctx, member, replayBeforeToken)
+	if err != nil || replayed.Member.UserID != member.UserID || replayed.Workspace.ID != created.ID {
+		t.Fatalf("AcceptInvitation(replay before token) = %+v, %v", replayed, err)
+	}
+
+	unavailable := []AcceptInvitationCommand{
+		fixture.acceptCommand(sha256.Sum256([]byte("unknown invitation")), 165, 100),
+		fixture.acceptCommand(invitation.Secret.Digest, 166, 100),
+	}
+	expiredID := uuid.New()
+	expiredDigest := sha256.Sum256([]byte("expired invitation"))
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		INSERT INTO workspace_invitations (
+			id, workspace_id, token_digest, created_by_user_id, status, created_at, expires_at
+		) VALUES ($1, $2, $3, $4, 'pending', $5, $6)
+	`, expiredID, created.ID, expiredDigest[:], owner.UserID, fixture.now.Add(-8*24*time.Hour), fixture.now.Add(-24*time.Hour)); err != nil {
+		t.Fatalf("seed expired invitation: %v", err)
+	}
+	unavailable = append(unavailable, fixture.acceptCommand(expiredDigest, 167, 100))
+	revoked := fixture.invitationCommand(t, created.ID, 168, 20)
+	if _, _, err := fixture.repository.CreateInvitation(fixture.ctx, owner, revoked); err != nil {
+		t.Fatalf("CreateInvitation(revoked) error = %v", err)
+	}
+	if err := fixture.repository.RevokeInvitation(fixture.ctx, owner, RevokeInvitationCommand{
+		WorkspaceID: created.ID, InvitationID: revoked.InvitationID,
+		Audit: fixture.auditEvidence(169), RevokedAt: fixture.now.Add(169 * time.Minute),
+	}); err != nil {
+		t.Fatalf("RevokeInvitation() error = %v", err)
+	}
+	unavailable = append(unavailable, fixture.acceptCommand(revoked.Secret.Digest, 170, 100))
+	for index, command := range unavailable {
+		if _, err := fixture.repository.AcceptInvitation(fixture.ctx, other, command); !errors.Is(err, ErrInvitationUnavailable) {
+			t.Fatalf("unavailable invitation case %d error = %v", index, err)
+		}
+	}
+
+	existingMemberInvite := fixture.invitationCommand(t, created.ID, 171, 20)
+	if _, _, err := fixture.repository.CreateInvitation(fixture.ctx, owner, existingMemberInvite); err != nil {
+		t.Fatalf("CreateInvitation(existing member) error = %v", err)
+	}
+	existing, err := fixture.repository.AcceptInvitation(
+		fixture.ctx, owner, fixture.acceptCommand(existingMemberInvite.Secret.Digest, 172, 100),
+	)
+	if err != nil || existing.Member.Role != RoleOwner {
+		t.Fatalf("AcceptInvitation(existing Owner) = %+v, %v", existing, err)
+	}
+}
+
+func TestWorkspaceRepositoryInvitationConcurrentAcceptanceHasOneWinner(t *testing.T) {
+	fixture := newWorkspaceRepositoryFixture(t)
+	owner := fixture.actor(t, 180)
+	first := fixture.actor(t, 181)
+	second := fixture.actor(t, 182)
+	created, _, err := fixture.repository.Create(fixture.ctx, owner, fixture.createCommand("Concurrent Invitation", 180, 10))
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	invitation := fixture.invitationCommand(t, created.ID, 183, 20)
+	if _, _, err := fixture.repository.CreateInvitation(fixture.ctx, owner, invitation); err != nil {
+		t.Fatalf("CreateInvitation() error = %v", err)
+	}
+	actors := []Actor{first, second}
+	commands := []AcceptInvitationCommand{
+		fixture.acceptCommand(invitation.Secret.Digest, 184, 100),
+		fixture.acceptCommand(invitation.Secret.Digest, 185, 100),
+	}
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for index, actor := range actors {
+		index, actor := index, actor
+		go func() {
+			<-start
+			_, acceptErr := fixture.repository.AcceptInvitation(fixture.ctx, actor, commands[index])
+			results <- acceptErr
+		}()
+	}
+	close(start)
+	successes := 0
+	unavailable := 0
+	for range actors {
+		err := <-results
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrInvitationUnavailable):
+			unavailable++
+		default:
+			t.Fatalf("concurrent acceptance error = %v", err)
+		}
+	}
+	if successes != 1 || unavailable != 1 {
+		t.Fatalf("concurrent acceptance successes=%d unavailable=%d", successes, unavailable)
+	}
+}
+
 type workspaceRepositoryFixture struct {
 	ctx        context.Context
 	postgres   *pgxpool.Pool
@@ -305,6 +607,22 @@ func (f *workspaceRepositoryFixture) actor(t *testing.T, discriminator byte) Act
 	return actor
 }
 
+func (f *workspaceRepositoryFixture) addMembership(
+	t *testing.T,
+	workspaceID uuid.UUID,
+	userID uuid.UUID,
+	role Role,
+	revision int64,
+) {
+	t.Helper()
+	if _, err := f.postgres.Exec(f.ctx, `
+		INSERT INTO workspace_memberships (workspace_id, user_id, role, revision, joined_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $5)
+	`, workspaceID, userID, role, revision, f.now); err != nil {
+		t.Fatalf("add %s membership: %v", role, err)
+	}
+}
+
 func (f *workspaceRepositoryFixture) createCommand(name string, discriminator byte, limit int) CreateCommand {
 	createdAt := f.now.Add(time.Duration(discriminator) * time.Minute)
 	return CreateCommand{
@@ -321,6 +639,45 @@ func (f *workspaceRepositoryFixture) auditEvidence(discriminator byte) AuditEvid
 	return fixtureAuditEvidence(discriminator)
 }
 
+func (f *workspaceRepositoryFixture) invitationCommand(
+	t *testing.T,
+	workspaceID uuid.UUID,
+	discriminator byte,
+	limit int,
+) CreateInvitationCommand {
+	t.Helper()
+	secret, err := NewInvitationSecret(bytes.NewReader(bytes.Repeat([]byte{discriminator}, 32)))
+	if err != nil {
+		t.Fatalf("NewInvitationSecret() error = %v", err)
+	}
+	createdAt := f.now.Add(time.Duration(discriminator) * time.Minute)
+	return CreateInvitationCommand{
+		InvitationID: workspaceInvitationTestUUID(discriminator), WorkspaceID: workspaceID, Secret: secret,
+		PendingInviteLimit: limit,
+		Idempotency: IdempotencyEvidence{
+			KeyDigest: sha256.Sum256([]byte{discriminator, 3}), RequestDigest: sha256.Sum256([]byte{discriminator, 4}),
+			ExpiresAt: createdAt.Add(24 * time.Hour),
+		},
+		Audit: fixtureAuditEvidence(discriminator), CreatedAt: createdAt,
+	}
+}
+
+func (f *workspaceRepositoryFixture) acceptCommand(
+	tokenDigest [sha256.Size]byte,
+	discriminator byte,
+	memberLimit int,
+) AcceptInvitationCommand {
+	acceptedAt := f.now.Add(time.Duration(discriminator) * time.Minute)
+	return AcceptInvitationCommand{
+		TokenDigest: tokenDigest, MemberLimit: memberLimit,
+		Idempotency: IdempotencyEvidence{
+			KeyDigest: sha256.Sum256([]byte{discriminator, 5}), RequestDigest: sha256.Sum256([]byte{discriminator, 6}),
+			ExpiresAt: acceptedAt.Add(24 * time.Hour),
+		},
+		Audit: fixtureAuditEvidence(discriminator), AcceptedAt: acceptedAt,
+	}
+}
+
 func fixtureAuditEvidence(discriminator byte) AuditEvidence {
 	return AuditEvidence{
 		EventID: uuid.New(), RequestID: fmt.Sprintf("workspace-request-%d", discriminator),
@@ -329,6 +686,17 @@ func fixtureAuditEvidence(discriminator byte) AuditEvidence {
 
 func nameBasedTestUUID(discriminator byte) uuid.UUID {
 	digest := sha256.Sum256([]byte("workspace-test-id-" + string([]byte{discriminator})))
+	id, err := uuid.FromBytes(digest[:16])
+	if err != nil {
+		panic(err)
+	}
+	id[6] = (id[6] & 0x0f) | 0x40
+	id[8] = (id[8] & 0x3f) | 0x80
+	return id
+}
+
+func workspaceInvitationTestUUID(discriminator byte) uuid.UUID {
+	digest := sha256.Sum256([]byte("workspace-invitation-test-id-" + string([]byte{discriminator})))
 	id, err := uuid.FromBytes(digest[:16])
 	if err != nil {
 		panic(err)
