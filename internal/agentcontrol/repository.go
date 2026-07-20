@@ -1659,7 +1659,7 @@ func requireWorkspaceAgentAccess(
 		return "", ErrServiceUnavailable
 	}
 	if actorStatus != "active" || !deviceActive {
-		if ownerStatus != "active" && role == "owner" && mode != workspaceAgentRead {
+		if ownerStatus != "active" && role == "owner" {
 			return "", ErrWorkspaceOwnerUnavailable
 		}
 		return "", ErrNotFound

@@ -30,9 +30,10 @@ var (
 	jwtPattern        = regexp.MustCompile(`^[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16,}$`)
 	agentMetadataKeys = map[string]struct{}{
 		"tenant_id": {}, "owner_scope": {}, "owner_id": {},
+		"workspace_id":        {},
 		"agent_definition_id": {}, "agent_version_id": {},
 		"agent_installation_id": {}, "policy_snapshot_id": {},
-		"content_digest": {},
+		"content_digest": {}, "source_owner_scope": {}, "source_workspace_id": {},
 	}
 	workspaceMetadataKeys = map[string]struct{}{
 		"workspace_id": {}, "membership_user_id": {}, "invitation_id": {},
@@ -168,6 +169,49 @@ func validMetadata(eventType string, metadata map[string]string) bool {
 	if !strings.HasPrefix(eventType, "agent_") && !strings.HasPrefix(eventType, "runtime_binding_") {
 		return false
 	}
+	ownerScope, hasOwnerScope := metadata["owner_scope"]
+	_, hasWorkspaceID := metadata["workspace_id"]
+	_, hasTenantID := metadata["tenant_id"]
+	_, hasOwnerID := metadata["owner_id"]
+	sourceOwnerScope, hasSourceOwnerScope := metadata["source_owner_scope"]
+	_, hasSourceWorkspaceID := metadata["source_workspace_id"]
+	if hasWorkspaceID && (!hasOwnerScope || ownerScope != "WORKSPACE" || hasTenantID || hasOwnerID) {
+		return false
+	}
+	if hasOwnerScope {
+		switch ownerScope {
+		case "USER":
+			if hasWorkspaceID {
+				return false
+			}
+		case "WORKSPACE":
+			if !hasWorkspaceID || hasTenantID || hasOwnerID {
+				return false
+			}
+			if eventType != "agent_definition_published" && eventType != "agent_version_published" {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	if hasSourceOwnerScope || hasSourceWorkspaceID {
+		if eventType != "agent_installation_created" || !hasSourceOwnerScope {
+			return false
+		}
+		switch sourceOwnerScope {
+		case "USER":
+			if hasSourceWorkspaceID {
+				return false
+			}
+		case "WORKSPACE":
+			if !hasSourceWorkspaceID {
+				return false
+			}
+		default:
+			return false
+		}
+	}
 	for key, value := range metadata {
 		if !namePattern.MatchString(key) {
 			return false
@@ -176,10 +220,8 @@ func validMetadata(eventType string, metadata map[string]string) bool {
 			return false
 		}
 		switch key {
-		case "owner_scope":
-			if value != "USER" {
-				return false
-			}
+		case "owner_scope", "source_owner_scope":
+			continue
 		case "content_digest":
 			decoded, err := hex.DecodeString(value)
 			if err != nil || len(decoded) != 32 || value != strings.ToLower(value) {

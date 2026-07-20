@@ -240,9 +240,13 @@ func TestRepositoryWorkspaceLifecycleAndMembershipChangesFailClosed(t *testing.T
 
 	if _, err := fixture.postgres.Exec(fixture.ctx, `
 		UPDATE workspaces SET status = 'active', archived_at = NULL, revision = revision + 1, updated_at = $2
-		WHERE id = $1;
-		UPDATE users SET status = 'pending_deletion', deletion_requested_at = $2, updated_at = $2 WHERE id = $3
-	`, workspaceID, fixture.now, owner.UserID); err != nil {
+		WHERE id = $1
+	`, workspaceID, fixture.now); err != nil {
+		t.Fatalf("restore Workspace: %v", err)
+	}
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		UPDATE users SET status = 'pending_deletion', deletion_requested_at = $1, updated_at = $1 WHERE id = $2
+	`, fixture.now, owner.UserID); err != nil {
 		t.Fatalf("make Owner unavailable: %v", err)
 	}
 	if _, err := fixture.repository.PublishWorkspaceNext(

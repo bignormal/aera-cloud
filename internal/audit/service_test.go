@@ -94,6 +94,64 @@ func TestPostgresRecorderPersistsBoundedAgentMetadataDeterministically(t *testin
 	}
 }
 
+func TestPostgresRecorderPersistsBoundedWorkspaceAgentMetadataDeterministically(t *testing.T) {
+	executor := &fakeExecutor{}
+	recorder, err := NewRecorder(executor)
+	if err != nil {
+		t.Fatalf("NewRecorder() error = %v", err)
+	}
+	workspaceID := uuid.New()
+	definitionID := uuid.New()
+	versionID := uuid.New()
+	metadata := map[string]string{
+		"owner_scope":         "WORKSPACE",
+		"workspace_id":        workspaceID.String(),
+		"agent_definition_id": definitionID.String(),
+		"agent_version_id":    versionID.String(),
+		"content_digest":      strings.Repeat("b", 64),
+	}
+	if err := recorder.Record(context.Background(), Event{
+		EventType: "agent_definition_published", Outcome: OutcomeSuccess, Metadata: metadata,
+	}); err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+	encoded, ok := executor.arguments[10].(string)
+	if !ok {
+		t.Fatalf("metadata argument type = %T", executor.arguments[10])
+	}
+	want := `{"agent_definition_id":"` + definitionID.String() + `","agent_version_id":"` + versionID.String() + `","content_digest":"` + strings.Repeat("b", 64) + `","owner_scope":"WORKSPACE","workspace_id":"` + workspaceID.String() + `"}`
+	if encoded != want {
+		t.Fatalf("Workspace Agent metadata JSON = %s, want %s", encoded, want)
+	}
+}
+
+func TestPostgresRecorderPersistsWorkspaceSourcedUserInstallationMetadata(t *testing.T) {
+	executor := &fakeExecutor{}
+	recorder, err := NewRecorder(executor)
+	if err != nil {
+		t.Fatalf("NewRecorder() error = %v", err)
+	}
+	metadata := map[string]string{
+		"tenant_id":             uuid.NewString(),
+		"owner_scope":           "USER",
+		"owner_id":              uuid.NewString(),
+		"agent_definition_id":   uuid.NewString(),
+		"agent_version_id":      uuid.NewString(),
+		"agent_installation_id": uuid.NewString(),
+		"policy_snapshot_id":    uuid.NewString(),
+		"source_owner_scope":    "WORKSPACE",
+		"source_workspace_id":   uuid.NewString(),
+	}
+	if err := recorder.Record(context.Background(), Event{
+		EventType: "agent_installation_created", Outcome: OutcomeSuccess, Metadata: metadata,
+	}); err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+	if executor.calls != 1 {
+		t.Fatalf("Exec() calls = %d, want 1", executor.calls)
+	}
+}
+
 func TestPostgresRecorderRejectsUnsafeAgentMetadata(t *testing.T) {
 	tooMany := make(map[string]string, 13)
 	for index := range 13 {
@@ -173,7 +231,15 @@ func TestPostgresRecorderRejectsUnsafeWorkspaceMetadata(t *testing.T) {
 		{name: "path", eventType: "workspace_created", metadata: map[string]string{"workspace_id": "/Users/alice/workspace"}},
 		{name: "invalid role", eventType: "workspace_member_role_changed", metadata: map[string]string{"workspace_id": workspaceID, "role": "viewer"}},
 		{name: "mixed Agent key", eventType: "workspace_created", metadata: map[string]string{"workspace_id": workspaceID, "owner_scope": "USER"}},
-		{name: "workspace metadata on Agent event", eventType: "agent_version_published", metadata: map[string]string{"workspace_id": workspaceID}},
+		{name: "unscoped workspace metadata on Agent event", eventType: "agent_version_published", metadata: map[string]string{"workspace_id": workspaceID}},
+		{name: "Workspace Agent metadata without workspace", eventType: "agent_version_published", metadata: map[string]string{"owner_scope": "WORKSPACE"}},
+		{name: "mixed Workspace and user Agent ownership", eventType: "agent_version_published", metadata: map[string]string{"owner_scope": "WORKSPACE", "workspace_id": workspaceID, "owner_id": uuid.NewString()}},
+		{name: "Workspace-owned Installation", eventType: "agent_installation_created", metadata: map[string]string{"owner_scope": "WORKSPACE", "workspace_id": workspaceID}},
+		{name: "Workspace-owned RuntimeBinding", eventType: "runtime_binding_recorded", metadata: map[string]string{"owner_scope": "WORKSPACE", "workspace_id": workspaceID}},
+		{name: "unsupported Workspace Agent event", eventType: "agent_version_revoked", metadata: map[string]string{"owner_scope": "WORKSPACE", "workspace_id": workspaceID}},
+		{name: "Workspace source without workspace", eventType: "agent_installation_created", metadata: map[string]string{"owner_scope": "USER", "source_owner_scope": "WORKSPACE"}},
+		{name: "USER source with workspace", eventType: "agent_installation_created", metadata: map[string]string{"owner_scope": "USER", "source_owner_scope": "USER", "source_workspace_id": workspaceID}},
+		{name: "source ownership on unrelated Agent event", eventType: "agent_version_published", metadata: map[string]string{"owner_scope": "USER", "source_owner_scope": "WORKSPACE", "source_workspace_id": workspaceID}},
 		{name: "workspace metadata on browser event", eventType: "browser_login", metadata: map[string]string{"workspace_id": workspaceID}},
 		{name: "oversized value", eventType: "workspace_created", metadata: map[string]string{"workspace_id": strings.Repeat("a", 129)}},
 	}

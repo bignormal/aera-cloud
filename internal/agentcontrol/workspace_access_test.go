@@ -39,6 +39,11 @@ func TestRequireWorkspaceAgentAccessFailsClosedForDiscoveryAndMutation(t *testin
 			mode: workspaceAgentRead, wanted: ErrWorkspaceOwnerUnavailable,
 		},
 		{
+			name: "unavailable owner receives stable discovery error",
+			row:  workspaceAccessRow{workspaceStatus: "active", ownerStatus: "pending_deletion", role: "owner", actorStatus: "pending_deletion", deviceActive: true, fixedOwner: true},
+			mode: workspaceAgentRead, wanted: ErrWorkspaceOwnerUnavailable,
+		},
+		{
 			name: "outsider is non enumerating",
 			row:  workspaceAccessRow{err: pgx.ErrNoRows},
 			mode: workspaceAgentRead, wanted: ErrNotFound,
