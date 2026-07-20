@@ -211,8 +211,9 @@ func TestBuildOAuthHandlerWiresProtocolAndPublicSigningKeys(t *testing.T) {
 	if keysResponse.Code != http.StatusOK || json.Unmarshal(keysResponse.Body.Bytes(), &document) != nil {
 		t.Fatalf("signing keys response = %d %q", keysResponse.Code, keysResponse.Body.String())
 	}
-	if len(document.Keys) != 4 || document.Keys[0].Purpose != "access" || document.Keys[1].Purpose != "offline_entitlement" ||
-		document.Keys[2].Purpose != "agent_version" || document.Keys[3].Purpose != "agent_policy" {
+	if len(document.Keys) != 5 || document.Keys[0].Purpose != "access" || document.Keys[1].Purpose != "offline_entitlement" ||
+		document.Keys[2].Purpose != "agent_version" || document.Keys[3].Purpose != "agent_policy" ||
+		document.Keys[4].Purpose != "organization_policy" {
 		t.Fatalf("published signing keys = %+v", document.Keys)
 	}
 	for _, key := range document.Keys {
@@ -322,6 +323,46 @@ func TestBuildWorkspaceHandlerWiresConfiguredControlPlaneDependencies(t *testing
 
 	if _, err := buildWorkspaceHandler(cfg, nil, redisStore.Client()); err == nil {
 		t.Fatal("buildWorkspaceHandler() accepted a nil PostgreSQL dependency")
+	}
+}
+
+func TestBuildOrganizationHandlerWiresConfiguredFoundationDependencies(t *testing.T) {
+	services := testkit.IntegrationServices(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	postgres, err := store.OpenPostgres(ctx, services.DatabaseURL)
+	if err != nil {
+		t.Fatalf("OpenPostgres() error = %v", err)
+	}
+	defer postgres.Close()
+	if err := store.ApplyMigrations(ctx, postgres); err != nil {
+		t.Fatalf("ApplyMigrations() error = %v", err)
+	}
+	redisStore, err := store.OpenRedis(ctx, store.RedisOptions{
+		Addr: services.RedisAddr, Username: services.RedisUsername, Password: services.RedisPassword, DB: services.RedisDB,
+	})
+	if err != nil {
+		t.Fatalf("OpenRedis() error = %v", err)
+	}
+	defer func() { _ = redisStore.Close() }()
+	cfg, err := config.Load(integrationLookup(services))
+	if err != nil {
+		t.Fatalf("config.Load() error = %v", err)
+	}
+
+	handler, err := buildOrganizationHandler(cfg, postgres, redisStore.Client())
+	if err != nil {
+		t.Fatalf("buildOrganizationHandler() error = %v", err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/organizations", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), `"code":"authentication_required"`) {
+		t.Fatalf("response = %d %q", response.Code, response.Body.String())
+	}
+
+	if _, err := buildOrganizationHandler(cfg, nil, redisStore.Client()); err == nil {
+		t.Fatal("buildOrganizationHandler() accepted a nil PostgreSQL dependency")
 	}
 }
 

@@ -283,3 +283,15 @@ const (
 type Limiter interface {
 	Allow(context.Context, LimitAction, Actor, *uuid.UUID) (time.Duration, error)
 }
+
+type RateLimitError struct {
+	RetryAfter time.Duration
+}
+
+func (e *RateLimitError) Error() string {
+	return ErrRateLimited.Error()
+}
+
+func (e *RateLimitError) Unwrap() error {
+	return ErrRateLimited
+}

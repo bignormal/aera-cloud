@@ -28,6 +28,7 @@ const (
 	operationOrganizationRestore          = "organization_restore"
 	operationOrganizationDissolve         = "organization_dissolve"
 	operationOrganizationPolicyPublish    = "organization_policy_publish"
+	operationOrganizationOwnerTransfer    = "organization_owner_transfer"
 )
 
 type IdempotencyEvidence struct {
@@ -1517,7 +1518,8 @@ func (r *PostgresRepository) transferOwner(
 	if r == nil || r.postgres == nil || actor.Validate() != nil || command.OrganizationID == uuid.Nil ||
 		command.TargetUserID == uuid.Nil || command.TargetUserID == actor.UserID ||
 		command.ExpectedOrganizationRevision <= 0 || command.ExpectedOwnerRevision <= 0 ||
-		command.ExpectedTargetRevision <= 0 || !validMutationEvidence(command.mutationEvidence) {
+		command.ExpectedTargetRevision <= 0 || !validIdempotencyEvidence(command.Idempotency, command.ChangedAt) ||
+		!validMutationEvidence(command.mutationEvidence) {
 		return OrganizationSummary{}, ErrInvalidRequest
 	}
 	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
@@ -1527,6 +1529,18 @@ func (r *PostgresRepository) transferOwner(
 	defer rollbackOrganizationTransaction(tx)
 	if err := lockActiveOrganizationActor(ctx, tx, actor); err != nil {
 		return OrganizationSummary{}, err
+	}
+	if err := lockOrganizationIdempotency(ctx, tx, actor.UserID, command.Idempotency.KeyDigest); err != nil {
+		return OrganizationSummary{}, err
+	}
+	replayOrganizationID, _, found, err := readOrganizationOperationIdempotency(
+		ctx, tx, actor.UserID, operationOrganizationOwnerTransfer, command.Idempotency,
+	)
+	if err != nil {
+		return OrganizationSummary{}, err
+	}
+	if found {
+		return commitOrganizationSummaryReplay(ctx, tx, actor.UserID, replayOrganizationID)
 	}
 	organization, err := loadLockedOrganization(ctx, tx, actor, command.OrganizationID)
 	if err != nil {
@@ -1580,6 +1594,11 @@ func (r *PostgresRepository) transferOwner(
 	`, command.OrganizationID, changedAt, command.ExpectedOrganizationRevision)
 	if err != nil || updated.RowsAffected() != 1 {
 		return OrganizationSummary{}, ErrOrganizationConflict
+	}
+	if err := insertOrganizationIdempotency(ctx, tx, actor.UserID, command.OrganizationID,
+		operationOrganizationOwnerTransfer, "organization", command.OrganizationID,
+		command.Idempotency, changedAt); err != nil {
+		return OrganizationSummary{}, err
 	}
 	if err := recordOrganizationAudit(ctx, tx, actor, command.Audit, "organization_owner_transferred",
 		command.OrganizationID, "organization_membership", command.TargetUserID, changedAt, map[string]string{

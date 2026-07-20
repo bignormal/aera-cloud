@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"regexp"
@@ -29,6 +30,17 @@ type RenameCommand struct {
 	DisplayName      string
 	ExpectedRevision int64
 	RequestID        string
+}
+
+type CreateOrganizationCommand struct {
+	DisplayName    string
+	IdempotencyKey string
+	RequestID      string
+}
+
+type OrganizationCreationResult struct {
+	Organization OrganizationSummary
+	Replayed     bool
 }
 
 type PatchMemberCommand struct {
@@ -82,6 +94,7 @@ type OwnerTransferCommand struct {
 	ExpectedOwnerRevision        int64
 	ExpectedTargetRevision       int64
 	Confirmation                 string
+	IdempotencyKey               string
 	RequestID                    string
 }
 
@@ -148,6 +161,7 @@ type InvitationAcceptance struct {
 
 type ServiceConfig struct {
 	Repository             Repository
+	Limiter                Limiter
 	OwnedLimit             int
 	DepartmentLimit        int
 	MemberLimit            int
@@ -159,6 +173,7 @@ type ServiceConfig struct {
 
 type Service struct {
 	repository             serviceRepository
+	limiter                Limiter
 	ownedLimit             int
 	departmentLimit        int
 	memberLimit            int
@@ -257,6 +272,7 @@ type ownerTransferTransaction struct {
 	ExpectedOrganizationRevision int64
 	ExpectedOwnerRevision        int64
 	ExpectedTargetRevision       int64
+	Idempotency                  IdempotencyEvidence
 	mutationEvidence
 }
 
@@ -320,7 +336,7 @@ type InvitationPage struct {
 
 func NewService(config ServiceConfig) (*Service, error) {
 	repository, ok := config.Repository.(serviceRepository)
-	if config.Repository == nil || !ok || config.OwnedLimit <= 0 || config.DepartmentLimit <= 0 || config.MemberLimit <= 0 ||
+	if config.Repository == nil || !ok || config.Limiter == nil || config.OwnedLimit <= 0 || config.DepartmentLimit <= 0 || config.MemberLimit <= 0 ||
 		config.PendingInvitationLimit <= 0 {
 		return nil, fmt.Errorf("%w: Organization service configuration is invalid", ErrInvalidRequest)
 	}
@@ -337,9 +353,108 @@ func NewService(config ServiceConfig) (*Service, error) {
 		random = rand.Reader
 	}
 	return &Service{
-		repository: repository, ownedLimit: config.OwnedLimit, departmentLimit: config.DepartmentLimit, memberLimit: config.MemberLimit,
+		repository: repository, limiter: config.Limiter, ownedLimit: config.OwnedLimit, departmentLimit: config.DepartmentLimit, memberLimit: config.MemberLimit,
 		pendingInvitationLimit: config.PendingInvitationLimit, clock: clock, newUUID: newUUID, random: random,
 	}, nil
+}
+
+func (s *Service) Create(
+	ctx context.Context,
+	actor Actor,
+	command CreateOrganizationCommand,
+) (OrganizationCreationResult, error) {
+	displayName, nameErr := NormalizeOrganizationName(command.DisplayName)
+	if s == nil || actor.Validate() != nil || nameErr != nil ||
+		!validOrganizationIdempotencyKey(command.IdempotencyKey) || !validOrganizationRequestID(command.RequestID) {
+		return OrganizationCreationResult{}, ErrInvalidRequest
+	}
+	if err := s.applyLimit(ctx, LimitOrganizationCreate, actor, nil); err != nil {
+		return OrganizationCreationResult{}, err
+	}
+	organizationID, err := s.newID()
+	if err != nil {
+		return OrganizationCreationResult{}, err
+	}
+	policySnapshotID, err := s.newID()
+	if err != nil {
+		return OrganizationCreationResult{}, err
+	}
+	evidence, err := s.mutation(command.RequestID)
+	if err != nil {
+		return OrganizationCreationResult{}, err
+	}
+	createdAt := evidence.ChangedAt.UTC()
+	requestDigest := canonicalCreateRequestDigest(displayName)
+	organization, err := s.repository.Create(ctx, CreateTransaction{
+		Actor: actor, OrganizationID: organizationID, DisplayName: displayName,
+		OwnedLimit: s.ownedLimit, PolicySnapshotID: policySnapshotID,
+		Idempotency: IdempotencyEvidence{
+			KeyDigest: sha256.Sum256([]byte(command.IdempotencyKey)), RequestDigest: requestDigest,
+			ExpiresAt: createdAt.Add(organizationIdempotencyLifetime),
+		},
+		Audit: evidence.Audit, CreatedAt: createdAt,
+	})
+	if err != nil {
+		return OrganizationCreationResult{}, err
+	}
+	return OrganizationCreationResult{Organization: organization, Replayed: organization.ID != organizationID}, nil
+}
+
+func (s *Service) List(
+	ctx context.Context,
+	actor Actor,
+	page Page,
+) (OrganizationPage, error) {
+	if s == nil || actor.Validate() != nil || !validPage(page, false) {
+		return OrganizationPage{}, ErrInvalidRequest
+	}
+	return s.repository.ListForActor(ctx, actor.UserID, page)
+}
+
+func (s *Service) Get(
+	ctx context.Context,
+	actor Actor,
+	organizationID uuid.UUID,
+) (OrganizationSummary, error) {
+	if s == nil || actor.Validate() != nil || organizationID == uuid.Nil {
+		return OrganizationSummary{}, ErrInvalidRequest
+	}
+	return s.repository.GetForActor(ctx, actor.UserID, organizationID)
+}
+
+func (s *Service) ListMembers(
+	ctx context.Context,
+	actor Actor,
+	organizationID uuid.UUID,
+	page Page,
+) (MemberPage, error) {
+	if s == nil || actor.Validate() != nil || organizationID == uuid.Nil || !validPage(page, false) {
+		return MemberPage{}, ErrInvalidRequest
+	}
+	return s.repository.ListMembers(ctx, actor.UserID, organizationID, page)
+}
+
+func (s *Service) ListDepartments(
+	ctx context.Context,
+	actor Actor,
+	organizationID uuid.UUID,
+	page Page,
+) (DepartmentPage, error) {
+	if s == nil || actor.Validate() != nil || organizationID == uuid.Nil || !validPage(page, true) {
+		return DepartmentPage{}, ErrInvalidRequest
+	}
+	return s.repository.ListDepartments(ctx, actor.UserID, organizationID, page)
+}
+
+func (s *Service) GetCurrentPolicy(
+	ctx context.Context,
+	actor Actor,
+	organizationID uuid.UUID,
+) (PolicySnapshot, error) {
+	if s == nil || actor.Validate() != nil || organizationID == uuid.Nil {
+		return PolicySnapshot{}, ErrInvalidRequest
+	}
+	return s.repository.CurrentPolicy(ctx, actor.UserID, organizationID, true)
 }
 
 func (s *Service) Rename(ctx context.Context, actor Actor, command RenameCommand) (OrganizationSummary, error) {
@@ -347,6 +462,9 @@ func (s *Service) Rename(ctx context.Context, actor Actor, command RenameCommand
 	if s == nil || actor.Validate() != nil || err != nil || command.OrganizationID == uuid.Nil ||
 		command.ExpectedRevision <= 0 || !validOrganizationRequestID(command.RequestID) {
 		return OrganizationSummary{}, ErrInvalidRequest
+	}
+	if err := s.applyLimit(ctx, LimitMutation, actor, &command.OrganizationID); err != nil {
+		return OrganizationSummary{}, err
 	}
 	evidence, err := s.mutation(command.RequestID)
 	if err != nil {
@@ -362,6 +480,9 @@ func (s *Service) PatchMember(ctx context.Context, actor Actor, command PatchMem
 	if s == nil || actor.Validate() != nil || command.OrganizationID == uuid.Nil || command.UserID == uuid.Nil ||
 		command.ExpectedRevision <= 0 || !validOrganizationRequestID(command.RequestID) || !validPatchMemberCommand(command) {
 		return MemberSummary{}, ErrInvalidRequest
+	}
+	if err := s.applyLimit(ctx, LimitMutation, actor, &command.OrganizationID); err != nil {
+		return MemberSummary{}, err
 	}
 	evidence, err := s.mutation(command.RequestID)
 	if err != nil {
@@ -388,6 +509,9 @@ func (s *Service) RemoveMember(ctx context.Context, actor Actor, command RemoveM
 		command.ExpectedRevision <= 0 || !validOrganizationRequestID(command.RequestID) {
 		return ErrInvalidRequest
 	}
+	if err := s.applyLimit(ctx, LimitMutation, actor, &command.OrganizationID); err != nil {
+		return err
+	}
 	evidence, err := s.mutation(command.RequestID)
 	if err != nil {
 		return err
@@ -402,6 +526,9 @@ func (s *Service) Leave(ctx context.Context, actor Actor, command LeaveCommand) 
 	if s == nil || actor.Validate() != nil || command.OrganizationID == uuid.Nil ||
 		!validOrganizationRequestID(command.RequestID) {
 		return ErrInvalidRequest
+	}
+	if err := s.applyLimit(ctx, LimitMutation, actor, &command.OrganizationID); err != nil {
+		return err
 	}
 	evidence, err := s.mutation(command.RequestID)
 	if err != nil {
@@ -421,6 +548,9 @@ func (s *Service) CreateDepartment(
 	if s == nil || actor.Validate() != nil || err != nil || command.OrganizationID == uuid.Nil ||
 		!validOrganizationRequestID(command.RequestID) {
 		return DepartmentSummary{}, ErrInvalidRequest
+	}
+	if err := s.applyLimit(ctx, LimitMutation, actor, &command.OrganizationID); err != nil {
+		return DepartmentSummary{}, err
 	}
 	departmentID, err := s.newID()
 	if err != nil {
@@ -447,6 +577,9 @@ func (s *Service) RenameDepartment(
 		command.DepartmentID == uuid.Nil || command.ExpectedRevision <= 0 ||
 		!validOrganizationRequestID(command.RequestID) {
 		return DepartmentSummary{}, ErrInvalidRequest
+	}
+	if err := s.applyLimit(ctx, LimitMutation, actor, &command.OrganizationID); err != nil {
+		return DepartmentSummary{}, err
 	}
 	evidence, err := s.mutation(command.RequestID)
 	if err != nil {
@@ -485,6 +618,9 @@ func (s *Service) changeDepartmentLifecycle(
 		command.ExpectedRevision <= 0 || !validOrganizationRequestID(command.RequestID) {
 		return DepartmentSummary{}, ErrInvalidRequest
 	}
+	if err := s.applyLimit(ctx, LimitMutation, actor, &command.OrganizationID); err != nil {
+		return DepartmentSummary{}, err
+	}
 	evidence, err := s.mutation(command.RequestID)
 	if err != nil {
 		return DepartmentSummary{}, err
@@ -508,8 +644,12 @@ func (s *Service) TransferOwner(
 	if s == nil || actor.Validate() != nil || command.OrganizationID == uuid.Nil || command.TargetUserID == uuid.Nil ||
 		command.TargetUserID == actor.UserID || command.ExpectedOrganizationRevision <= 0 ||
 		command.ExpectedOwnerRevision <= 0 || command.ExpectedTargetRevision <= 0 ||
-		command.Confirmation != TransferOrganizationOwnerConfirmation || !validOrganizationRequestID(command.RequestID) {
+		command.Confirmation != TransferOrganizationOwnerConfirmation ||
+		!validOrganizationIdempotencyKey(command.IdempotencyKey) || !validOrganizationRequestID(command.RequestID) {
 		return OrganizationSummary{}, ErrInvalidRequest
+	}
+	if err := s.applyLimit(ctx, LimitHighRisk, actor, &command.OrganizationID); err != nil {
+		return OrganizationSummary{}, err
 	}
 	evidence, err := s.mutation(command.RequestID)
 	if err != nil {
@@ -519,6 +659,8 @@ func (s *Service) TransferOwner(
 		OrganizationID: command.OrganizationID, TargetUserID: command.TargetUserID,
 		ExpectedOrganizationRevision: command.ExpectedOrganizationRevision,
 		ExpectedOwnerRevision:        command.ExpectedOwnerRevision, ExpectedTargetRevision: command.ExpectedTargetRevision,
+		Idempotency: lifecycleIdempotency(command.IdempotencyKey,
+			canonicalOrganizationOwnerTransferRequestDigest(command), evidence.ChangedAt),
 		mutationEvidence: evidence,
 	})
 }
@@ -543,6 +685,9 @@ func (s *Service) CreateInvitation(
 	if s == nil || actor.Validate() != nil || command.OrganizationID == uuid.Nil ||
 		!validOrganizationIdempotencyKey(command.IdempotencyKey) || !validOrganizationRequestID(command.RequestID) {
 		return InvitationCreationResult{}, ErrInvalidRequest
+	}
+	if err := s.applyLimit(ctx, LimitInvitationCreate, actor, &command.OrganizationID); err != nil {
+		return InvitationCreationResult{}, err
 	}
 	invitationID, err := s.newID()
 	if err != nil {
@@ -583,6 +728,9 @@ func (s *Service) RevokeInvitation(ctx context.Context, actor Actor, command Rev
 		!validOrganizationRequestID(command.RequestID) {
 		return ErrInvalidRequest
 	}
+	if err := s.applyLimit(ctx, LimitMutation, actor, &command.OrganizationID); err != nil {
+		return err
+	}
 	evidence, err := s.mutation(command.RequestID)
 	if err != nil {
 		return err
@@ -605,6 +753,9 @@ func (s *Service) AcceptInvitation(
 	tokenDigest, err := InvitationDigest(command.Token)
 	if err != nil {
 		return InvitationAcceptance{}, ErrInvalidRequest
+	}
+	if err := s.applyLimit(ctx, LimitInvitationAccept, actor, nil); err != nil {
+		return InvitationAcceptance{}, err
 	}
 	evidence, err := s.mutation(command.RequestID)
 	if err != nil {
@@ -630,6 +781,9 @@ func (s *Service) Archive(
 		!validOrganizationIdempotencyKey(command.IdempotencyKey) || !validOrganizationRequestID(command.RequestID) {
 		return OrganizationSummary{}, ErrInvalidRequest
 	}
+	if err := s.applyLimit(ctx, LimitHighRisk, actor, &command.OrganizationID); err != nil {
+		return OrganizationSummary{}, err
+	}
 	evidence, err := s.mutation(command.RequestID)
 	if err != nil {
 		return OrganizationSummary{}, err
@@ -650,6 +804,9 @@ func (s *Service) Restore(
 	if s == nil || actor.Validate() != nil || command.OrganizationID == uuid.Nil || command.ExpectedRevision <= 0 ||
 		!validOrganizationIdempotencyKey(command.IdempotencyKey) || !validOrganizationRequestID(command.RequestID) {
 		return OrganizationSummary{}, ErrInvalidRequest
+	}
+	if err := s.applyLimit(ctx, LimitHighRisk, actor, &command.OrganizationID); err != nil {
+		return OrganizationSummary{}, err
 	}
 	evidence, err := s.mutation(command.RequestID)
 	if err != nil {
@@ -674,6 +831,9 @@ func (s *Service) Dissolve(
 		!validOrganizationIdempotencyKey(command.IdempotencyKey) || !validOrganizationRequestID(command.RequestID) {
 		return OrganizationSummary{}, ErrInvalidRequest
 	}
+	if err := s.applyLimit(ctx, LimitHighRisk, actor, &command.OrganizationID); err != nil {
+		return OrganizationSummary{}, err
+	}
 	evidence, err := s.mutation(command.RequestID)
 	if err != nil {
 		return OrganizationSummary{}, err
@@ -696,6 +856,9 @@ func (s *Service) PublishPolicy(
 		command.ExpectedOrganizationRevision <= 0 || command.ExpectedPolicyVersion <= 1 ||
 		!validOrganizationIdempotencyKey(command.IdempotencyKey) || !validOrganizationRequestID(command.RequestID) {
 		return PolicySnapshot{}, ErrInvalidRequest
+	}
+	if err := s.applyLimit(ctx, LimitHighRisk, actor, &command.OrganizationID); err != nil {
+		return PolicySnapshot{}, err
 	}
 	snapshotID, err := s.newID()
 	if err != nil {
@@ -775,6 +938,22 @@ func (s *Service) newInvitationSecret() (InvitationSecret, error) {
 	return NewInvitationSecret(s.random)
 }
 
+func (s *Service) applyLimit(
+	ctx context.Context,
+	action LimitAction,
+	actor Actor,
+	organizationID *uuid.UUID,
+) error {
+	retryAfter, err := s.limiter.Allow(ctx, action, actor, organizationID)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, ErrRateLimited) {
+		return &RateLimitError{RetryAfter: retryAfter}
+	}
+	return ErrServiceUnavailable
+}
+
 func validPatchMemberCommand(command PatchMemberCommand) bool {
 	if command.Role == nil && !command.ChangeDepartment {
 		return false
@@ -848,4 +1027,11 @@ func canonicalOrganizationPolicyRequestDigest(
 		organizationID, expectedOrganizationRevision, expectedPolicyVersion))
 	payload = append(payload, contentDigest[:]...)
 	return sha256.Sum256(payload)
+}
+
+func canonicalOrganizationOwnerTransferRequestDigest(command OwnerTransferCommand) [sha256.Size]byte {
+	payload := fmt.Sprintf("agentera.organization-owner-transfer.v1\x00%s\x00%s\x00%d\x00%d\x00%d\x00%s",
+		command.OrganizationID, command.TargetUserID, command.ExpectedOrganizationRevision,
+		command.ExpectedOwnerRevision, command.ExpectedTargetRevision, TransferOrganizationOwnerConfirmation)
+	return sha256.Sum256([]byte(payload))
 }

@@ -14,6 +14,111 @@ import (
 	"github.com/google/uuid"
 )
 
+func TestServiceOrganizationCreateReplayAndReadProjection(t *testing.T) {
+	fixture := newOrganizationRepositoryFixture(t)
+	owner := fixture.actor(t, 201, "Organization Creator")
+	service := fixture.organizationService(t, 50)
+	command := CreateOrganizationCommand{
+		DisplayName: "Created Organization", IdempotencyKey: "organization-create-service", RequestID: "organization-create-service",
+	}
+
+	created, err := service.Create(t.Context(), owner, command)
+	if err != nil || created.Replayed || created.Organization.ID == uuid.Nil || created.Organization.Role != RoleOwner {
+		t.Fatalf("Create() = %+v, %v", created, err)
+	}
+	replayed, err := service.Create(t.Context(), owner, command)
+	if err != nil || !replayed.Replayed || replayed.Organization.ID != created.Organization.ID {
+		t.Fatalf("Create(replay) = %+v, %v", replayed, err)
+	}
+	page, err := service.List(t.Context(), owner, Page{Limit: 20})
+	if err != nil || len(page.Items) != 1 || page.Items[0].ID != created.Organization.ID {
+		t.Fatalf("List() = %+v, %v", page, err)
+	}
+	got, err := service.Get(t.Context(), owner, created.Organization.ID)
+	if err != nil || got.ID != created.Organization.ID || got.Role != RoleOwner {
+		t.Fatalf("Get() = %+v, %v", got, err)
+	}
+}
+
+func TestServiceOrganizationLimiterClassifiesEveryMutationFamily(t *testing.T) {
+	fixture := newOrganizationRepositoryFixture(t)
+	actor := fixture.actor(t, 202, "Rate Limited Actor")
+	organizationID := uuid.New()
+	secret, err := NewInvitationSecret(bytes.NewReader(bytes.Repeat([]byte{0x31}, 32)))
+	if err != nil {
+		t.Fatalf("NewInvitationSecret() error = %v", err)
+	}
+	tests := []struct {
+		name       string
+		wantAction LimitAction
+		wantScoped bool
+		invoke     func(*Service) error
+	}{
+		{name: "organization create", wantAction: LimitOrganizationCreate, invoke: func(service *Service) error {
+			_, err := service.Create(t.Context(), actor, CreateOrganizationCommand{DisplayName: "Rate Limited", IdempotencyKey: "limit-create", RequestID: "limit-create"})
+			return err
+		}},
+		{name: "ordinary mutation", wantAction: LimitMutation, wantScoped: true, invoke: func(service *Service) error {
+			_, err := service.Rename(t.Context(), actor, RenameCommand{OrganizationID: organizationID, DisplayName: "Renamed", ExpectedRevision: 1, RequestID: "limit-mutation"})
+			return err
+		}},
+		{name: "invitation create", wantAction: LimitInvitationCreate, wantScoped: true, invoke: func(service *Service) error {
+			_, err := service.CreateInvitation(t.Context(), actor, CreateInvitationCommand{OrganizationID: organizationID, IdempotencyKey: "limit-invite", RequestID: "limit-invite"})
+			return err
+		}},
+		{name: "invitation accept", wantAction: LimitInvitationAccept, invoke: func(service *Service) error {
+			_, err := service.AcceptInvitation(t.Context(), actor, AcceptInvitationCommand{Token: secret.RawToken, IdempotencyKey: "limit-accept", RequestID: "limit-accept"})
+			return err
+		}},
+		{name: "high risk", wantAction: LimitHighRisk, wantScoped: true, invoke: func(service *Service) error {
+			_, err := service.Archive(t.Context(), actor, ArchiveCommand{OrganizationID: organizationID, ExpectedRevision: 1, IdempotencyKey: "limit-archive", RequestID: "limit-archive"})
+			return err
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			limiter := &recordingOrganizationLimiter{retryAfter: 1500 * time.Millisecond, err: ErrRateLimited}
+			service, serviceErr := NewService(ServiceConfig{
+				Repository: fixture.repository, Limiter: limiter, OwnedLimit: 3, DepartmentLimit: 50,
+				MemberLimit: 500, PendingInvitationLimit: 100,
+			})
+			if serviceErr != nil {
+				t.Fatalf("NewService() error = %v", serviceErr)
+			}
+			err := test.invoke(service)
+			var rateErr *RateLimitError
+			if !errors.As(err, &rateErr) || rateErr.RetryAfter != limiter.retryAfter {
+				t.Fatalf("operation error = %v", err)
+			}
+			if limiter.action != test.wantAction || (limiter.organizationID != nil) != test.wantScoped {
+				t.Fatalf("limiter call = action %q organization %v", limiter.action, limiter.organizationID)
+			}
+			if test.wantScoped && *limiter.organizationID != organizationID {
+				t.Fatalf("limiter organization = %v, want %v", *limiter.organizationID, organizationID)
+			}
+		})
+	}
+}
+
+func TestServiceOrganizationOwnerTransferIsActorBoundIdempotent(t *testing.T) {
+	fixture := newOrganizationRepositoryFixture(t)
+	actors, organization := fixture.organizationWithRoles(t, 203)
+	command := OwnerTransferCommand{
+		OrganizationID: organization.ID, TargetUserID: actors[RoleAdmin].UserID,
+		ExpectedOrganizationRevision: organization.Revision, ExpectedOwnerRevision: 1, ExpectedTargetRevision: 1,
+		Confirmation: TransferOrganizationOwnerConfirmation, IdempotencyKey: "owner-transfer-replay", RequestID: "owner-transfer-replay",
+	}
+	service := fixture.organizationService(t, 50)
+	transferred, err := service.TransferOwner(t.Context(), actors[RoleOwner], command)
+	if err != nil {
+		t.Fatalf("TransferOwner() error = %v", err)
+	}
+	replayed, err := service.TransferOwner(t.Context(), actors[RoleOwner], command)
+	if err != nil || replayed.ID != transferred.ID || replayed.Revision != transferred.Revision || replayed.Role != transferred.Role {
+		t.Fatalf("TransferOwner(replay) = %+v, %v", replayed, err)
+	}
+}
+
 func TestServiceOrganizationInvitationIsSecretOnceFragmentOnlyAndActorBound(t *testing.T) {
 	fixture := newOrganizationRepositoryFixture(t)
 	actors, organization := fixture.organizationWithRoles(t, 100)
@@ -627,7 +732,7 @@ func TestServiceOrganizationPolicyPublicationRollsBackOnSignerOrAuditFailure(t *
 			}
 			newUUID := test.configure(t, fixture)
 			service, err := NewService(ServiceConfig{
-				Repository: fixture.repository, OwnedLimit: 3, DepartmentLimit: 50,
+				Repository: fixture.repository, Limiter: allowOrganizationLimiter{}, OwnedLimit: 3, DepartmentLimit: 50,
 				MemberLimit: 500, PendingInvitationLimit: 100,
 				Clock: func() time.Time { return fixture.now.Add(12 * time.Hour) }, NewUUID: newUUID,
 			})
@@ -797,7 +902,7 @@ func TestServiceOrganizationRoleMatrixRecomputesAuthorizationInTransaction(t *te
 					OrganizationID: organization.ID, TargetUserID: target.UserID,
 					ExpectedOrganizationRevision: organization.Revision,
 					ExpectedOwnerRevision:        1, ExpectedTargetRevision: 1,
-					Confirmation: TransferOrganizationOwnerConfirmation, RequestID: "matrix-transfer",
+					Confirmation: TransferOrganizationOwnerConfirmation, IdempotencyKey: "matrix-transfer", RequestID: "matrix-transfer",
 				})
 				return err
 			},
@@ -962,7 +1067,7 @@ func TestServiceArchivedOrganizationAllowsOnlyOwnerTransferFromThisSlice(t *test
 	transferred, err := service.TransferOwner(t.Context(), owner, OwnerTransferCommand{
 		OrganizationID: organization.ID, TargetUserID: admin.UserID,
 		ExpectedOrganizationRevision: 2, ExpectedOwnerRevision: 1, ExpectedTargetRevision: 1,
-		Confirmation: TransferOrganizationOwnerConfirmation, RequestID: "archived-transfer",
+		Confirmation: TransferOrganizationOwnerConfirmation, IdempotencyKey: "archived-transfer", RequestID: "archived-transfer",
 	})
 	if err != nil || transferred.Status != OrganizationStatusArchived || transferred.Role != RoleAdmin || transferred.Revision != 3 {
 		t.Fatalf("TransferOwner(archived) = %+v, %v", transferred, err)
@@ -1093,12 +1198,12 @@ func TestServiceConcurrentOwnerTransfersCommitExactlyOneOwner(t *testing.T) {
 		{
 			OrganizationID: organization.ID, TargetUserID: firstAdmin.UserID,
 			ExpectedOrganizationRevision: 1, ExpectedOwnerRevision: 1, ExpectedTargetRevision: 1,
-			Confirmation: TransferOrganizationOwnerConfirmation, RequestID: "transfer-first",
+			Confirmation: TransferOrganizationOwnerConfirmation, IdempotencyKey: "transfer-first", RequestID: "transfer-first",
 		},
 		{
 			OrganizationID: organization.ID, TargetUserID: secondAdmin.UserID,
 			ExpectedOrganizationRevision: 1, ExpectedOwnerRevision: 1, ExpectedTargetRevision: 1,
-			Confirmation: TransferOrganizationOwnerConfirmation, RequestID: "transfer-second",
+			Confirmation: TransferOrganizationOwnerConfirmation, IdempotencyKey: "transfer-second", RequestID: "transfer-second",
 		},
 	}
 	start := make(chan struct{})
@@ -1142,7 +1247,7 @@ func TestServiceConcurrentOwnerTransfersCommitExactlyOneOwner(t *testing.T) {
 func (f *organizationRepositoryFixture) organizationService(t *testing.T, departmentLimit int) *Service {
 	t.Helper()
 	service, err := NewService(ServiceConfig{
-		Repository: f.repository, OwnedLimit: 3, DepartmentLimit: departmentLimit, MemberLimit: 500, PendingInvitationLimit: 100,
+		Repository: f.repository, Limiter: allowOrganizationLimiter{}, OwnedLimit: 3, DepartmentLimit: departmentLimit, MemberLimit: 500, PendingInvitationLimit: 100,
 		Clock:   func() time.Time { return f.now.Add(12 * time.Hour) },
 		NewUUID: uuid.NewRandom,
 	})
@@ -1150,6 +1255,28 @@ func (f *organizationRepositoryFixture) organizationService(t *testing.T, depart
 		t.Fatalf("NewService() error = %v", err)
 	}
 	return service
+}
+
+type allowOrganizationLimiter struct{}
+
+func (allowOrganizationLimiter) Allow(_ context.Context, _ LimitAction, _ Actor, _ *uuid.UUID) (time.Duration, error) {
+	return 0, nil
+}
+
+type recordingOrganizationLimiter struct {
+	action         LimitAction
+	organizationID *uuid.UUID
+	retryAfter     time.Duration
+	err            error
+}
+
+func (l *recordingOrganizationLimiter) Allow(_ context.Context, action LimitAction, _ Actor, organizationID *uuid.UUID) (time.Duration, error) {
+	l.action = action
+	if organizationID != nil {
+		value := *organizationID
+		l.organizationID = &value
+	}
+	return l.retryAfter, l.err
 }
 
 func (f *organizationRepositoryFixture) organizationWithRoles(
