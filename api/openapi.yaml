@@ -1,8 +1,8 @@
-openapi: 3.1.0
+openapi: 3.0.3
 info:
   title: AgentEra App Cloud API
-  version: 0.5.0
-  description: Account, device authorization, USER and Workspace Agent, ExperienceCandidate, and Workspace control-plane contract for AgentEra Studio.
+  version: 0.6.0
+  description: Account, device authorization, USER and Workspace Agent, ExperienceCandidate, Workspace, and Organization control-plane contract for AgentEra Studio.
 servers:
   - url: https://accounts.agentera.example
 paths:
@@ -238,6 +238,12 @@ paths:
           $ref: '#/components/responses/InvalidRequest'
         '401':
           $ref: '#/components/responses/InvalidCredentials'
+        '409':
+          description: Account deletion is blocked until every owned Organization is transferred or dissolved; only the safe owned count is returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountDeletionOwnershipErrorEnvelope'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
   /api/v1/accounts/deletion/recover:
@@ -390,7 +396,7 @@ paths:
           required: true
           schema:
             type: string
-            const: S256
+            enum: [S256]
         - name: state
           in: query
           required: true
@@ -548,6 +554,844 @@ paths:
           $ref: '#/components/responses/SessionRevoked'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/organizations:
+    get:
+      operationId: listOrganizations
+      description: Lists Organization memberships as safe control-plane summaries without login identities or Hermes runtime state.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPageLimit'
+        - $ref: '#/components/parameters/OrganizationCursor'
+      responses:
+        '200':
+          description: Organizations visible to the authenticated member.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationListResponse'
+        '400':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OrganizationAuthenticationRequired'
+        '503':
+          $ref: '#/components/responses/OrganizationServiceUnavailable'
+    post:
+      operationId: createOrganization
+      description: Creates an Organization, sole Owner Membership, and signed default policy atomically. The maximum request body is 81920 bytes.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrganizationRequest'
+      responses:
+        '200':
+          description: Safe current representation returned for an exact actor-bound replay.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationSummary'
+        '201':
+          description: Organization created atomically.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationSummary'
+        '400':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OrganizationAuthenticationRequired'
+        '409':
+          $ref: '#/components/responses/OrganizationConflict'
+        '413':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '429':
+          $ref: '#/components/responses/OrganizationRateLimited'
+        '503':
+          $ref: '#/components/responses/OrganizationServiceUnavailable'
+  /api/v1/organizations/{organization_id}:
+    get:
+      operationId: getOrganization
+      description: Returns one safe Organization summary visible to its authenticated member.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+      responses:
+        '200':
+          description: Organization summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationSummary'
+        '400':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OrganizationAuthenticationRequired'
+        '404':
+          $ref: '#/components/responses/OrganizationNotFound'
+        '503':
+          $ref: '#/components/responses/OrganizationServiceUnavailable'
+    patch:
+      operationId: renameOrganization
+      description: Renames one active Organization at an exact revision. The maximum request body is 81920 bytes.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenameOrganizationRequest'
+      responses:
+        '200':
+          description: Updated Organization summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationSummary'
+        '400':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OrganizationAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/OrganizationForbidden'
+        '404':
+          $ref: '#/components/responses/OrganizationNotFound'
+        '409':
+          $ref: '#/components/responses/OrganizationConflict'
+        '413':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '429':
+          $ref: '#/components/responses/OrganizationRateLimited'
+        '503':
+          $ref: '#/components/responses/OrganizationServiceUnavailable'
+  /api/v1/organizations/{organization_id}/archive:
+    post:
+      operationId: archiveOrganization
+      description: Archives an Organization and revokes pending invitations at the exact revision.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+        - $ref: '#/components/parameters/OrganizationIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationRevisionRequest'
+      responses:
+        '200':
+          description: Archived Organization summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationSummary'
+        '400':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OrganizationAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/OrganizationForbidden'
+        '404':
+          $ref: '#/components/responses/OrganizationNotFound'
+        '409':
+          $ref: '#/components/responses/OrganizationConflict'
+        '413':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '429':
+          $ref: '#/components/responses/OrganizationRateLimited'
+        '503':
+          $ref: '#/components/responses/OrganizationServiceUnavailable'
+  /api/v1/organizations/{organization_id}/restore:
+    post:
+      operationId: restoreOrganization
+      description: Restores an archived Organization after rechecking Owner quota.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+        - $ref: '#/components/parameters/OrganizationIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationRevisionRequest'
+      responses:
+        '200':
+          description: Restored Organization summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationSummary'
+        '400':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OrganizationAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/OrganizationForbidden'
+        '404':
+          $ref: '#/components/responses/OrganizationNotFound'
+        '409':
+          $ref: '#/components/responses/OrganizationConflict'
+        '413':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '429':
+          $ref: '#/components/responses/OrganizationRateLimited'
+        '503':
+          $ref: '#/components/responses/OrganizationServiceUnavailable'
+  /api/v1/organizations/{organization_id}/owner-transfer:
+    post:
+      operationId: transferOrganizationOwner
+      description: Atomically demotes the current Owner and promotes one active existing Admin after exact confirmation and revision checks.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+        - $ref: '#/components/parameters/OrganizationIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransferOrganizationOwnerRequest'
+      responses:
+        '200':
+          description: Organization summary projected for the former Owner after transfer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationSummary'
+        '400':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OrganizationAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/OrganizationForbidden'
+        '404':
+          $ref: '#/components/responses/OrganizationNotFound'
+        '409':
+          $ref: '#/components/responses/OrganizationConflict'
+        '413':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '429':
+          $ref: '#/components/responses/OrganizationRateLimited'
+        '503':
+          $ref: '#/components/responses/OrganizationServiceUnavailable'
+  /api/v1/organizations/{organization_id}/dissolve:
+    post:
+      operationId: dissolveOrganization
+      description: Permanently dissolves an archived empty Organization after exact name, revision, confirmation, and asset-guard checks.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+        - $ref: '#/components/parameters/OrganizationIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DissolveOrganizationRequest'
+      responses:
+        '200':
+          description: Anonymous terminal Organization tombstone summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationSummary'
+        '400':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OrganizationAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/OrganizationForbidden'
+        '404':
+          $ref: '#/components/responses/OrganizationNotFound'
+        '409':
+          $ref: '#/components/responses/OrganizationConflict'
+        '413':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '429':
+          $ref: '#/components/responses/OrganizationRateLimited'
+        '503':
+          $ref: '#/components/responses/OrganizationServiceUnavailable'
+  /api/v1/organizations/{organization_id}/members:
+    get:
+      operationId: listOrganizationMembers
+      description: Lists safe member metadata without login identities.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+        - $ref: '#/components/parameters/OrganizationPageLimit'
+        - $ref: '#/components/parameters/OrganizationCursor'
+      responses:
+        '200':
+          description: Safe Organization members.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationMemberListResponse'
+        '400':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OrganizationAuthenticationRequired'
+        '404':
+          $ref: '#/components/responses/OrganizationNotFound'
+        '503':
+          $ref: '#/components/responses/OrganizationServiceUnavailable'
+  /api/v1/organizations/{organization_id}/members/{user_id}:
+    patch:
+      operationId: patchOrganizationMember
+      description: Changes an authorized member role or one-level Department assignment at an exact Membership revision.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+        - $ref: '#/components/parameters/OrganizationUserID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchOrganizationMemberRequest'
+      responses:
+        '200':
+          description: Updated member summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationMember'
+        '400':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OrganizationAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/OrganizationForbidden'
+        '404':
+          $ref: '#/components/responses/OrganizationNotFound'
+        '409':
+          $ref: '#/components/responses/OrganizationConflict'
+        '413':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '429':
+          $ref: '#/components/responses/OrganizationRateLimited'
+        '503':
+          $ref: '#/components/responses/OrganizationServiceUnavailable'
+    delete:
+      operationId: removeOrganizationMember
+      description: Removes an authorized non-Owner target at the exact Membership revision.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+        - $ref: '#/components/parameters/OrganizationUserID'
+        - $ref: '#/components/parameters/ExpectedOrganizationMemberRevision'
+      responses:
+        '204':
+          description: Member removed.
+        '400':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OrganizationAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/OrganizationForbidden'
+        '404':
+          $ref: '#/components/responses/OrganizationNotFound'
+        '409':
+          $ref: '#/components/responses/OrganizationConflict'
+        '429':
+          $ref: '#/components/responses/OrganizationRateLimited'
+        '503':
+          $ref: '#/components/responses/OrganizationServiceUnavailable'
+  /api/v1/organizations/{organization_id}/leave:
+    post:
+      operationId: leaveOrganization
+      description: Lets an Admin, Auditor, or Member leave an active Organization. The Owner must transfer ownership first.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationEmptyRequest'
+      responses:
+        '204':
+          description: Actor Membership removed.
+        '400':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OrganizationAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/OrganizationForbidden'
+        '404':
+          $ref: '#/components/responses/OrganizationNotFound'
+        '409':
+          $ref: '#/components/responses/OrganizationConflict'
+        '413':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '429':
+          $ref: '#/components/responses/OrganizationRateLimited'
+        '503':
+          $ref: '#/components/responses/OrganizationServiceUnavailable'
+  /api/v1/organizations/{organization_id}/departments:
+    get:
+      operationId: listOrganizationDepartments
+      description: Lists one-level member grouping metadata; Departments are not product spaces or Agent owners.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+        - $ref: '#/components/parameters/OrganizationPageLimit'
+        - $ref: '#/components/parameters/OrganizationCursor'
+      responses:
+        '200':
+          description: Organization Departments.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationDepartmentListResponse'
+        '400':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OrganizationAuthenticationRequired'
+        '404':
+          $ref: '#/components/responses/OrganizationNotFound'
+        '503':
+          $ref: '#/components/responses/OrganizationServiceUnavailable'
+    post:
+      operationId: createOrganizationDepartment
+      description: Creates one active Department within quota. The maximum request body is 81920 bytes.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrganizationDepartmentRequest'
+      responses:
+        '201':
+          description: Department created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationDepartment'
+        '400':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OrganizationAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/OrganizationForbidden'
+        '404':
+          $ref: '#/components/responses/OrganizationNotFound'
+        '409':
+          $ref: '#/components/responses/OrganizationConflict'
+        '413':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '429':
+          $ref: '#/components/responses/OrganizationRateLimited'
+        '503':
+          $ref: '#/components/responses/OrganizationServiceUnavailable'
+  /api/v1/organizations/{organization_id}/departments/{department_id}:
+    patch:
+      operationId: renameOrganizationDepartment
+      description: Renames an active Department at an exact revision.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+        - $ref: '#/components/parameters/OrganizationDepartmentID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenameOrganizationDepartmentRequest'
+      responses:
+        '200':
+          description: Updated Department summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationDepartment'
+        '400':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OrganizationAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/OrganizationForbidden'
+        '404':
+          $ref: '#/components/responses/OrganizationNotFound'
+        '409':
+          $ref: '#/components/responses/OrganizationConflict'
+        '413':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '429':
+          $ref: '#/components/responses/OrganizationRateLimited'
+        '503':
+          $ref: '#/components/responses/OrganizationServiceUnavailable'
+  /api/v1/organizations/{organization_id}/departments/{department_id}/archive:
+    post:
+      operationId: archiveOrganizationDepartment
+      description: Archives an empty Department at an exact revision.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+        - $ref: '#/components/parameters/OrganizationDepartmentID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationDepartmentRevisionRequest'
+      responses:
+        '200':
+          description: Archived Department summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationDepartment'
+        '400':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OrganizationAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/OrganizationForbidden'
+        '404':
+          $ref: '#/components/responses/OrganizationNotFound'
+        '409':
+          $ref: '#/components/responses/OrganizationConflict'
+        '413':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '429':
+          $ref: '#/components/responses/OrganizationRateLimited'
+        '503':
+          $ref: '#/components/responses/OrganizationServiceUnavailable'
+  /api/v1/organizations/{organization_id}/departments/{department_id}/restore:
+    post:
+      operationId: restoreOrganizationDepartment
+      description: Restores an archived Department after quota and normalized-name checks.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+        - $ref: '#/components/parameters/OrganizationDepartmentID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationDepartmentRevisionRequest'
+      responses:
+        '200':
+          description: Restored Department summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationDepartment'
+        '400':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OrganizationAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/OrganizationForbidden'
+        '404':
+          $ref: '#/components/responses/OrganizationNotFound'
+        '409':
+          $ref: '#/components/responses/OrganizationConflict'
+        '413':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '429':
+          $ref: '#/components/responses/OrganizationRateLimited'
+        '503':
+          $ref: '#/components/responses/OrganizationServiceUnavailable'
+  /api/v1/organizations/{organization_id}/invitations:
+    get:
+      operationId: listOrganizationInvitations
+      description: Lists invitation metadata without raw tokens or token digests.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+        - $ref: '#/components/parameters/OrganizationPageLimit'
+        - $ref: '#/components/parameters/OrganizationCursor'
+      responses:
+        '200':
+          description: Sanitized invitations visible to Owner or Admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationInvitationListResponse'
+        '400':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OrganizationAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/OrganizationForbidden'
+        '404':
+          $ref: '#/components/responses/OrganizationNotFound'
+        '503':
+          $ref: '#/components/responses/OrganizationServiceUnavailable'
+    post:
+      operationId: createOrganizationInvitation
+      description: Creates a seven-day Member invitation; the secret appears only on the first 201 response.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+        - $ref: '#/components/parameters/OrganizationIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationEmptyRequest'
+      responses:
+        '200':
+          description: Safe replay with token and invite URL omitted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationInvitationCreation'
+        '201':
+          description: Invitation created; token and fragment-only invite URL are returned once.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationInvitationCreation'
+        '400':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OrganizationAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/OrganizationForbidden'
+        '404':
+          $ref: '#/components/responses/OrganizationNotFound'
+        '409':
+          $ref: '#/components/responses/OrganizationConflict'
+        '413':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '429':
+          $ref: '#/components/responses/OrganizationRateLimited'
+        '503':
+          $ref: '#/components/responses/OrganizationServiceUnavailable'
+  /api/v1/organizations/{organization_id}/invitations/{invitation_id}:
+    delete:
+      operationId: revokeOrganizationInvitation
+      description: Revokes one pending invitation without returning its token.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+        - $ref: '#/components/parameters/OrganizationInvitationID'
+      responses:
+        '204':
+          description: Invitation revoked.
+        '400':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OrganizationAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/OrganizationForbidden'
+        '404':
+          $ref: '#/components/responses/OrganizationNotFound'
+        '409':
+          $ref: '#/components/responses/OrganizationConflict'
+        '429':
+          $ref: '#/components/responses/OrganizationRateLimited'
+        '503':
+          $ref: '#/components/responses/OrganizationServiceUnavailable'
+  /api/v1/organization-invitations/accept:
+    post:
+      operationId: acceptOrganizationInvitation
+      description: Accepts a single-use Organization invitation for the authenticated active account.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AcceptOrganizationInvitationRequest'
+      responses:
+        '200':
+          description: Organization and accepting Member summaries without the raw token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationInvitationAcceptance'
+        '400':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OrganizationAuthenticationRequired'
+        '404':
+          $ref: '#/components/responses/OrganizationNotFound'
+        '409':
+          $ref: '#/components/responses/OrganizationConflict'
+        '413':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '429':
+          $ref: '#/components/responses/OrganizationRateLimited'
+        '503':
+          $ref: '#/components/responses/OrganizationServiceUnavailable'
+  /api/v1/organizations/{organization_id}/policy:
+    get:
+      operationId: getCurrentOrganizationPolicy
+      description: Returns safe policy metadata to every Member and the full signed document only to Owner, Admin, or Auditor.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+      responses:
+        '200':
+          description: Current role-projected policy snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationPolicySnapshot'
+        '400':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OrganizationAuthenticationRequired'
+        '404':
+          $ref: '#/components/responses/OrganizationNotFound'
+        '503':
+          $ref: '#/components/responses/OrganizationServiceUnavailable'
+  /api/v1/organizations/{organization_id}/policy-snapshots:
+    get:
+      operationId: listOrganizationPolicySnapshots
+      description: Lists immutable policy metadata for Owner, Admin, or Auditor.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+        - $ref: '#/components/parameters/OrganizationPageLimit'
+        - $ref: '#/components/parameters/OrganizationCursor'
+      responses:
+        '200':
+          description: Immutable Organization policy history.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationPolicyListResponse'
+        '400':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OrganizationAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/OrganizationForbidden'
+        '404':
+          $ref: '#/components/responses/OrganizationNotFound'
+        '503':
+          $ref: '#/components/responses/OrganizationServiceUnavailable'
+    post:
+      operationId: publishOrganizationPolicySnapshot
+      description: Publishes one canonical immutable signed policy at exact Organization and policy versions.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+        - $ref: '#/components/parameters/OrganizationIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishOrganizationPolicyRequest'
+      responses:
+        '201':
+          description: Signed policy snapshot published and selected atomically.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationPolicySnapshot'
+        '400':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OrganizationAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/OrganizationForbidden'
+        '404':
+          $ref: '#/components/responses/OrganizationNotFound'
+        '409':
+          $ref: '#/components/responses/OrganizationConflict'
+        '413':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '429':
+          $ref: '#/components/responses/OrganizationRateLimited'
+        '503':
+          $ref: '#/components/responses/OrganizationServiceUnavailable'
+  /api/v1/organization-policy-snapshots/{policy_snapshot_id}:
+    get:
+      operationId: getOrganizationPolicySnapshot
+      description: Returns one immutable full signed snapshot to an authorized Owner, Admin, or Auditor.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPolicySnapshotID'
+      responses:
+        '200':
+          description: Full signed Organization policy snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationPolicySnapshot'
+        '400':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OrganizationAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/OrganizationForbidden'
+        '404':
+          $ref: '#/components/responses/OrganizationNotFound'
+        '503':
+          $ref: '#/components/responses/OrganizationServiceUnavailable'
+  /api/v1/organizations/{organization_id}/audit-events:
+    get:
+      operationId: listOrganizationAuditEvents
+      description: Lists bounded Organization-scoped audit summaries for Owner, Admin, or Auditor without private evidence.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+        - $ref: '#/components/parameters/OrganizationPageLimit'
+        - $ref: '#/components/parameters/OrganizationCursor'
+      responses:
+        '200':
+          description: Organization audit summaries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationAuditListResponse'
+        '400':
+          $ref: '#/components/responses/OrganizationInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OrganizationAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/OrganizationForbidden'
+        '404':
+          $ref: '#/components/responses/OrganizationNotFound'
+        '503':
+          $ref: '#/components/responses/OrganizationServiceUnavailable'
   /api/v1/workspaces:
     get:
       operationId: listWorkspaces
@@ -1626,9 +2470,10 @@ paths:
   /.well-known/agentera-signing-keys.json:
     get:
       operationId: getAgentEraSigningKeys
+      description: Returns current public keys for access, offline-entitlement, Agent version, Agent policy, and Organization policy verification.
       responses:
         '200':
-          description: Public Ed25519 access and offline-entitlement verification keys.
+          description: Public Ed25519 verification keys for every signed desktop control-plane artifact.
           content:
             application/json:
               schema:
@@ -1673,6 +2518,90 @@ components:
         minLength: 1
         maxLength: 256
         pattern: '^[^\\s\\x00]+$'
+    OrganizationIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Actor-bound Organization operation key. Only its SHA-256 digest is persisted for 24 hours.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+        pattern: '^[A-Za-z0-9._:-]{1,128}$'
+    OrganizationID:
+      name: organization_id
+      in: path
+      required: true
+      description: Canonical lowercase nonzero UUID for an Organization visible to the actor.
+      schema:
+        type: string
+        format: uuid
+        pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    OrganizationUserID:
+      name: user_id
+      in: path
+      required: true
+      description: Canonical lowercase nonzero UUID for an Organization member.
+      schema:
+        type: string
+        format: uuid
+        pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    OrganizationDepartmentID:
+      name: department_id
+      in: path
+      required: true
+      description: Canonical lowercase nonzero UUID for a Department in the exact Organization.
+      schema:
+        type: string
+        format: uuid
+        pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    OrganizationInvitationID:
+      name: invitation_id
+      in: path
+      required: true
+      description: Canonical lowercase nonzero UUID for an Organization invitation.
+      schema:
+        type: string
+        format: uuid
+        pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    OrganizationPolicySnapshotID:
+      name: policy_snapshot_id
+      in: path
+      required: true
+      description: Canonical lowercase nonzero UUID for an immutable Organization policy snapshot.
+      schema:
+        type: string
+        format: uuid
+        pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    ExpectedOrganizationMemberRevision:
+      name: expected_revision
+      in: query
+      required: true
+      description: Positive Membership revision used for optimistic concurrency.
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    OrganizationPageLimit:
+      name: limit
+      in: query
+      required: false
+      description: Bounded page size.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+    OrganizationCursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque raw-base64url typed keyset cursor; the decoded payload is limited to 512 bytes and cannot cross collections.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 684
+        pattern: '^[A-Za-z0-9_-]+$'
     WorkspaceIdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -1794,7 +2723,8 @@ components:
       required: [status, receipt, expires_at]
       properties:
         status:
-          const: verified
+          type: string
+          enum: [verified]
         receipt:
           type: string
           maxLength: 8192
@@ -1892,7 +2822,8 @@ components:
           type: string
           maxLength: 80
         status:
-          const: active
+          type: string
+          enum: [active]
         identity_kinds:
           type: array
           minItems: 1
@@ -2155,7 +3086,8 @@ components:
           description: Present only with token on the first 201; the secret is carried in a URI fragment.
           pattern: '^agentera://workspace-invitation#[A-Za-z0-9_-]{43}$'
         secret_replayable:
-          const: false
+          type: boolean
+          enum: [false]
     WorkspaceInvitationAcceptance:
       type: object
       additionalProperties: false
@@ -2302,7 +3234,8 @@ components:
       required: [schema_version, skill_name, assets]
       properties:
         schema_version:
-          const: 1
+          type: integer
+          enum: [1]
         skill_name:
           type: string
           minLength: 1
@@ -2353,8 +3286,9 @@ components:
           type: string
           format: uuid
         reviewed_by_user_id:
-          type: [string, 'null']
+          type: string
           format: uuid
+          nullable: true
         decision:
           type: string
           enum: [APPROVED, REJECTED]
@@ -2396,14 +3330,16 @@ components:
           type: string
           format: uuid
         submitted_by_user_id:
-          type: [string, 'null']
+          type: string
           format: uuid
+          nullable: true
         skill_name:
           type: string
           minLength: 1
           maxLength: 100
         dlp_contract_version:
-          const: experience-candidate-dlp-v1
+          type: string
+          enum: [experience-candidate-dlp-v1]
         content_digest:
           $ref: '#/components/schemas/SHA256Digest'
         created_at:
@@ -2439,14 +3375,16 @@ components:
           type: string
           format: uuid
         submitted_by_user_id:
-          type: [string, 'null']
+          type: string
           format: uuid
+          nullable: true
         skill_name:
           type: string
           minLength: 1
           maxLength: 100
         dlp_contract_version:
-          const: experience-candidate-dlp-v1
+          type: string
+          enum: [experience-candidate-dlp-v1]
         content_digest:
           $ref: '#/components/schemas/SHA256Digest'
         created_at:
@@ -2509,7 +3447,8 @@ components:
             code:
               $ref: '#/components/schemas/ExperienceCandidateErrorCode'
             message:
-              const: localized by the client
+              type: string
+              enum: [localized by the client]
             request_id:
               type: string
               minLength: 1
@@ -2625,7 +3564,8 @@ components:
       required: [schema_version, identity, assets, model_constraints, tools, dependencies, runtime_compatibility]
       properties:
         schema_version:
-          const: 1
+          type: integer
+          enum: [1]
         identity:
           $ref: '#/components/schemas/AgentIdentityV1'
         assets:
@@ -2731,7 +3671,8 @@ components:
           minLength: 1
           maxLength: 64
         maximum_version_exclusive:
-          type: [string, 'null']
+          type: string
+          nullable: true
           minLength: 1
           maxLength: 64
     AgentVersionBundleV1:
@@ -2918,7 +3859,8 @@ components:
           type: string
           format: uuid
         update_policy:
-          const: manual
+          type: string
+          enum: [manual]
         status:
           type: string
           enum: [pending, active, archived]
@@ -2995,7 +3937,8 @@ components:
         - deny_rules
       properties:
         schema_version:
-          const: 1
+          type: integer
+          enum: [1]
         agent_definition_id:
           type: string
           format: uuid
@@ -3011,7 +3954,8 @@ components:
         runtime_compatibility:
           $ref: '#/components/schemas/AgentRuntimeCompatibilityV1'
         publication_allowed:
-          const: false
+          type: boolean
+          enum: [false]
         deny_rules:
           type: array
           items:
@@ -3188,6 +4132,684 @@ components:
         device_id:
           type: string
           format: uuid
+    AccountDeletionOwnershipErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, request_id, owned_organization_count]
+          properties:
+            code:
+              type: string
+              enum: [organization_owner_transfer_required]
+            message:
+              type: string
+              enum: [localized by the client]
+            request_id:
+              type: string
+              format: uuid
+            owned_organization_count:
+              type: integer
+              minimum: 1
+    OrganizationRole:
+      type: string
+      enum: [owner, admin, auditor, member]
+    OrganizationStatus:
+      type: string
+      enum: [active, archived, dissolved]
+    OrganizationMutationState:
+      type: string
+      enum: [writable, archived, dissolved]
+    OrganizationDepartmentStatus:
+      type: string
+      enum: [active, archived]
+    OrganizationInvitationStatus:
+      type: string
+      enum: [pending, accepted, revoked, expired]
+    OrganizationSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - display_name
+        - status
+        - revision
+        - role
+        - member_count
+        - department_count
+        - current_policy_version
+        - current_policy_digest
+        - mutation_state
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 120
+          example: Acme Research
+        status:
+          $ref: '#/components/schemas/OrganizationStatus'
+        revision:
+          type: integer
+          format: int64
+          minimum: 1
+        role:
+          $ref: '#/components/schemas/OrganizationRole'
+        member_count:
+          type: integer
+          minimum: 0
+        department_count:
+          type: integer
+          minimum: 0
+        current_policy_version:
+          type: integer
+          format: int64
+          minimum: 1
+        current_policy_digest:
+          type: string
+          minLength: 64
+          maxLength: 64
+          pattern: '^[0-9a-f]{64}$'
+        mutation_state:
+          $ref: '#/components/schemas/OrganizationMutationState'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        archived_at:
+          type: string
+          format: date-time
+    OrganizationMember:
+      type: object
+      additionalProperties: false
+      required: [user_id, role, revision, joined_at, updated_at]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        nickname:
+          type: string
+          minLength: 1
+          maxLength: 80
+        role:
+          $ref: '#/components/schemas/OrganizationRole'
+        department_id:
+          type: string
+          format: uuid
+        revision:
+          type: integer
+          format: int64
+          minimum: 1
+        joined_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    OrganizationDepartment:
+      type: object
+      additionalProperties: false
+      required: [id, display_name, status, member_count, revision, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 80
+          example: Research
+        status:
+          $ref: '#/components/schemas/OrganizationDepartmentStatus'
+        member_count:
+          type: integer
+          minimum: 0
+        revision:
+          type: integer
+          format: int64
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        archived_at:
+          type: string
+          format: date-time
+    OrganizationInvitation:
+      type: object
+      additionalProperties: false
+      required: [id, status, created_at, expires_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/OrganizationInvitationStatus'
+        created_by_user_id:
+          type: string
+          format: uuid
+        accepted_by_user_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        accepted_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          format: date-time
+    OrganizationInvitationCreation:
+      type: object
+      additionalProperties: false
+      required: [invitation, secret_replayable]
+      properties:
+        invitation:
+          $ref: '#/components/schemas/OrganizationInvitation'
+        token:
+          type: string
+          minLength: 43
+          maxLength: 43
+          pattern: '^[A-Za-z0-9_-]{43}$'
+          description: Present only on the first successful creation response.
+        invite_url:
+          type: string
+          pattern: '^agentera://organization-invitation#[A-Za-z0-9_-]{43}$'
+          description: Fragment-only deep link present only with the one-time token.
+        secret_replayable:
+          type: boolean
+          enum: [false]
+    OrganizationInvitationAcceptance:
+      type: object
+      additionalProperties: false
+      required: [organization, member]
+      properties:
+        organization:
+          $ref: '#/components/schemas/OrganizationSummary'
+        member:
+          $ref: '#/components/schemas/OrganizationMember'
+    OrganizationPolicySummary:
+      type: object
+      additionalProperties: false
+      required: [id, policy_version, schema_version, content_digest, issuer, signing_key_id, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        policy_version:
+          type: integer
+          format: int64
+          minimum: 1
+        schema_version:
+          type: integer
+          enum: [1]
+        content_digest:
+          type: string
+          minLength: 64
+          maxLength: 64
+          pattern: '^[0-9a-f]{64}$'
+        issuer:
+          type: string
+          minLength: 1
+          maxLength: 512
+          format: uri
+        signing_key_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+        created_at:
+          type: string
+          format: date-time
+    OrganizationPolicySnapshot:
+      type: object
+      additionalProperties: false
+      required: [id, policy_version, schema_version, content_digest, issuer, signing_key_id, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        policy_version:
+          type: integer
+          format: int64
+          minimum: 1
+        schema_version:
+          type: integer
+          enum: [1]
+        content_digest:
+          type: string
+          minLength: 64
+          maxLength: 64
+          pattern: '^[0-9a-f]{64}$'
+        issuer:
+          type: string
+          minLength: 1
+          maxLength: 512
+          format: uri
+        signing_key_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+        created_at:
+          type: string
+          format: date-time
+        policy_document:
+          $ref: '#/components/schemas/OrganizationPolicyDocument'
+        signature:
+          type: string
+          minLength: 86
+          maxLength: 86
+          pattern: '^[A-Za-z0-9_-]{86}$'
+          description: Canonical unpadded raw-base64url Ed25519 signature, omitted from Member-only summary projection.
+    OrganizationAuditEvent:
+      type: object
+      additionalProperties: false
+      required: [id, event_type, outcome, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        event_type:
+          type: string
+          minLength: 1
+          maxLength: 128
+        object_type:
+          type: string
+          minLength: 1
+          maxLength: 64
+        object_id:
+          type: string
+          format: uuid
+        outcome:
+          type: string
+          minLength: 1
+          maxLength: 32
+        reason_code:
+          type: string
+          minLength: 1
+          maxLength: 128
+        request_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+        actor_display:
+          type: string
+          minLength: 1
+          maxLength: 120
+        subject_display:
+          type: string
+          minLength: 1
+          maxLength: 120
+        created_at:
+          type: string
+          format: date-time
+    OrganizationListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrganizationSummary'
+        next_cursor:
+          type: string
+          minLength: 1
+          maxLength: 684
+          pattern: '^[A-Za-z0-9_-]+$'
+    OrganizationMemberListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrganizationMember'
+        next_cursor:
+          type: string
+          minLength: 1
+          maxLength: 684
+          pattern: '^[A-Za-z0-9_-]+$'
+    OrganizationDepartmentListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrganizationDepartment'
+        next_cursor:
+          type: string
+          minLength: 1
+          maxLength: 684
+          pattern: '^[A-Za-z0-9_-]+$'
+    OrganizationInvitationListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrganizationInvitation'
+        next_cursor:
+          type: string
+          minLength: 1
+          maxLength: 684
+          pattern: '^[A-Za-z0-9_-]+$'
+    OrganizationPolicyListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrganizationPolicySummary'
+        next_cursor:
+          type: string
+          minLength: 1
+          maxLength: 684
+          pattern: '^[A-Za-z0-9_-]+$'
+    OrganizationAuditListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrganizationAuditEvent'
+        next_cursor:
+          type: string
+          minLength: 1
+          maxLength: 684
+          pattern: '^[A-Za-z0-9_-]+$'
+    CreateOrganizationRequest:
+      type: object
+      additionalProperties: false
+      required: [display_name]
+      properties:
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 120
+          example: Acme Research
+    RenameOrganizationRequest:
+      type: object
+      additionalProperties: false
+      required: [display_name, expected_revision]
+      properties:
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        expected_revision:
+          type: integer
+          format: int64
+          minimum: 1
+    OrganizationRevisionRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_revision]
+      properties:
+        expected_revision:
+          type: integer
+          format: int64
+          minimum: 1
+    TransferOrganizationOwnerRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - target_user_id
+        - expected_organization_revision
+        - expected_owner_revision
+        - expected_target_revision
+        - confirmation
+      properties:
+        target_user_id:
+          type: string
+          format: uuid
+        expected_organization_revision:
+          type: integer
+          format: int64
+          minimum: 1
+        expected_owner_revision:
+          type: integer
+          format: int64
+          minimum: 1
+        expected_target_revision:
+          type: integer
+          format: int64
+          minimum: 1
+        confirmation:
+          type: string
+          enum: [transfer-organization-owner]
+    DissolveOrganizationRequest:
+      type: object
+      additionalProperties: false
+      required: [display_name, expected_revision, confirmation]
+      properties:
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        expected_revision:
+          type: integer
+          format: int64
+          minimum: 1
+        confirmation:
+          type: string
+          enum: [dissolve-organization]
+    PatchOrganizationMemberRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_revision]
+      anyOf:
+        - required: [role]
+        - required: [department_id]
+      properties:
+        role:
+          type: string
+          enum: [admin, auditor, member]
+        department_id:
+          type: string
+          format: uuid
+          nullable: true
+        expected_revision:
+          type: integer
+          format: int64
+          minimum: 1
+    OrganizationEmptyRequest:
+      type: object
+      additionalProperties: false
+      maxProperties: 0
+    CreateOrganizationDepartmentRequest:
+      type: object
+      additionalProperties: false
+      required: [display_name]
+      properties:
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 80
+          example: Research
+    RenameOrganizationDepartmentRequest:
+      type: object
+      additionalProperties: false
+      required: [display_name, expected_revision]
+      properties:
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        expected_revision:
+          type: integer
+          format: int64
+          minimum: 1
+    OrganizationDepartmentRevisionRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_revision]
+      properties:
+        expected_revision:
+          type: integer
+          format: int64
+          minimum: 1
+    AcceptOrganizationInvitationRequest:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token:
+          type: string
+          minLength: 43
+          maxLength: 43
+          pattern: '^[A-Za-z0-9_-]{43}$'
+    OrganizationModelIdentifier:
+      type: object
+      additionalProperties: false
+      required: [provider, model]
+      properties:
+        provider:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: '^[A-Za-z0-9._:/-]{1,128}$'
+        model:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: '^[A-Za-z0-9._:/-]{1,128}$'
+    OrganizationModelPolicy:
+      type: object
+      additionalProperties: false
+      required: [allowlist]
+      properties:
+        allowlist:
+          type: array
+          nullable: true
+          maxItems: 128
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/OrganizationModelIdentifier'
+    OrganizationToolPolicy:
+      type: object
+      additionalProperties: false
+      required: [allowlist]
+      properties:
+        allowlist:
+          type: array
+          nullable: true
+          maxItems: 128
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+            maxLength: 128
+            pattern: '^[A-Za-z0-9._:/-]{1,128}$'
+    OrganizationExperienceCandidatePolicy:
+      type: object
+      additionalProperties: false
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [disabled, manual_review]
+    OrganizationOfficialAgentPolicy:
+      type: object
+      additionalProperties: false
+      required: [installation]
+      properties:
+        installation:
+          type: string
+          enum: [allowed, blocked]
+    OrganizationPolicyDocument:
+      type: object
+      additionalProperties: false
+      required: [schema_version, models, tools, experience_candidates, official_agents]
+      properties:
+        schema_version:
+          type: integer
+          enum: [1]
+        models:
+          $ref: '#/components/schemas/OrganizationModelPolicy'
+        tools:
+          $ref: '#/components/schemas/OrganizationToolPolicy'
+        experience_candidates:
+          $ref: '#/components/schemas/OrganizationExperienceCandidatePolicy'
+        official_agents:
+          $ref: '#/components/schemas/OrganizationOfficialAgentPolicy'
+    PublishOrganizationPolicyRequest:
+      type: object
+      additionalProperties: false
+      required: [policy_document, expected_organization_revision, expected_policy_version]
+      properties:
+        policy_document:
+          $ref: '#/components/schemas/OrganizationPolicyDocument'
+        expected_organization_revision:
+          type: integer
+          format: int64
+          minimum: 1
+        expected_policy_version:
+          type: integer
+          format: int64
+          minimum: 2
+    OrganizationErrorCode:
+      type: string
+      enum:
+        - invalid_request
+        - authentication_required
+        - organization_forbidden
+        - organization_not_found
+        - invitation_unavailable
+        - organization_conflict
+        - organization_archived
+        - organization_limit_reached
+        - organization_owner_transfer_required
+        - owner_transfer_target_invalid
+        - membership_conflict
+        - member_limit_reached
+        - department_not_empty
+        - department_limit_reached
+        - invitation_limit_reached
+        - policy_version_conflict
+        - idempotency_conflict
+        - dissolution_blocked
+        - rate_limited
+        - service_unavailable
+    OrganizationErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, request_id]
+          properties:
+            code:
+              $ref: '#/components/schemas/OrganizationErrorCode'
+            request_id:
+              type: string
+              minLength: 1
+              maxLength: 128
     SigningKeySet:
       type: object
       additionalProperties: false
@@ -3195,7 +4817,9 @@ components:
       properties:
         keys:
           type: array
-          minItems: 2
+          minItems: 5
+          maxItems: 64
+          uniqueItems: true
           items:
             $ref: '#/components/schemas/SigningKey'
     SigningKey:
@@ -3206,16 +4830,20 @@ components:
         kid:
           type: string
         kty:
-          const: OKP
+          type: string
+          enum: [OKP]
         crv:
-          const: Ed25519
+          type: string
+          enum: [Ed25519]
         alg:
-          const: EdDSA
+          type: string
+          enum: [EdDSA]
         use:
-          const: sig
+          type: string
+          enum: [sig]
         purpose:
           type: string
-          enum: [access, offline_entitlement, agent_version, agent_policy]
+          enum: [access, offline_entitlement, agent_version, agent_policy, organization_policy]
         x:
           type: string
           pattern: '^[A-Za-z0-9_-]{43}$'
@@ -3260,6 +4888,7 @@ components:
         - workspace_limit_reached
         - member_limit_reached
         - invitation_limit_reached
+        - organization_owner_transfer_required
         - rate_limited
         - service_unavailable
     ErrorEnvelope:
@@ -3275,7 +4904,8 @@ components:
             code:
               $ref: '#/components/schemas/ErrorCode'
             message:
-              const: localized by the client
+              type: string
+              enum: [localized by the client]
             request_id:
               type: string
               format: uuid
@@ -3383,6 +5013,55 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/WorkspaceErrorEnvelope'
+    OrganizationInvalidRequest:
+      description: The Organization request, identifier, revision, content type, or bounded body is invalid.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OrganizationErrorEnvelope'
+    OrganizationAuthenticationRequired:
+      description: The desktop access token is absent, expired, malformed, or revoked.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OrganizationErrorEnvelope'
+    OrganizationForbidden:
+      description: A known Organization member lacks the role required for this operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OrganizationErrorEnvelope'
+    OrganizationNotFound:
+      description: The Organization object is absent or hidden from this actor, or an invitation is unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OrganizationErrorEnvelope'
+    OrganizationConflict:
+      description: Organization lifecycle, revision, membership, quota, policy, or idempotency state conflicts with the request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OrganizationErrorEnvelope'
+    OrganizationRateLimited:
+      description: A bounded Organization creation, invitation, or acceptance limit was exceeded.
+      headers:
+        Retry-After:
+          required: true
+          description: Positive whole seconds before retrying.
+          schema:
+            type: integer
+            minimum: 1
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OrganizationErrorEnvelope'
+    OrganizationServiceUnavailable:
+      description: A required Organization control-plane dependency is temporarily unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OrganizationErrorEnvelope'
     ServiceUnavailable:
       description: A required account service is temporarily unavailable.
       content:
