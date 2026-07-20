@@ -227,6 +227,11 @@ func TestRepositoryWorkspaceLifecycleAndMembershipChangesFailClosed(t *testing.T
 	); !errors.Is(err, ErrWorkspaceArchived) {
 		t.Fatalf("PublishWorkspaceNext(archived) error = %v", err)
 	}
+	if _, err := fixture.repository.ListWorkspaceDefinitions(
+		fixture.ctx, owner, workspaceID,
+	); !errors.Is(err, ErrWorkspaceArchived) {
+		t.Fatalf("ListWorkspaceDefinitions(archived) error = %v", err)
+	}
 
 	if _, err := fixture.postgres.Exec(fixture.ctx, `
 		UPDATE workspaces SET status = 'active', archived_at = NULL, revision = revision + 1, updated_at = $2
@@ -242,6 +247,11 @@ func TestRepositoryWorkspaceLifecycleAndMembershipChangesFailClosed(t *testing.T
 		fixture.nextPublication(owner, publication.Definition.ID, publication.Version.ID, 54),
 	); !errors.Is(err, ErrWorkspaceOwnerUnavailable) {
 		t.Fatalf("PublishWorkspaceNext(owner unavailable) error = %v", err)
+	}
+	if _, err := fixture.repository.ListWorkspaceDefinitions(
+		fixture.ctx, owner, workspaceID,
+	); !errors.Is(err, ErrWorkspaceOwnerUnavailable) {
+		t.Fatalf("ListWorkspaceDefinitions(owner unavailable) error = %v", err)
 	}
 }
 

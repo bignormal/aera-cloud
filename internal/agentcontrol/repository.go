@@ -1659,16 +1659,14 @@ func requireWorkspaceAgentAccess(
 		}
 		return "", ErrNotFound
 	}
-	if mode != workspaceAgentRead {
-		if workspaceStatus == "archived" {
-			return "", ErrWorkspaceArchived
-		}
-		if workspaceStatus != "active" {
-			return "", ErrServiceUnavailable
-		}
-		if ownerStatus != "active" {
-			return "", ErrWorkspaceOwnerUnavailable
-		}
+	if workspaceStatus == "archived" {
+		return "", ErrWorkspaceArchived
+	}
+	if workspaceStatus != "active" {
+		return "", ErrServiceUnavailable
+	}
+	if ownerStatus != "active" {
+		return "", ErrWorkspaceOwnerUnavailable
 	}
 	if mode == workspaceAgentPublish && role != "owner" && role != "admin" {
 		return "", ErrWorkspaceForbidden
