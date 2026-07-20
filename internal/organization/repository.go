@@ -8,12 +8,14 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/bignormal/aera-cloud/internal/audit"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -745,4 +747,888 @@ func CanonicalCreateRequestDigest(displayName string) ([sha256.Size]byte, error)
 
 func canonicalCreateRequestDigest(normalizedDisplayName string) [sha256.Size]byte {
 	return sha256.Sum256([]byte("agentera.organization-create.v1\x00" + normalizedDisplayName))
+}
+
+type lockedOrganization struct {
+	Status            OrganizationStatus
+	Revision          int64
+	UpdatedAt         time.Time
+	ActorRole         Role
+	ActorRevision     int64
+	ActorMembershipAt time.Time
+}
+
+func (r *PostgresRepository) rename(
+	ctx context.Context,
+	actor Actor,
+	command renameTransaction,
+) (OrganizationSummary, error) {
+	displayName, err := NormalizeOrganizationName(command.DisplayName)
+	if r == nil || r.postgres == nil || actor.Validate() != nil || err != nil || command.OrganizationID == uuid.Nil ||
+		command.ExpectedRevision <= 0 || !validMutationEvidence(command.mutationEvidence) {
+		return OrganizationSummary{}, ErrInvalidRequest
+	}
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return OrganizationSummary{}, ErrServiceUnavailable
+	}
+	defer rollbackOrganizationTransaction(tx)
+	if err := lockActiveOrganizationActor(ctx, tx, actor); err != nil {
+		return OrganizationSummary{}, err
+	}
+	organization, err := loadLockedOrganization(ctx, tx, actor, command.OrganizationID)
+	if err != nil {
+		return OrganizationSummary{}, err
+	}
+	if err := requireActiveOrganizationMutation(organization, true); err != nil {
+		return OrganizationSummary{}, err
+	}
+	if organization.Revision != command.ExpectedRevision {
+		return OrganizationSummary{}, ErrOrganizationConflict
+	}
+	changedAt := command.ChangedAt.UTC()
+	if changedAt.Before(organization.UpdatedAt) {
+		return OrganizationSummary{}, ErrInvalidRequest
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE organizations
+		SET display_name = $2, revision = revision + 1, updated_at = $3
+		WHERE id = $1 AND revision = $4 AND status = 'active'
+	`, command.OrganizationID, displayName, changedAt, command.ExpectedRevision)
+	if err != nil {
+		return OrganizationSummary{}, ErrServiceUnavailable
+	}
+	if tag.RowsAffected() != 1 {
+		return OrganizationSummary{}, ErrOrganizationConflict
+	}
+	if err := recordOrganizationAudit(ctx, tx, actor, command.Audit, "organization_renamed",
+		command.OrganizationID, "organization", command.OrganizationID, changedAt, map[string]string{
+			"previous_revision": strconv.FormatInt(command.ExpectedRevision, 10),
+			"revision":          strconv.FormatInt(command.ExpectedRevision+1, 10),
+		}); err != nil {
+		return OrganizationSummary{}, err
+	}
+	result, err := loadOrganizationSummary(ctx, tx, actor.UserID, command.OrganizationID)
+	if err != nil {
+		return OrganizationSummary{}, err
+	}
+	if err := commitOrganizationTransaction(ctx, tx); err != nil {
+		return OrganizationSummary{}, err
+	}
+	return result, nil
+}
+
+func (r *PostgresRepository) patchMember(
+	ctx context.Context,
+	actor Actor,
+	command patchMemberTransaction,
+) (MemberSummary, error) {
+	if r == nil || r.postgres == nil || actor.Validate() != nil || command.OrganizationID == uuid.Nil ||
+		command.UserID == uuid.Nil || command.ExpectedRevision <= 0 ||
+		!validMutationEvidence(command.mutationEvidence) || !validPatchMemberTransaction(command) {
+		return MemberSummary{}, ErrInvalidRequest
+	}
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return MemberSummary{}, ErrServiceUnavailable
+	}
+	defer rollbackOrganizationTransaction(tx)
+	if err := lockActiveOrganizationActor(ctx, tx, actor); err != nil {
+		return MemberSummary{}, err
+	}
+	organization, err := loadLockedOrganization(ctx, tx, actor, command.OrganizationID)
+	if err != nil {
+		return MemberSummary{}, err
+	}
+	if err := requireActiveOrganizationMutation(organization, true); err != nil {
+		return MemberSummary{}, err
+	}
+	target, err := loadOrganizationMember(ctx, tx, command.OrganizationID, command.UserID, true)
+	if err != nil {
+		return MemberSummary{}, err
+	}
+	if target.Revision != command.ExpectedRevision {
+		return MemberSummary{}, ErrMembershipConflict
+	}
+	if err := authorizeMemberPatch(organization.ActorRole, target.Role, command.Role); err != nil {
+		return MemberSummary{}, err
+	}
+	newRole := target.Role
+	if command.Role != nil {
+		newRole = *command.Role
+	}
+	newDepartmentID := cloneUUIDPointer(target.DepartmentID)
+	if command.ChangeDepartment {
+		if command.ClearDepartment {
+			newDepartmentID = nil
+		} else {
+			if err := requireActiveDepartment(ctx, tx, command.OrganizationID, *command.DepartmentID); err != nil {
+				return MemberSummary{}, err
+			}
+			value := *command.DepartmentID
+			newDepartmentID = &value
+		}
+	}
+	if newRole == target.Role && equalUUIDPointers(newDepartmentID, target.DepartmentID) {
+		return MemberSummary{}, ErrMembershipConflict
+	}
+	changedAt := command.ChangedAt.UTC()
+	if changedAt.Before(target.UpdatedAt) {
+		return MemberSummary{}, ErrInvalidRequest
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE organization_memberships
+		SET role = $3, department_id = $4, revision = revision + 1, updated_at = $5
+		WHERE organization_id = $1 AND user_id = $2 AND revision = $6
+	`, command.OrganizationID, command.UserID, newRole, newDepartmentID, changedAt, command.ExpectedRevision)
+	if err != nil {
+		return MemberSummary{}, ErrServiceUnavailable
+	}
+	if tag.RowsAffected() != 1 {
+		return MemberSummary{}, ErrMembershipConflict
+	}
+	metadata := map[string]string{
+		"membership_user_id": command.UserID.String(),
+		"previous_role":      string(target.Role),
+		"role":               string(newRole),
+		"previous_revision":  strconv.FormatInt(command.ExpectedRevision, 10),
+		"revision":           strconv.FormatInt(command.ExpectedRevision+1, 10),
+	}
+	if newDepartmentID != nil {
+		metadata["department_id"] = newDepartmentID.String()
+	}
+	if err := recordOrganizationAudit(ctx, tx, actor, command.Audit, "organization_member_patched",
+		command.OrganizationID, "organization_membership", command.UserID, changedAt, metadata); err != nil {
+		return MemberSummary{}, err
+	}
+	result, err := loadOrganizationMember(ctx, tx, command.OrganizationID, command.UserID, false)
+	if err != nil {
+		return MemberSummary{}, err
+	}
+	if err := commitOrganizationTransaction(ctx, tx); err != nil {
+		return MemberSummary{}, err
+	}
+	return result, nil
+}
+
+func (r *PostgresRepository) removeMember(ctx context.Context, actor Actor, command removeMemberTransaction) error {
+	if r == nil || r.postgres == nil || actor.Validate() != nil || command.OrganizationID == uuid.Nil ||
+		command.UserID == uuid.Nil || command.ExpectedRevision <= 0 || !validMutationEvidence(command.mutationEvidence) {
+		return ErrInvalidRequest
+	}
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return ErrServiceUnavailable
+	}
+	defer rollbackOrganizationTransaction(tx)
+	if err := lockActiveOrganizationActor(ctx, tx, actor); err != nil {
+		return err
+	}
+	organization, err := loadLockedOrganization(ctx, tx, actor, command.OrganizationID)
+	if err != nil {
+		return err
+	}
+	if err := requireActiveOrganizationMutation(organization, true); err != nil {
+		return err
+	}
+	target, err := loadOrganizationMember(ctx, tx, command.OrganizationID, command.UserID, true)
+	if err != nil {
+		return err
+	}
+	if target.Revision != command.ExpectedRevision {
+		return ErrMembershipConflict
+	}
+	if target.Role == RoleOwner || (organization.ActorRole == RoleAdmin && target.Role == RoleAdmin) {
+		return ErrOrganizationForbidden
+	}
+	changedAt := command.ChangedAt.UTC()
+	tag, err := tx.Exec(ctx, `
+		DELETE FROM organization_memberships
+		WHERE organization_id = $1 AND user_id = $2 AND revision = $3
+	`, command.OrganizationID, command.UserID, command.ExpectedRevision)
+	if err != nil {
+		return ErrServiceUnavailable
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrMembershipConflict
+	}
+	if err := recordOrganizationAudit(ctx, tx, actor, command.Audit, "organization_member_removed",
+		command.OrganizationID, "organization_membership", command.UserID, changedAt, map[string]string{
+			"membership_user_id": command.UserID.String(), "role": string(target.Role),
+			"previous_revision": strconv.FormatInt(command.ExpectedRevision, 10),
+		}); err != nil {
+		return err
+	}
+	return commitOrganizationTransaction(ctx, tx)
+}
+
+func (r *PostgresRepository) leave(ctx context.Context, actor Actor, command leaveTransaction) error {
+	if r == nil || r.postgres == nil || actor.Validate() != nil || command.OrganizationID == uuid.Nil ||
+		!validMutationEvidence(command.mutationEvidence) {
+		return ErrInvalidRequest
+	}
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return ErrServiceUnavailable
+	}
+	defer rollbackOrganizationTransaction(tx)
+	if err := lockActiveOrganizationActor(ctx, tx, actor); err != nil {
+		return err
+	}
+	organization, err := loadLockedOrganization(ctx, tx, actor, command.OrganizationID)
+	if err != nil {
+		return err
+	}
+	if organization.Status == OrganizationStatusArchived {
+		return ErrOrganizationArchived
+	}
+	if organization.Status != OrganizationStatusActive {
+		return ErrOrganizationNotFound
+	}
+	if organization.ActorRole == RoleOwner {
+		return ErrOrganizationForbidden
+	}
+	tag, err := tx.Exec(ctx, `
+		DELETE FROM organization_memberships
+		WHERE organization_id = $1 AND user_id = $2 AND revision = $3
+	`, command.OrganizationID, actor.UserID, organization.ActorRevision)
+	if err != nil || tag.RowsAffected() != 1 {
+		return ErrServiceUnavailable
+	}
+	if err := recordOrganizationAudit(ctx, tx, actor, command.Audit, "organization_member_left",
+		command.OrganizationID, "organization_membership", actor.UserID, command.ChangedAt.UTC(), map[string]string{
+			"membership_user_id": actor.UserID.String(), "role": string(organization.ActorRole),
+			"previous_revision": strconv.FormatInt(organization.ActorRevision, 10),
+		}); err != nil {
+		return err
+	}
+	return commitOrganizationTransaction(ctx, tx)
+}
+
+func (r *PostgresRepository) createDepartment(
+	ctx context.Context,
+	actor Actor,
+	command createDepartmentTransaction,
+) (DepartmentSummary, error) {
+	displayName, nameKey, err := NormalizeDepartmentName(command.DisplayName)
+	if r == nil || r.postgres == nil || actor.Validate() != nil || err != nil || displayName != command.DisplayName ||
+		nameKey != command.NameKey || command.OrganizationID == uuid.Nil || command.DepartmentID == uuid.Nil ||
+		command.ActiveLimit <= 0 || !validMutationEvidence(command.mutationEvidence) {
+		return DepartmentSummary{}, ErrInvalidRequest
+	}
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return DepartmentSummary{}, ErrServiceUnavailable
+	}
+	defer rollbackOrganizationTransaction(tx)
+	if err := lockActiveOrganizationActor(ctx, tx, actor); err != nil {
+		return DepartmentSummary{}, err
+	}
+	organization, err := loadLockedOrganization(ctx, tx, actor, command.OrganizationID)
+	if err != nil {
+		return DepartmentSummary{}, err
+	}
+	if err := requireActiveOrganizationMutation(organization, true); err != nil {
+		return DepartmentSummary{}, err
+	}
+	if err := enforceDepartmentCapacity(ctx, tx, command.OrganizationID, command.ActiveLimit); err != nil {
+		return DepartmentSummary{}, err
+	}
+	if duplicate, err := activeDepartmentNameExists(ctx, tx, command.OrganizationID, command.NameKey, uuid.Nil); err != nil {
+		return DepartmentSummary{}, err
+	} else if duplicate {
+		return DepartmentSummary{}, ErrOrganizationConflict
+	}
+	changedAt := command.ChangedAt.UTC()
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO organization_departments (
+			organization_id, id, display_name, name_key, status, revision, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, 'active', 1, $5, $5)
+	`, command.OrganizationID, command.DepartmentID, command.DisplayName, command.NameKey, changedAt); err != nil {
+		if postgresUniqueViolation(err) {
+			return DepartmentSummary{}, ErrOrganizationConflict
+		}
+		return DepartmentSummary{}, ErrServiceUnavailable
+	}
+	if err := recordOrganizationAudit(ctx, tx, actor, command.Audit, "organization_department_created",
+		command.OrganizationID, "organization_department", command.DepartmentID, changedAt, map[string]string{
+			"department_id": command.DepartmentID.String(), "revision": "1",
+		}); err != nil {
+		return DepartmentSummary{}, err
+	}
+	result, err := loadOrganizationDepartment(ctx, tx, command.OrganizationID, command.DepartmentID, false)
+	if err != nil {
+		return DepartmentSummary{}, err
+	}
+	if err := commitOrganizationTransaction(ctx, tx); err != nil {
+		return DepartmentSummary{}, err
+	}
+	return result, nil
+}
+
+func (r *PostgresRepository) renameDepartment(
+	ctx context.Context,
+	actor Actor,
+	command renameDepartmentTransaction,
+) (DepartmentSummary, error) {
+	displayName, nameKey, err := NormalizeDepartmentName(command.DisplayName)
+	if r == nil || r.postgres == nil || actor.Validate() != nil || err != nil || displayName != command.DisplayName ||
+		nameKey != command.NameKey || command.OrganizationID == uuid.Nil || command.DepartmentID == uuid.Nil ||
+		command.ExpectedRevision <= 0 || !validMutationEvidence(command.mutationEvidence) {
+		return DepartmentSummary{}, ErrInvalidRequest
+	}
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return DepartmentSummary{}, ErrServiceUnavailable
+	}
+	defer rollbackOrganizationTransaction(tx)
+	if err := lockActiveOrganizationActor(ctx, tx, actor); err != nil {
+		return DepartmentSummary{}, err
+	}
+	organization, err := loadLockedOrganization(ctx, tx, actor, command.OrganizationID)
+	if err != nil {
+		return DepartmentSummary{}, err
+	}
+	if err := requireActiveOrganizationMutation(organization, true); err != nil {
+		return DepartmentSummary{}, err
+	}
+	department, err := loadOrganizationDepartment(ctx, tx, command.OrganizationID, command.DepartmentID, true)
+	if err != nil {
+		return DepartmentSummary{}, err
+	}
+	if department.Status != DepartmentStatusActive || department.Revision != command.ExpectedRevision {
+		return DepartmentSummary{}, ErrOrganizationConflict
+	}
+	if department.DisplayName == command.DisplayName {
+		return DepartmentSummary{}, ErrOrganizationConflict
+	}
+	if duplicate, err := activeDepartmentNameExists(ctx, tx, command.OrganizationID, command.NameKey, command.DepartmentID); err != nil {
+		return DepartmentSummary{}, err
+	} else if duplicate {
+		return DepartmentSummary{}, ErrOrganizationConflict
+	}
+	changedAt := command.ChangedAt.UTC()
+	tag, err := tx.Exec(ctx, `
+		UPDATE organization_departments
+		SET display_name = $3, name_key = $4, revision = revision + 1, updated_at = $5
+		WHERE organization_id = $1 AND id = $2 AND revision = $6 AND status = 'active'
+	`, command.OrganizationID, command.DepartmentID, command.DisplayName, command.NameKey, changedAt, command.ExpectedRevision)
+	if err != nil {
+		if postgresUniqueViolation(err) {
+			return DepartmentSummary{}, ErrOrganizationConflict
+		}
+		return DepartmentSummary{}, ErrServiceUnavailable
+	}
+	if tag.RowsAffected() != 1 {
+		return DepartmentSummary{}, ErrOrganizationConflict
+	}
+	if err := recordOrganizationAudit(ctx, tx, actor, command.Audit, "organization_department_renamed",
+		command.OrganizationID, "organization_department", command.DepartmentID, changedAt, map[string]string{
+			"department_id":     command.DepartmentID.String(),
+			"previous_revision": strconv.FormatInt(command.ExpectedRevision, 10),
+			"revision":          strconv.FormatInt(command.ExpectedRevision+1, 10),
+		}); err != nil {
+		return DepartmentSummary{}, err
+	}
+	result, err := loadOrganizationDepartment(ctx, tx, command.OrganizationID, command.DepartmentID, false)
+	if err != nil {
+		return DepartmentSummary{}, err
+	}
+	if err := commitOrganizationTransaction(ctx, tx); err != nil {
+		return DepartmentSummary{}, err
+	}
+	return result, nil
+}
+
+func (r *PostgresRepository) archiveDepartment(
+	ctx context.Context,
+	actor Actor,
+	command departmentLifecycleTransaction,
+) (DepartmentSummary, error) {
+	return r.changeDepartmentLifecycle(ctx, actor, command, false)
+}
+
+func (r *PostgresRepository) restoreDepartment(
+	ctx context.Context,
+	actor Actor,
+	command departmentLifecycleTransaction,
+) (DepartmentSummary, error) {
+	return r.changeDepartmentLifecycle(ctx, actor, command, true)
+}
+
+func (r *PostgresRepository) changeDepartmentLifecycle(
+	ctx context.Context,
+	actor Actor,
+	command departmentLifecycleTransaction,
+	restore bool,
+) (DepartmentSummary, error) {
+	if r == nil || r.postgres == nil || actor.Validate() != nil || command.OrganizationID == uuid.Nil ||
+		command.DepartmentID == uuid.Nil || command.ExpectedRevision <= 0 || command.ActiveLimit <= 0 ||
+		!validMutationEvidence(command.mutationEvidence) {
+		return DepartmentSummary{}, ErrInvalidRequest
+	}
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return DepartmentSummary{}, ErrServiceUnavailable
+	}
+	defer rollbackOrganizationTransaction(tx)
+	if err := lockActiveOrganizationActor(ctx, tx, actor); err != nil {
+		return DepartmentSummary{}, err
+	}
+	organization, err := loadLockedOrganization(ctx, tx, actor, command.OrganizationID)
+	if err != nil {
+		return DepartmentSummary{}, err
+	}
+	if err := requireActiveOrganizationMutation(organization, true); err != nil {
+		return DepartmentSummary{}, err
+	}
+	department, err := loadOrganizationDepartment(ctx, tx, command.OrganizationID, command.DepartmentID, true)
+	if err != nil {
+		return DepartmentSummary{}, err
+	}
+	if department.Revision != command.ExpectedRevision {
+		return DepartmentSummary{}, ErrOrganizationConflict
+	}
+	changedAt := command.ChangedAt.UTC()
+	if restore {
+		if department.Status != DepartmentStatusArchived {
+			return DepartmentSummary{}, ErrOrganizationConflict
+		}
+		if err := enforceDepartmentCapacity(ctx, tx, command.OrganizationID, command.ActiveLimit); err != nil {
+			return DepartmentSummary{}, err
+		}
+		_, nameKey, err := NormalizeDepartmentName(department.DisplayName)
+		if err != nil {
+			return DepartmentSummary{}, ErrServiceUnavailable
+		}
+		if duplicate, err := activeDepartmentNameExists(ctx, tx, command.OrganizationID, nameKey, command.DepartmentID); err != nil {
+			return DepartmentSummary{}, err
+		} else if duplicate {
+			return DepartmentSummary{}, ErrOrganizationConflict
+		}
+		tag, err := tx.Exec(ctx, `
+			UPDATE organization_departments
+			SET status = 'active', revision = revision + 1, updated_at = $3, archived_at = NULL
+			WHERE organization_id = $1 AND id = $2 AND revision = $4 AND status = 'archived'
+		`, command.OrganizationID, command.DepartmentID, changedAt, command.ExpectedRevision)
+		if err != nil {
+			if postgresUniqueViolation(err) {
+				return DepartmentSummary{}, ErrOrganizationConflict
+			}
+			return DepartmentSummary{}, ErrServiceUnavailable
+		}
+		if tag.RowsAffected() != 1 {
+			return DepartmentSummary{}, ErrOrganizationConflict
+		}
+	} else {
+		if department.Status != DepartmentStatusActive {
+			return DepartmentSummary{}, ErrOrganizationConflict
+		}
+		var assigned int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM organization_memberships
+			WHERE organization_id = $1 AND department_id = $2
+		`, command.OrganizationID, command.DepartmentID).Scan(&assigned); err != nil {
+			return DepartmentSummary{}, ErrServiceUnavailable
+		}
+		if assigned != 0 {
+			return DepartmentSummary{}, ErrDepartmentNotEmpty
+		}
+		tag, err := tx.Exec(ctx, `
+			UPDATE organization_departments
+			SET status = 'archived', revision = revision + 1, updated_at = $3, archived_at = $3
+			WHERE organization_id = $1 AND id = $2 AND revision = $4 AND status = 'active'
+		`, command.OrganizationID, command.DepartmentID, changedAt, command.ExpectedRevision)
+		if err != nil {
+			return DepartmentSummary{}, ErrServiceUnavailable
+		}
+		if tag.RowsAffected() != 1 {
+			return DepartmentSummary{}, ErrOrganizationConflict
+		}
+	}
+	eventType := "organization_department_archived"
+	status := DepartmentStatusArchived
+	if restore {
+		eventType = "organization_department_restored"
+		status = DepartmentStatusActive
+	}
+	if err := recordOrganizationAudit(ctx, tx, actor, command.Audit, eventType,
+		command.OrganizationID, "organization_department", command.DepartmentID, changedAt, map[string]string{
+			"department_id":     command.DepartmentID.String(),
+			"previous_revision": strconv.FormatInt(command.ExpectedRevision, 10),
+			"revision":          strconv.FormatInt(command.ExpectedRevision+1, 10),
+			"status":            string(status),
+		}); err != nil {
+		return DepartmentSummary{}, err
+	}
+	result, err := loadOrganizationDepartment(ctx, tx, command.OrganizationID, command.DepartmentID, false)
+	if err != nil {
+		return DepartmentSummary{}, err
+	}
+	if err := commitOrganizationTransaction(ctx, tx); err != nil {
+		return DepartmentSummary{}, err
+	}
+	return result, nil
+}
+
+func (r *PostgresRepository) transferOwner(
+	ctx context.Context,
+	actor Actor,
+	command ownerTransferTransaction,
+) (OrganizationSummary, error) {
+	if r == nil || r.postgres == nil || actor.Validate() != nil || command.OrganizationID == uuid.Nil ||
+		command.TargetUserID == uuid.Nil || command.TargetUserID == actor.UserID ||
+		command.ExpectedOrganizationRevision <= 0 || command.ExpectedOwnerRevision <= 0 ||
+		command.ExpectedTargetRevision <= 0 || !validMutationEvidence(command.mutationEvidence) {
+		return OrganizationSummary{}, ErrInvalidRequest
+	}
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return OrganizationSummary{}, ErrServiceUnavailable
+	}
+	defer rollbackOrganizationTransaction(tx)
+	if err := lockActiveOrganizationActor(ctx, tx, actor); err != nil {
+		return OrganizationSummary{}, err
+	}
+	organization, err := loadLockedOrganization(ctx, tx, actor, command.OrganizationID)
+	if err != nil {
+		return OrganizationSummary{}, err
+	}
+	if organization.ActorRole != RoleOwner {
+		return OrganizationSummary{}, ErrOrganizationForbidden
+	}
+	if organization.Revision != command.ExpectedOrganizationRevision ||
+		organization.ActorRevision != command.ExpectedOwnerRevision {
+		return OrganizationSummary{}, ErrOrganizationConflict
+	}
+	target, err := loadOrganizationMember(ctx, tx, command.OrganizationID, command.TargetUserID, true)
+	if err != nil {
+		if errors.Is(err, ErrOrganizationNotFound) {
+			return OrganizationSummary{}, ErrOwnerTransferTargetInvalid
+		}
+		return OrganizationSummary{}, err
+	}
+	if target.Role != RoleAdmin {
+		return OrganizationSummary{}, ErrOwnerTransferTargetInvalid
+	}
+	if target.Revision != command.ExpectedTargetRevision {
+		return OrganizationSummary{}, ErrOrganizationConflict
+	}
+	changedAt := command.ChangedAt.UTC()
+	if changedAt.Before(organization.UpdatedAt) || changedAt.Before(organization.ActorMembershipAt) ||
+		changedAt.Before(target.UpdatedAt) {
+		return OrganizationSummary{}, ErrInvalidRequest
+	}
+	demoted, err := tx.Exec(ctx, `
+		UPDATE organization_memberships
+		SET role = 'admin', revision = revision + 1, updated_at = $3
+		WHERE organization_id = $1 AND user_id = $2 AND role = 'owner' AND revision = $4
+	`, command.OrganizationID, actor.UserID, changedAt, command.ExpectedOwnerRevision)
+	if err != nil || demoted.RowsAffected() != 1 {
+		return OrganizationSummary{}, ErrOrganizationConflict
+	}
+	promoted, err := tx.Exec(ctx, `
+		UPDATE organization_memberships
+		SET role = 'owner', revision = revision + 1, updated_at = $3
+		WHERE organization_id = $1 AND user_id = $2 AND role = 'admin' AND revision = $4
+	`, command.OrganizationID, command.TargetUserID, changedAt, command.ExpectedTargetRevision)
+	if err != nil || promoted.RowsAffected() != 1 {
+		return OrganizationSummary{}, ErrOrganizationConflict
+	}
+	updated, err := tx.Exec(ctx, `
+		UPDATE organizations
+		SET revision = revision + 1, updated_at = $2
+		WHERE id = $1 AND revision = $3 AND status IN ('active', 'archived')
+	`, command.OrganizationID, changedAt, command.ExpectedOrganizationRevision)
+	if err != nil || updated.RowsAffected() != 1 {
+		return OrganizationSummary{}, ErrOrganizationConflict
+	}
+	if err := recordOrganizationAudit(ctx, tx, actor, command.Audit, "organization_owner_transferred",
+		command.OrganizationID, "organization_membership", command.TargetUserID, changedAt, map[string]string{
+			"membership_user_id": command.TargetUserID.String(), "previous_role": string(RoleAdmin), "role": string(RoleOwner),
+			"previous_revision": strconv.FormatInt(command.ExpectedOrganizationRevision, 10),
+			"revision":          strconv.FormatInt(command.ExpectedOrganizationRevision+1, 10),
+		}); err != nil {
+		return OrganizationSummary{}, err
+	}
+	result, err := loadOrganizationSummary(ctx, tx, actor.UserID, command.OrganizationID)
+	if err != nil {
+		return OrganizationSummary{}, err
+	}
+	if err := commitOrganizationTransaction(ctx, tx); err != nil {
+		return OrganizationSummary{}, err
+	}
+	return result, nil
+}
+
+func loadLockedOrganization(ctx context.Context, tx pgx.Tx, actor Actor, organizationID uuid.UUID) (lockedOrganization, error) {
+	var result lockedOrganization
+	var status string
+	var role string
+	if err := tx.QueryRow(ctx, `
+		SELECT organization.status, organization.revision, organization.updated_at,
+		       membership.role, membership.revision, membership.updated_at
+		FROM organizations organization
+		JOIN organization_memberships membership
+		  ON membership.organization_id = organization.id AND membership.user_id = $2
+		WHERE organization.id = $1 AND organization.status IN ('active', 'archived')
+		FOR UPDATE OF organization, membership
+	`, organizationID, actor.UserID).Scan(
+		&status, &result.Revision, &result.UpdatedAt, &role, &result.ActorRevision, &result.ActorMembershipAt,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return lockedOrganization{}, ErrOrganizationNotFound
+		}
+		return lockedOrganization{}, ErrServiceUnavailable
+	}
+	parsedStatus, statusErr := ParseOrganizationStatus(status)
+	parsedRole, roleErr := ParseRole(role)
+	if statusErr != nil || roleErr != nil || result.Revision <= 0 || result.ActorRevision <= 0 {
+		return lockedOrganization{}, ErrServiceUnavailable
+	}
+	result.Status = parsedStatus
+	result.ActorRole = parsedRole
+	return result, nil
+}
+
+func loadOrganizationMember(
+	ctx context.Context,
+	queryer interface {
+		QueryRow(context.Context, string, ...any) pgx.Row
+	},
+	organizationID uuid.UUID,
+	userID uuid.UUID,
+	forUpdate bool,
+) (MemberSummary, error) {
+	query := `
+		SELECT membership.user_id, users.nickname, membership.role, membership.department_id,
+		       membership.revision, membership.joined_at, membership.updated_at
+		FROM organization_memberships membership
+		JOIN users ON users.id = membership.user_id
+		WHERE membership.organization_id = $1 AND membership.user_id = $2
+	`
+	if forUpdate {
+		query += ` FOR UPDATE OF membership`
+	}
+	var result MemberSummary
+	var role string
+	var department pgtype.UUID
+	if err := queryer.QueryRow(ctx, query, organizationID, userID).Scan(
+		&result.UserID, &result.Nickname, &role, &department,
+		&result.Revision, &result.JoinedAt, &result.UpdatedAt,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return MemberSummary{}, ErrOrganizationNotFound
+		}
+		return MemberSummary{}, ErrServiceUnavailable
+	}
+	parsedRole, err := ParseRole(role)
+	if err != nil || result.UserID == uuid.Nil || result.Revision <= 0 {
+		return MemberSummary{}, ErrServiceUnavailable
+	}
+	result.Role = parsedRole
+	if department.Valid {
+		value := uuid.UUID(department.Bytes)
+		result.DepartmentID = &value
+	}
+	return result, nil
+}
+
+func loadOrganizationDepartment(
+	ctx context.Context,
+	queryer interface {
+		QueryRow(context.Context, string, ...any) pgx.Row
+	},
+	organizationID uuid.UUID,
+	departmentID uuid.UUID,
+	forUpdate bool,
+) (DepartmentSummary, error) {
+	query := `
+		SELECT department.id, department.display_name, department.status,
+		       (SELECT count(*) FROM organization_memberships membership
+		        WHERE membership.organization_id = department.organization_id
+		          AND membership.department_id = department.id),
+		       department.revision, department.created_at, department.updated_at, department.archived_at
+		FROM organization_departments department
+		WHERE department.organization_id = $1 AND department.id = $2
+	`
+	if forUpdate {
+		query += ` FOR UPDATE OF department`
+	}
+	var result DepartmentSummary
+	var status string
+	var memberCount int64
+	if err := queryer.QueryRow(ctx, query, organizationID, departmentID).Scan(
+		&result.ID, &result.DisplayName, &status, &memberCount, &result.Revision,
+		&result.CreatedAt, &result.UpdatedAt, &result.ArchivedAt,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return DepartmentSummary{}, ErrOrganizationNotFound
+		}
+		return DepartmentSummary{}, ErrServiceUnavailable
+	}
+	parsedStatus, err := ParseDepartmentStatus(status)
+	if err != nil || result.ID == uuid.Nil || result.Revision <= 0 || memberCount < 0 {
+		return DepartmentSummary{}, ErrServiceUnavailable
+	}
+	result.Status = parsedStatus
+	result.MemberCount = int(memberCount)
+	return result, nil
+}
+
+func requireActiveOrganizationMutation(organization lockedOrganization, allowAdmin bool) error {
+	if organization.Status == OrganizationStatusArchived {
+		return ErrOrganizationArchived
+	}
+	if organization.Status != OrganizationStatusActive {
+		return ErrOrganizationNotFound
+	}
+	if organization.ActorRole == RoleOwner || (allowAdmin && organization.ActorRole == RoleAdmin) {
+		return nil
+	}
+	return ErrOrganizationForbidden
+}
+
+func authorizeMemberPatch(actorRole, targetRole Role, desiredRole *Role) error {
+	if actorRole != RoleOwner && actorRole != RoleAdmin {
+		return ErrOrganizationForbidden
+	}
+	if targetRole == RoleOwner || (actorRole == RoleAdmin && targetRole == RoleAdmin) {
+		return ErrOrganizationForbidden
+	}
+	if desiredRole != nil {
+		if *desiredRole == RoleOwner {
+			return ErrMembershipConflict
+		}
+		if *desiredRole == RoleAdmin && actorRole != RoleOwner {
+			return ErrOrganizationForbidden
+		}
+	}
+	return nil
+}
+
+func requireActiveDepartment(ctx context.Context, tx pgx.Tx, organizationID, departmentID uuid.UUID) error {
+	var exists bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM organization_departments
+			WHERE organization_id = $1 AND id = $2 AND status = 'active'
+		)
+	`, organizationID, departmentID).Scan(&exists); err != nil {
+		return ErrServiceUnavailable
+	}
+	if !exists {
+		return ErrMembershipConflict
+	}
+	return nil
+}
+
+func enforceDepartmentCapacity(ctx context.Context, tx pgx.Tx, organizationID uuid.UUID, limit int) error {
+	var count int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM organization_departments
+		WHERE organization_id = $1 AND status = 'active'
+	`, organizationID).Scan(&count); err != nil {
+		return ErrServiceUnavailable
+	}
+	if count >= limit {
+		return ErrDepartmentLimitReached
+	}
+	return nil
+}
+
+func activeDepartmentNameExists(
+	ctx context.Context,
+	tx pgx.Tx,
+	organizationID uuid.UUID,
+	nameKey string,
+	excludeID uuid.UUID,
+) (bool, error) {
+	var exists bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM organization_departments
+			WHERE organization_id = $1 AND name_key = $2 AND status = 'active'
+			  AND ($3::uuid = '00000000-0000-0000-0000-000000000000'::uuid OR id <> $3)
+		)
+	`, organizationID, nameKey, excludeID).Scan(&exists); err != nil {
+		return false, ErrServiceUnavailable
+	}
+	return exists, nil
+}
+
+func recordOrganizationAudit(
+	ctx context.Context,
+	tx pgx.Tx,
+	actor Actor,
+	evidence AuditEvidence,
+	eventType string,
+	organizationID uuid.UUID,
+	objectType string,
+	objectID uuid.UUID,
+	occurredAt time.Time,
+	metadata map[string]string,
+) error {
+	recorder, err := audit.NewRecorder(tx)
+	if err != nil {
+		return ErrServiceUnavailable
+	}
+	bounded := make(map[string]string, len(metadata)+1)
+	for key, value := range metadata {
+		bounded[key] = value
+	}
+	bounded["organization_id"] = organizationID.String()
+	actorUserID := actor.UserID
+	deviceID := actor.DeviceID
+	if err := recorder.Record(ctx, audit.Event{
+		ID: evidence.EventID, EventType: eventType, ActorUserID: &actorUserID, DeviceID: &deviceID,
+		OrganizationID: &organizationID, ObjectType: objectType, ObjectID: &objectID,
+		Outcome: audit.OutcomeSuccess, RequestID: evidence.RequestID, Metadata: bounded, OccurredAt: occurredAt,
+	}); err != nil {
+		return ErrServiceUnavailable
+	}
+	return nil
+}
+
+func validMutationEvidence(evidence mutationEvidence) bool {
+	return evidence.Audit.EventID != uuid.Nil && validOrganizationRequestID(evidence.Audit.RequestID) &&
+		!evidence.ChangedAt.IsZero()
+}
+
+func validPatchMemberTransaction(command patchMemberTransaction) bool {
+	if command.Role == nil && !command.ChangeDepartment {
+		return false
+	}
+	if command.Role != nil {
+		switch *command.Role {
+		case RoleAdmin, RoleAuditor, RoleMember:
+		default:
+			return false
+		}
+	}
+	if !command.ChangeDepartment {
+		return command.DepartmentID == nil && !command.ClearDepartment
+	}
+	return (command.DepartmentID != nil) != command.ClearDepartment &&
+		(command.DepartmentID == nil || *command.DepartmentID != uuid.Nil)
+}
+
+func equalUUIDPointers(left, right *uuid.UUID) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func cloneUUIDPointer(value *uuid.UUID) *uuid.UUID {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
+func postgresUniqueViolation(err error) bool {
+	var postgresError *pgconn.PgError
+	return errors.As(err, &postgresError) && postgresError.Code == "23505"
 }
