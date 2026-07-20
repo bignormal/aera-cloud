@@ -1,0 +1,469 @@
+{
+  "contract_version": "experience-candidate-dlp-v1",
+  "canonical_cases": [
+    {
+      "name": "single markdown skill",
+      "bundle": {
+        "schema_version": 1,
+        "skill_name": "weekly-summary",
+        "assets": [
+          {
+            "path": "skills/weekly-summary/SKILL.md",
+            "media_type": "text/markdown",
+            "content": "---\nname: weekly-summary\n---\n# Weekly summary\n"
+          }
+        ]
+      },
+      "canonical_json": "{\"schema_version\":1,\"skill_name\":\"weekly-summary\",\"assets\":[{\"path\":\"skills/weekly-summary/SKILL.md\",\"media_type\":\"text/markdown\",\"content\":\"---\\nname: weekly-summary\\n---\\n# Weekly summary\\n\"}]}",
+      "content_digest": "6fa5c97e58ee22e623505c2c80c7d1b0dd998c81a87bdadc317275e8165f91a2"
+    }
+  ],
+  "canonical_rejections": [
+    {
+      "name": "path escape",
+      "bundle": {
+        "schema_version": 1,
+        "skill_name": "weekly-summary",
+        "assets": [
+          {
+            "path": "skills/weekly-summary/SKILL.md",
+            "media_type": "text/markdown",
+            "content": "# Weekly summary\n"
+          },
+          {
+            "path": "skills/weekly-summary/../escape.txt",
+            "media_type": "text/plain",
+            "content": "escape\n"
+          }
+        ]
+      }
+    },
+    {
+      "name": "duplicate normalized paths",
+      "bundle": {
+        "schema_version": 1,
+        "skill_name": "weekly-summary",
+        "assets": [
+          {
+            "path": "skills/weekly-summary/SKILL.md",
+            "media_type": "text/markdown",
+            "content": "# Weekly summary\n"
+          },
+          {
+            "path": "skills/weekly-summary/café.txt",
+            "media_type": "text/plain",
+            "content": "one\n"
+          },
+          {
+            "path": "skills/weekly-summary/café.txt",
+            "media_type": "text/plain",
+            "content": "two\n"
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing SKILL.md",
+      "bundle": {
+        "schema_version": 1,
+        "skill_name": "weekly-summary",
+        "assets": [
+          {
+            "path": "skills/weekly-summary/notes.txt",
+            "media_type": "text/plain",
+            "content": "notes\n"
+          }
+        ]
+      }
+    },
+    {
+      "name": "NUL content",
+      "bundle": {
+        "schema_version": 1,
+        "skill_name": "weekly-summary",
+        "assets": [
+          {
+            "path": "skills/weekly-summary/SKILL.md",
+            "media_type": "text/markdown",
+            "content": "before\u0000after"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid UTF-8 content",
+      "bundle": {
+        "schema_version": 1,
+        "skill_name": "weekly-summary",
+        "assets": [
+          {
+            "path": "skills/weekly-summary/SKILL.md",
+            "media_type": "text/markdown",
+            "content": ""
+          }
+        ]
+      },
+      "first_asset_content_base64": "/w=="
+    },
+    {
+      "name": "absolute private path",
+      "bundle": {
+        "schema_version": 1,
+        "skill_name": "weekly-summary",
+        "assets": [
+          {
+            "path": "/Users/alice/.hermes/profiles/work/SKILL.md",
+            "media_type": "text/markdown",
+            "content": "# Weekly summary\n"
+          }
+        ]
+      }
+    },
+    {
+      "name": "hidden environment file",
+      "bundle": {
+        "schema_version": 1,
+        "skill_name": "weekly-summary",
+        "assets": [
+          {
+            "path": "skills/weekly-summary/SKILL.md",
+            "media_type": "text/markdown",
+            "content": "# Weekly summary\n"
+          },
+          {
+            "path": "skills/weekly-summary/.env",
+            "media_type": "text/plain",
+            "content": "SAFE=value\n"
+          }
+        ]
+      }
+    },
+    {
+      "name": "dependency tree",
+      "bundle": {
+        "schema_version": 1,
+        "skill_name": "weekly-summary",
+        "assets": [
+          {
+            "path": "skills/weekly-summary/SKILL.md",
+            "media_type": "text/markdown",
+            "content": "# Weekly summary\n"
+          },
+          {
+            "path": "skills/weekly-summary/node_modules/package/index.txt",
+            "media_type": "text/plain",
+            "content": "dependency\n"
+          }
+        ]
+      }
+    },
+    {
+      "name": "mismatched skill prefix",
+      "bundle": {
+        "schema_version": 1,
+        "skill_name": "weekly-summary",
+        "assets": [
+          {
+            "path": "skills/other-skill/SKILL.md",
+            "media_type": "text/markdown",
+            "content": "# Other\n"
+          }
+        ]
+      }
+    },
+    {
+      "name": "markdown media mismatch",
+      "bundle": {
+        "schema_version": 1,
+        "skill_name": "weekly-summary",
+        "assets": [
+          {
+            "path": "skills/weekly-summary/SKILL.md",
+            "media_type": "text/plain",
+            "content": "# Weekly summary\n"
+          }
+        ]
+      }
+    }
+  ],
+  "dlp_cases": [
+    {
+      "name": "private key block",
+      "bundle": {
+        "schema_version": 1,
+        "skill_name": "weekly-summary",
+        "assets": [
+          {
+            "path": "skills/weekly-summary/SKILL.md",
+            "media_type": "text/markdown",
+            "content": "# Weekly summary\n-----BEGIN PRIVATE KEY-----\nredacted-fixture-value\n-----END PRIVATE KEY-----\n"
+          }
+        ]
+      },
+      "findings": [
+        {
+          "code": "credential_private_key",
+          "path": "skills/weekly-summary/SKILL.md",
+          "line": 2
+        }
+      ]
+    },
+    {
+      "name": "bearer credential",
+      "bundle": {
+        "schema_version": 1,
+        "skill_name": "weekly-summary",
+        "assets": [
+          {
+            "path": "skills/weekly-summary/SKILL.md",
+            "media_type": "text/markdown",
+            "content": "Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345\n"
+          }
+        ]
+      },
+      "findings": [
+        {
+          "code": "credential_bearer_token",
+          "path": "skills/weekly-summary/SKILL.md",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "name": "JWT credential",
+      "bundle": {
+        "schema_version": 1,
+        "skill_name": "weekly-summary",
+        "assets": [
+          {
+            "path": "skills/weekly-summary/SKILL.md",
+            "media_type": "text/markdown",
+            "content": "token=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk\n"
+          }
+        ]
+      },
+      "findings": [
+        {
+          "code": "credential_jwt",
+          "path": "skills/weekly-summary/SKILL.md",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "name": "URL credential",
+      "bundle": {
+        "schema_version": 1,
+        "skill_name": "weekly-summary",
+        "assets": [
+          {
+            "path": "skills/weekly-summary/SKILL.md",
+            "media_type": "text/markdown",
+            "content": "endpoint=https://alice:correct-horse-battery@example.com/api\n"
+          }
+        ]
+      },
+      "findings": [
+        {
+          "code": "credential_url",
+          "path": "skills/weekly-summary/SKILL.md",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "name": "secret environment assignment",
+      "bundle": {
+        "schema_version": 1,
+        "skill_name": "weekly-summary",
+        "assets": [
+          {
+            "path": "skills/weekly-summary/SKILL.md",
+            "media_type": "text/markdown",
+            "content": "OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz012345\n"
+          }
+        ]
+      },
+      "findings": [
+        {
+          "code": "credential_api_key",
+          "path": "skills/weekly-summary/SKILL.md",
+          "line": 1
+        },
+        {
+          "code": "credential_environment_secret",
+          "path": "skills/weekly-summary/SKILL.md",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "name": "macOS Profile path",
+      "bundle": {
+        "schema_version": 1,
+        "skill_name": "weekly-summary",
+        "assets": [
+          {
+            "path": "skills/weekly-summary/SKILL.md",
+            "media_type": "text/markdown",
+            "content": "Read /Users/alice/.hermes/profiles/work/MEMORY.md\n"
+          }
+        ]
+      },
+      "findings": [
+        {
+          "code": "private_absolute_path",
+          "path": "skills/weekly-summary/SKILL.md",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "name": "Windows Profile path",
+      "bundle": {
+        "schema_version": 1,
+        "skill_name": "weekly-summary",
+        "assets": [
+          {
+            "path": "skills/weekly-summary/SKILL.md",
+            "media_type": "text/markdown",
+            "content": "Read C:\\Users\\Alice\\.hermes\\profiles\\work\\USER.md\n"
+          }
+        ]
+      },
+      "findings": [
+        {
+          "code": "private_absolute_path",
+          "path": "skills/weekly-summary/SKILL.md",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "name": "Memory payload",
+      "bundle": {
+        "schema_version": 1,
+        "skill_name": "weekly-summary",
+        "assets": [
+          {
+            "path": "skills/weekly-summary/SKILL.md",
+            "media_type": "text/markdown",
+            "content": "# MEMORY\n- private preference\n"
+          }
+        ]
+      },
+      "findings": [
+        {
+          "code": "private_memory_payload",
+          "path": "skills/weekly-summary/SKILL.md",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "name": "USER payload",
+      "bundle": {
+        "schema_version": 1,
+        "skill_name": "weekly-summary",
+        "assets": [
+          {
+            "path": "skills/weekly-summary/SKILL.md",
+            "media_type": "text/markdown",
+            "content": "# USER\nname: Alice\n"
+          }
+        ]
+      },
+      "findings": [
+        {
+          "code": "private_user_payload",
+          "path": "skills/weekly-summary/SKILL.md",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "name": "raw session payload",
+      "bundle": {
+        "schema_version": 1,
+        "skill_name": "weekly-summary",
+        "assets": [
+          {
+            "path": "skills/weekly-summary/SKILL.md",
+            "media_type": "text/markdown",
+            "content": "{\"session_id\":\"session-1\",\"messages\":[]}\n"
+          }
+        ]
+      },
+      "findings": [
+        {
+          "code": "private_session_payload",
+          "path": "skills/weekly-summary/SKILL.md",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "name": "conversation export payload",
+      "bundle": {
+        "schema_version": 1,
+        "skill_name": "weekly-summary",
+        "assets": [
+          {
+            "path": "skills/weekly-summary/SKILL.md",
+            "media_type": "text/markdown",
+            "content": "{\"conversation_id\":\"conversation-1\",\"messages\":[]}\n"
+          }
+        ]
+      },
+      "findings": [
+        {
+          "code": "private_conversation_payload",
+          "path": "skills/weekly-summary/SKILL.md",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "name": "credential store payload",
+      "bundle": {
+        "schema_version": 1,
+        "skill_name": "weekly-summary",
+        "assets": [
+          {
+            "path": "skills/weekly-summary/SKILL.md",
+            "media_type": "text/markdown",
+            "content": "{\"credential_store\":{\"provider\":\"example\"}}\n"
+          }
+        ]
+      },
+      "findings": [
+        {
+          "code": "private_credential_store_payload",
+          "path": "skills/weekly-summary/SKILL.md",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "name": "Curator state payload",
+      "bundle": {
+        "schema_version": 1,
+        "skill_name": "weekly-summary",
+        "assets": [
+          {
+            "path": "skills/weekly-summary/SKILL.md",
+            "media_type": "text/markdown",
+            "content": "{\"curator_state\":{\"revision\":1}}\n"
+          }
+        ]
+      },
+      "findings": [
+        {
+          "code": "private_curator_payload",
+          "path": "skills/weekly-summary/SKILL.md",
+          "line": 1
+        }
+      ]
+    }
+  ]
+}
