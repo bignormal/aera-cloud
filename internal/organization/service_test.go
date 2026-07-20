@@ -1,14 +1,690 @@
 package organization
 
 import (
+	"bytes"
+	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+func TestServiceOrganizationInvitationIsSecretOnceFragmentOnlyAndActorBound(t *testing.T) {
+	fixture := newOrganizationRepositoryFixture(t)
+	actors, organization := fixture.organizationWithRoles(t, 100)
+	owner := actors[RoleOwner]
+	member := fixture.actor(t, 106, "Invited Member")
+	other := fixture.actor(t, 107, "Other Member")
+	service := fixture.organizationService(t, 50)
+	command := CreateInvitationCommand{
+		OrganizationID: organization.ID, IdempotencyKey: "invitation-create-key", RequestID: "invitation-create",
+	}
+	created, err := service.CreateInvitation(t.Context(), owner, command)
+	if err != nil {
+		t.Fatalf("CreateInvitation() error = %v", err)
+	}
+	if created.Token == "" || created.InviteURL != "agentera://organization-invitation#"+created.Token ||
+		strings.Contains(created.InviteURL, "?") || created.Invitation.ID == uuid.Nil ||
+		created.Invitation.Status != InvitationStatusPending {
+		t.Fatalf("CreateInvitation() = %+v", created)
+	}
+	wantDigest := sha256.Sum256([]byte(created.Token))
+	var storedDigest []byte
+	if err := fixture.postgres.QueryRow(fixture.ctx, `
+		SELECT token_digest FROM organization_invitations WHERE id = $1
+	`, created.Invitation.ID).Scan(&storedDigest); err != nil || !bytes.Equal(storedDigest, wantDigest[:]) {
+		t.Fatalf("stored invitation digest = %x, error = %v", storedDigest, err)
+	}
+	var leaked bool
+	if err := fixture.postgres.QueryRow(fixture.ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM organization_invitations WHERE row_to_json(organization_invitations)::text LIKE '%' || $1 || '%'
+			UNION ALL
+			SELECT 1 FROM organization_idempotency_records WHERE row_to_json(organization_idempotency_records)::text LIKE '%' || $1 || '%'
+			UNION ALL
+			SELECT 1 FROM audit_events WHERE metadata::text LIKE '%' || $1 || '%'
+		)
+	`, created.Token).Scan(&leaked); err != nil || leaked {
+		t.Fatalf("raw invitation persistence leak = %v, error = %v", leaked, err)
+	}
+
+	replayed, err := service.CreateInvitation(t.Context(), owner, command)
+	if err != nil || replayed.Invitation.ID != created.Invitation.ID || replayed.Token != "" || replayed.InviteURL != "" {
+		t.Fatalf("CreateInvitation(replay) = %+v, %v", replayed, err)
+	}
+	accepted, err := service.AcceptInvitation(t.Context(), member, AcceptInvitationCommand{
+		Token: created.Token, IdempotencyKey: "invitation-accept-member", RequestID: "invitation-accept",
+	})
+	if err != nil || accepted.Organization.ID != organization.ID || accepted.Member.UserID != member.UserID ||
+		accepted.Member.Role != RoleMember {
+		t.Fatalf("AcceptInvitation() = %+v, %v", accepted, err)
+	}
+	replayedAcceptance, err := service.AcceptInvitation(t.Context(), member, AcceptInvitationCommand{
+		Token: created.Token, IdempotencyKey: "invitation-accept-member", RequestID: "invitation-accept-replay",
+	})
+	if err != nil || replayedAcceptance.Member.UserID != member.UserID {
+		t.Fatalf("AcceptInvitation(actor replay) = %+v, %v", replayedAcceptance, err)
+	}
+	if _, err := service.AcceptInvitation(t.Context(), other, AcceptInvitationCommand{
+		Token: created.Token, IdempotencyKey: "invitation-accept-member", RequestID: "invitation-accept-other",
+	}); !errors.Is(err, ErrInvitationUnavailable) {
+		t.Fatalf("AcceptInvitation(other actor replay) error = %v", err)
+	}
+}
+
+func TestServiceOrganizationInvitationRevokeExpiryExistingMemberAndConcurrentWinner(t *testing.T) {
+	fixture := newOrganizationRepositoryFixture(t)
+	actors, organization := fixture.organizationWithRoles(t, 110)
+	owner := actors[RoleOwner]
+	first := fixture.actor(t, 116, "First Candidate")
+	second := fixture.actor(t, 117, "Second Candidate")
+	service := fixture.organizationService(t, 50)
+
+	revoked, err := service.CreateInvitation(t.Context(), owner, CreateInvitationCommand{
+		OrganizationID: organization.ID, IdempotencyKey: "invitation-revoke-create", RequestID: "invitation-revoke-create",
+	})
+	if err != nil {
+		t.Fatalf("CreateInvitation(revoked) error = %v", err)
+	}
+	if err := service.RevokeInvitation(t.Context(), owner, RevokeInvitationCommand{
+		OrganizationID: organization.ID, InvitationID: revoked.Invitation.ID, RequestID: "invitation-revoke",
+	}); err != nil {
+		t.Fatalf("RevokeInvitation() error = %v", err)
+	}
+	if _, err := service.AcceptInvitation(t.Context(), first, AcceptInvitationCommand{
+		Token: revoked.Token, IdempotencyKey: "accept-revoked", RequestID: "accept-revoked",
+	}); !errors.Is(err, ErrInvitationUnavailable) {
+		t.Fatalf("AcceptInvitation(revoked) error = %v", err)
+	}
+
+	expiredSecret, err := NewInvitationSecret(bytes.NewReader(bytes.Repeat([]byte{0xe1}, 32)))
+	if err != nil {
+		t.Fatalf("NewInvitationSecret(expired) error = %v", err)
+	}
+	createdAt := fixture.now.Add(-8 * 24 * time.Hour)
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		INSERT INTO organization_invitations (
+			id, organization_id, token_digest, created_by_user_id, status, created_at, expires_at
+		) VALUES ($1, $2, $3, $4, 'pending', $5, $6)
+	`, uuid.New(), organization.ID, expiredSecret.Digest[:], owner.UserID, createdAt, createdAt.Add(7*24*time.Hour)); err != nil {
+		t.Fatalf("seed expired invitation: %v", err)
+	}
+	if _, err := service.AcceptInvitation(t.Context(), first, AcceptInvitationCommand{
+		Token: expiredSecret.RawToken, IdempotencyKey: "accept-expired", RequestID: "accept-expired",
+	}); !errors.Is(err, ErrInvitationUnavailable) {
+		t.Fatalf("AcceptInvitation(expired) error = %v", err)
+	}
+
+	existing, err := service.CreateInvitation(t.Context(), owner, CreateInvitationCommand{
+		OrganizationID: organization.ID, IdempotencyKey: "invitation-existing-create", RequestID: "invitation-existing-create",
+	})
+	if err != nil {
+		t.Fatalf("CreateInvitation(existing) error = %v", err)
+	}
+	existingAcceptance, err := service.AcceptInvitation(t.Context(), owner, AcceptInvitationCommand{
+		Token: existing.Token, IdempotencyKey: "accept-existing", RequestID: "accept-existing",
+	})
+	if err != nil || existingAcceptance.Member.Role != RoleOwner {
+		t.Fatalf("AcceptInvitation(existing Owner) = %+v, %v", existingAcceptance, err)
+	}
+
+	concurrent, err := service.CreateInvitation(t.Context(), owner, CreateInvitationCommand{
+		OrganizationID: organization.ID, IdempotencyKey: "invitation-race-create", RequestID: "invitation-race-create",
+	})
+	if err != nil {
+		t.Fatalf("CreateInvitation(concurrent) error = %v", err)
+	}
+	candidates := []Actor{first, second}
+	start := make(chan struct{})
+	results := make(chan error, len(candidates))
+	for index, candidate := range candidates {
+		index, candidate := index, candidate
+		go func() {
+			<-start
+			_, acceptErr := service.AcceptInvitation(t.Context(), candidate, AcceptInvitationCommand{
+				Token: concurrent.Token, IdempotencyKey: fmt.Sprintf("accept-race-%d", index),
+				RequestID: fmt.Sprintf("accept-race-%d", index),
+			})
+			results <- acceptErr
+		}()
+	}
+	close(start)
+	successes := 0
+	unavailable := 0
+	for range candidates {
+		switch err := <-results; {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrInvitationUnavailable):
+			unavailable++
+		default:
+			t.Fatalf("concurrent AcceptInvitation error = %v", err)
+		}
+	}
+	if successes != 1 || unavailable != 1 {
+		t.Fatalf("concurrent invitation successes=%d unavailable=%d", successes, unavailable)
+	}
+}
+
+func TestServiceOrganizationArchiveRestoreRevokesInvitationsWithoutRevival(t *testing.T) {
+	fixture := newOrganizationRepositoryFixture(t)
+	actors, organization := fixture.organizationWithRoles(t, 120)
+	owner := actors[RoleOwner]
+	service := fixture.organizationService(t, 50)
+	invitation, err := service.CreateInvitation(t.Context(), owner, CreateInvitationCommand{
+		OrganizationID: organization.ID, IdempotencyKey: "archive-invitation-create", RequestID: "archive-invitation-create",
+	})
+	if err != nil {
+		t.Fatalf("CreateInvitation() error = %v", err)
+	}
+	archived, err := service.Archive(t.Context(), owner, ArchiveCommand{
+		OrganizationID: organization.ID, ExpectedRevision: organization.Revision,
+		IdempotencyKey: "organization-archive", RequestID: "organization-archive",
+	})
+	if err != nil || archived.Status != OrganizationStatusArchived || archived.Revision != 2 {
+		t.Fatalf("Archive() = %+v, %v", archived, err)
+	}
+	replayed, err := service.Archive(t.Context(), owner, ArchiveCommand{
+		OrganizationID: organization.ID, ExpectedRevision: organization.Revision,
+		IdempotencyKey: "organization-archive", RequestID: "organization-archive-replay",
+	})
+	if err != nil || replayed.ID != archived.ID || replayed.Revision != archived.Revision {
+		t.Fatalf("Archive(replay) = %+v, %v", replayed, err)
+	}
+	var invitationStatus string
+	if err := fixture.postgres.QueryRow(fixture.ctx, `
+		SELECT status FROM organization_invitations WHERE id = $1
+	`, invitation.Invitation.ID).Scan(&invitationStatus); err != nil || invitationStatus != "revoked" {
+		t.Fatalf("archived invitation status = %q, error = %v", invitationStatus, err)
+	}
+	restored, err := service.Restore(t.Context(), owner, RestoreCommand{
+		OrganizationID: organization.ID, ExpectedRevision: archived.Revision,
+		IdempotencyKey: "organization-restore", RequestID: "organization-restore",
+	})
+	if err != nil || restored.Status != OrganizationStatusActive || restored.Revision != 3 || restored.ArchivedAt != nil {
+		t.Fatalf("Restore() = %+v, %v", restored, err)
+	}
+	if err := fixture.postgres.QueryRow(fixture.ctx, `
+		SELECT status FROM organization_invitations WHERE id = $1
+	`, invitation.Invitation.ID).Scan(&invitationStatus); err != nil || invitationStatus != "revoked" {
+		t.Fatalf("restored invitation status = %q, error = %v", invitationStatus, err)
+	}
+}
+
+func TestServiceOrganizationDissolutionIsGuardedTerminalAndReplaySafe(t *testing.T) {
+	fixture := newOrganizationRepositoryFixture(t)
+	owner := fixture.actor(t, 130, "Dissolution Owner")
+	outsider := fixture.actor(t, 131, "Dissolution Outsider")
+	organization, err := fixture.repository.Create(fixture.ctx, fixture.createTransaction(owner, "Terminal Research", 130, 3))
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	fixture.repository.assetGuard = stubOrganizationAssetGuard{}
+	service := fixture.organizationService(t, 50)
+	archived, err := service.Archive(t.Context(), owner, ArchiveCommand{
+		OrganizationID: organization.ID, ExpectedRevision: 1,
+		IdempotencyKey: "dissolve-archive", RequestID: "dissolve-archive",
+	})
+	if err != nil {
+		t.Fatalf("Archive() error = %v", err)
+	}
+	command := DissolveCommand{
+		OrganizationID: organization.ID, DisplayName: organization.DisplayName,
+		ExpectedRevision: archived.Revision, Confirmation: DissolveOrganizationConfirmation,
+		IdempotencyKey: "organization-dissolve", RequestID: "organization-dissolve",
+	}
+	dissolved, err := service.Dissolve(t.Context(), owner, command)
+	if err != nil || dissolved.Status != OrganizationStatusDissolved || dissolved.MutationState != MutationStateDissolved ||
+		dissolved.Revision != 3 || strings.Contains(dissolved.DisplayName, organization.DisplayName) {
+		t.Fatalf("Dissolve() = %+v, %v", dissolved, err)
+	}
+	replayed, err := service.Dissolve(t.Context(), owner, command)
+	if err != nil || replayed.ID != dissolved.ID || replayed.Status != OrganizationStatusDissolved {
+		t.Fatalf("Dissolve(replay) = %+v, %v", replayed, err)
+	}
+	if _, err := service.Dissolve(t.Context(), outsider, command); !errors.Is(err, ErrOrganizationNotFound) {
+		t.Fatalf("Dissolve(outsider replay) error = %v", err)
+	}
+	for table, want := range map[string]int{
+		"organization_memberships":      0,
+		"organization_departments":      0,
+		"organization_invitations":      0,
+		"organization_policy_snapshots": 1,
+	} {
+		var count int
+		if err := fixture.postgres.QueryRow(fixture.ctx, `SELECT count(*) FROM `+table+` WHERE organization_id = $1`, organization.ID).Scan(&count); err != nil || count != want {
+			t.Fatalf("%s rows after dissolution = %d, error = %v", table, count, err)
+		}
+	}
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		UPDATE organizations SET status = 'active', dissolved_at = NULL, archived_at = NULL WHERE id = $1
+	`, organization.ID); err == nil {
+		t.Fatal("dissolved Organization returned to active")
+	}
+}
+
+func TestServiceOrganizationDissolutionPreconditionsFailClosed(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*testing.T, *organizationRepositoryFixture, *Service, Actor, OrganizationSummary)
+	}{
+		{
+			name: "asset blocker",
+			setup: func(_ *testing.T, fixture *organizationRepositoryFixture, _ *Service, _ Actor, _ OrganizationSummary) {
+				fixture.repository.assetGuard = stubOrganizationAssetGuard{blockers: []string{"organization_agent_definition"}}
+			},
+		},
+		{
+			name: "additional member",
+			setup: func(t *testing.T, fixture *organizationRepositoryFixture, _ *Service, _ Actor, organization OrganizationSummary) {
+				member := fixture.actor(t, 142, "Remaining Member")
+				fixture.addMembership(t, organization.ID, member.UserID, RoleMember)
+			},
+		},
+		{
+			name: "pending invitation",
+			setup: func(t *testing.T, fixture *organizationRepositoryFixture, _ *Service, owner Actor, organization OrganizationSummary) {
+				secret, err := NewInvitationSecret(bytes.NewReader(bytes.Repeat([]byte{0xd1}, 32)))
+				if err != nil {
+					t.Fatalf("NewInvitationSecret() error = %v", err)
+				}
+				createdAt := fixture.now.Add(2 * time.Hour)
+				if _, err := fixture.postgres.Exec(fixture.ctx, `
+					INSERT INTO organization_invitations (
+						id, organization_id, token_digest, created_by_user_id, status, created_at, expires_at
+					) VALUES ($1, $2, $3, $4, 'pending', $5, $6)
+				`, uuid.New(), organization.ID, secret.Digest[:], owner.UserID, createdAt, createdAt.Add(7*24*time.Hour)); err != nil {
+					t.Fatalf("seed pending invitation: %v", err)
+				}
+			},
+		},
+		{
+			name: "assigned Department",
+			setup: func(t *testing.T, fixture *organizationRepositoryFixture, service *Service, owner Actor, organization OrganizationSummary) {
+				if _, err := fixture.postgres.Exec(fixture.ctx, `UPDATE organizations SET status = 'active', archived_at = NULL WHERE id = $1`, organization.ID); err != nil {
+					t.Fatalf("temporarily activate fixture: %v", err)
+				}
+				department, err := service.CreateDepartment(t.Context(), owner, CreateDepartmentCommand{
+					OrganizationID: organization.ID, DisplayName: "Assigned", RequestID: "dissolve-department-create",
+				})
+				if err != nil {
+					t.Fatalf("CreateDepartment() error = %v", err)
+				}
+				if _, err := service.PatchMember(t.Context(), owner, PatchMemberCommand{
+					OrganizationID: organization.ID, UserID: owner.UserID,
+					ChangeDepartment: true, DepartmentID: &department.ID,
+					ExpectedRevision: 1, RequestID: "dissolve-department-assign",
+				}); !errors.Is(err, ErrOrganizationForbidden) {
+					t.Fatalf("Owner assignment expected current Owner protection, error = %v", err)
+				}
+				if _, err := fixture.postgres.Exec(fixture.ctx, `
+					UPDATE organization_memberships SET department_id = $2 WHERE organization_id = $1 AND user_id = $3
+				`, organization.ID, department.ID, owner.UserID); err != nil {
+					t.Fatalf("seed assigned Owner Department: %v", err)
+				}
+				if _, err := fixture.postgres.Exec(fixture.ctx, `
+					UPDATE organizations SET status = 'archived', archived_at = $2 WHERE id = $1
+				`, organization.ID, fixture.now.Add(3*time.Hour)); err != nil {
+					t.Fatalf("re-archive fixture: %v", err)
+				}
+			},
+		},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newOrganizationRepositoryFixture(t)
+			owner := fixture.actor(t, byte(140+index*4), "Blocked Owner")
+			organization, err := fixture.repository.Create(fixture.ctx, fixture.createTransaction(owner, "Blocked Dissolution", byte(140+index*4), 3))
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			fixture.repository.assetGuard = stubOrganizationAssetGuard{}
+			service := fixture.organizationService(t, 50)
+			archived, err := service.Archive(t.Context(), owner, ArchiveCommand{
+				OrganizationID: organization.ID, ExpectedRevision: 1,
+				IdempotencyKey: fmt.Sprintf("blocked-archive-%d", index), RequestID: fmt.Sprintf("blocked-archive-%d", index),
+			})
+			if err != nil {
+				t.Fatalf("Archive() error = %v", err)
+			}
+			test.setup(t, fixture, service, owner, organization)
+			_, err = service.Dissolve(t.Context(), owner, DissolveCommand{
+				OrganizationID: organization.ID, DisplayName: organization.DisplayName,
+				ExpectedRevision: archived.Revision, Confirmation: DissolveOrganizationConfirmation,
+				IdempotencyKey: fmt.Sprintf("blocked-dissolve-%d", index), RequestID: fmt.Sprintf("blocked-dissolve-%d", index),
+			})
+			if !errors.Is(err, ErrDissolutionBlocked) {
+				t.Fatalf("Dissolve(%s) error = %v", test.name, err)
+			}
+		})
+	}
+}
+
+func TestServiceOrganizationLifecycleRequiresOwnerExactConfirmationAndAvailableGuard(t *testing.T) {
+	fixture := newOrganizationRepositoryFixture(t)
+	actors, organization := fixture.organizationWithRoles(t, 150)
+	service := fixture.organizationService(t, 50)
+	if _, err := service.Archive(t.Context(), actors[RoleAdmin], ArchiveCommand{
+		OrganizationID: organization.ID, ExpectedRevision: organization.Revision,
+		IdempotencyKey: "archive-by-admin", RequestID: "archive-by-admin",
+	}); !errors.Is(err, ErrOrganizationForbidden) {
+		t.Fatalf("Archive(Admin) error = %v", err)
+	}
+	archived, err := service.Archive(t.Context(), actors[RoleOwner], ArchiveCommand{
+		OrganizationID: organization.ID, ExpectedRevision: organization.Revision,
+		IdempotencyKey: "archive-exact", RequestID: "archive-exact",
+	})
+	if err != nil {
+		t.Fatalf("Archive(Owner) error = %v", err)
+	}
+	if _, err := service.Restore(t.Context(), actors[RoleAdmin], RestoreCommand{
+		OrganizationID: organization.ID, ExpectedRevision: archived.Revision,
+		IdempotencyKey: "restore-by-admin", RequestID: "restore-by-admin",
+	}); !errors.Is(err, ErrOrganizationForbidden) {
+		t.Fatalf("Restore(Admin) error = %v", err)
+	}
+	base := DissolveCommand{
+		OrganizationID: organization.ID, DisplayName: organization.DisplayName,
+		ExpectedRevision: archived.Revision, Confirmation: DissolveOrganizationConfirmation,
+		IdempotencyKey: "dissolve-exact", RequestID: "dissolve-exact",
+	}
+	wrongConfirmation := base
+	wrongConfirmation.Confirmation = "DISSOLVE"
+	if _, err := service.Dissolve(t.Context(), actors[RoleOwner], wrongConfirmation); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("Dissolve(wrong confirmation) error = %v", err)
+	}
+	wrongName := base
+	wrongName.DisplayName = "Different Organization"
+	if _, err := service.Dissolve(t.Context(), actors[RoleOwner], wrongName); !errors.Is(err, ErrOrganizationConflict) {
+		t.Fatalf("Dissolve(wrong display name) error = %v", err)
+	}
+	nonExactName := base
+	nonExactName.DisplayName = "  " + organization.DisplayName + "  "
+	if _, err := service.Dissolve(t.Context(), actors[RoleOwner], nonExactName); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("Dissolve(non-exact display name) error = %v", err)
+	}
+	wrongRevision := base
+	wrongRevision.ExpectedRevision++
+	if _, err := service.Dissolve(t.Context(), actors[RoleOwner], wrongRevision); !errors.Is(err, ErrOrganizationConflict) {
+		t.Fatalf("Dissolve(wrong revision) error = %v", err)
+	}
+	if _, err := service.Dissolve(t.Context(), actors[RoleOwner], base); !errors.Is(err, ErrServiceUnavailable) {
+		t.Fatalf("Dissolve(missing asset guard) error = %v", err)
+	}
+	fixture.repository.assetGuard = stubOrganizationAssetGuard{err: errors.New("asset service unavailable")}
+	if _, err := service.Dissolve(t.Context(), actors[RoleOwner], base); !errors.Is(err, ErrServiceUnavailable) {
+		t.Fatalf("Dissolve(failing asset guard) error = %v", err)
+	}
+}
+
+func TestServiceOrganizationRestoreRechecksOwnedQuota(t *testing.T) {
+	fixture := newOrganizationRepositoryFixture(t)
+	owner := fixture.actor(t, 155, "Quota Owner")
+	organizations := make([]OrganizationSummary, 0, 4)
+	for index := 0; index < 4; index++ {
+		discriminator := byte(155 + index)
+		organization, err := fixture.repository.Create(fixture.ctx, fixture.createTransaction(
+			owner, fmt.Sprintf("Quota Organization %d", index+1), discriminator, 10,
+		))
+		if err != nil {
+			t.Fatalf("Create(%d) error = %v", index, err)
+		}
+		organizations = append(organizations, organization)
+	}
+	service := fixture.organizationService(t, 50)
+	archived, err := service.Archive(t.Context(), owner, ArchiveCommand{
+		OrganizationID: organizations[0].ID, ExpectedRevision: organizations[0].Revision,
+		IdempotencyKey: "quota-archive", RequestID: "quota-archive",
+	})
+	if err != nil {
+		t.Fatalf("Archive() error = %v", err)
+	}
+	if _, err := service.Restore(t.Context(), owner, RestoreCommand{
+		OrganizationID: archived.ID, ExpectedRevision: archived.Revision,
+		IdempotencyKey: "quota-restore", RequestID: "quota-restore",
+	}); !errors.Is(err, ErrOrganizationLimitReached) {
+		t.Fatalf("Restore(over quota) error = %v", err)
+	}
+}
+
+type stubOrganizationAssetGuard struct {
+	blockers []string
+	err      error
+}
+
+func (s stubOrganizationAssetGuard) DissolutionBlockers(_ context.Context, _ uuid.UUID) ([]string, error) {
+	return append([]string(nil), s.blockers...), s.err
+}
+
+func TestServiceOrganizationPolicyPublicationIsMonotonicAndRoleGated(t *testing.T) {
+	fixture := newOrganizationRepositoryFixture(t)
+	actors, organization := fixture.organizationWithRoles(t, 160)
+	service := fixture.organizationService(t, 50)
+	secondDocument := DefaultPolicyDocument()
+	secondDocument.Tools.Allowlist = []string{"browser.open", "files.read"}
+	second, err := service.PublishPolicy(t.Context(), actors[RoleOwner], PublishPolicyCommand{
+		OrganizationID: organization.ID, Document: secondDocument,
+		ExpectedOrganizationRevision: organization.Revision, ExpectedPolicyVersion: 2,
+		IdempotencyKey: "policy-publish-v2", RequestID: "policy-publish-v2",
+	})
+	if err != nil || second.PolicyVersion != 2 || second.Document.SchemaVersion != 1 || len(second.Signature) == 0 {
+		t.Fatalf("PublishPolicy(v2) = %+v, %v", second, err)
+	}
+	replayed, err := service.PublishPolicy(t.Context(), actors[RoleOwner], PublishPolicyCommand{
+		OrganizationID: organization.ID, Document: secondDocument,
+		ExpectedOrganizationRevision: organization.Revision, ExpectedPolicyVersion: 2,
+		IdempotencyKey: "policy-publish-v2", RequestID: "policy-publish-v2-replay",
+	})
+	if err != nil || replayed.ID != second.ID || replayed.PolicyVersion != 2 {
+		t.Fatalf("PublishPolicy(replay) = %+v, %v", replayed, err)
+	}
+	conflictingDocument := DefaultPolicyDocument()
+	conflictingDocument.Tools.Allowlist = []string{"different.tool"}
+	if _, err := service.PublishPolicy(t.Context(), actors[RoleOwner], PublishPolicyCommand{
+		OrganizationID: organization.ID, Document: conflictingDocument,
+		ExpectedOrganizationRevision: organization.Revision, ExpectedPolicyVersion: 2,
+		IdempotencyKey: "policy-publish-v2", RequestID: "policy-publish-v2-conflict",
+	}); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("PublishPolicy(conflicting replay) error = %v", err)
+	}
+	thirdDocument := DefaultPolicyDocument()
+	thirdDocument.OfficialAgents.Installation = OfficialAgentInstallationBlocked
+	third, err := service.PublishPolicy(t.Context(), actors[RoleAdmin], PublishPolicyCommand{
+		OrganizationID: organization.ID, Document: thirdDocument,
+		ExpectedOrganizationRevision: 2, ExpectedPolicyVersion: 3,
+		IdempotencyKey: "policy-publish-v3", RequestID: "policy-publish-v3",
+	})
+	if err != nil || third.PolicyVersion != 3 {
+		t.Fatalf("PublishPolicy(v3 Admin) = %+v, %v", third, err)
+	}
+	if _, err := service.PublishPolicy(t.Context(), actors[RoleOwner], PublishPolicyCommand{
+		OrganizationID: organization.ID, Document: DefaultPolicyDocument(),
+		ExpectedOrganizationRevision: 3, ExpectedPolicyVersion: 5,
+		IdempotencyKey: "policy-version-gap", RequestID: "policy-version-gap",
+	}); !errors.Is(err, ErrPolicyVersionConflict) {
+		t.Fatalf("PublishPolicy(version gap) error = %v", err)
+	}
+	for _, role := range []Role{RoleAuditor, RoleMember} {
+		_, err := service.PublishPolicy(t.Context(), actors[role], PublishPolicyCommand{
+			OrganizationID: organization.ID, Document: DefaultPolicyDocument(),
+			ExpectedOrganizationRevision: 3, ExpectedPolicyVersion: 4,
+			IdempotencyKey: "policy-forbidden-" + string(role), RequestID: "policy-forbidden-" + string(role),
+		})
+		if !errors.Is(err, ErrOrganizationForbidden) {
+			t.Fatalf("PublishPolicy(%s) error = %v", role, err)
+		}
+	}
+	firstPage, err := service.ListPolicySnapshots(t.Context(), actors[RoleAuditor], organization.ID, Page{Limit: 2})
+	if err != nil || len(firstPage.Items) != 2 || firstPage.Items[0].PolicyVersion != 3 || firstPage.Next == nil {
+		t.Fatalf("ListPolicySnapshots(first) = %+v, %v", firstPage, err)
+	}
+	secondPage, err := service.ListPolicySnapshots(t.Context(), actors[RoleAuditor], organization.ID, Page{Limit: 2, After: firstPage.Next})
+	if err != nil || len(secondPage.Items) != 1 || secondPage.Items[0].PolicyVersion != 1 || secondPage.Next != nil {
+		t.Fatalf("ListPolicySnapshots(second) = %+v, %v", secondPage, err)
+	}
+	detail, err := service.GetPolicySnapshot(t.Context(), actors[RoleAdmin], second.ID)
+	if err != nil || detail.ID != second.ID || detail.Document.SchemaVersion != 1 || len(detail.Signature) == 0 {
+		t.Fatalf("GetPolicySnapshot(Admin) = %+v, %v", detail, err)
+	}
+	if _, err := service.ListPolicySnapshots(t.Context(), actors[RoleMember], organization.ID, Page{Limit: 20}); !errors.Is(err, ErrOrganizationForbidden) {
+		t.Fatalf("ListPolicySnapshots(Member) error = %v", err)
+	}
+	if _, err := service.GetPolicySnapshot(t.Context(), actors[RoleMember], second.ID); !errors.Is(err, ErrOrganizationForbidden) {
+		t.Fatalf("GetPolicySnapshot(Member) error = %v", err)
+	}
+	if _, err := service.ListPolicySnapshots(t.Context(), actors["outsider"], organization.ID, Page{Limit: 20}); !errors.Is(err, ErrOrganizationNotFound) {
+		t.Fatalf("ListPolicySnapshots(outsider) error = %v", err)
+	}
+}
+
+func TestServiceOrganizationPolicyPublicationRaceHasOneWinner(t *testing.T) {
+	fixture := newOrganizationRepositoryFixture(t)
+	owner := fixture.actor(t, 170, "Policy Race Owner")
+	organization, err := fixture.repository.Create(fixture.ctx, fixture.createTransaction(owner, "Policy Race", 170, 3))
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	service := fixture.organizationService(t, 50)
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for index := 0; index < 2; index++ {
+		index := index
+		go func() {
+			<-start
+			document := DefaultPolicyDocument()
+			document.Tools.Allowlist = []string{fmt.Sprintf("tool.%d", index)}
+			_, publishErr := service.PublishPolicy(t.Context(), owner, PublishPolicyCommand{
+				OrganizationID: organization.ID, Document: document,
+				ExpectedOrganizationRevision: 1, ExpectedPolicyVersion: 2,
+				IdempotencyKey: fmt.Sprintf("policy-race-%d", index), RequestID: fmt.Sprintf("policy-race-%d", index),
+			})
+			results <- publishErr
+		}()
+	}
+	close(start)
+	successes := 0
+	conflicts := 0
+	for range 2 {
+		switch err := <-results; {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrPolicyVersionConflict), errors.Is(err, ErrOrganizationConflict):
+			conflicts++
+		default:
+			t.Fatalf("concurrent PublishPolicy error = %v", err)
+		}
+	}
+	if successes != 1 || conflicts != 1 {
+		t.Fatalf("policy race successes=%d conflicts=%d", successes, conflicts)
+	}
+}
+
+func TestServiceOrganizationPolicyPublicationRollsBackOnSignerOrAuditFailure(t *testing.T) {
+	for index, test := range []struct {
+		name      string
+		configure func(*testing.T, *organizationRepositoryFixture) func() (uuid.UUID, error)
+	}{
+		{
+			name: "signer failure",
+			configure: func(_ *testing.T, fixture *organizationRepositoryFixture) func() (uuid.UUID, error) {
+				fixture.repository.signer = failingPolicySigner{}
+				return uuid.NewRandom
+			},
+		},
+		{
+			name: "audit failure",
+			configure: func(t *testing.T, fixture *organizationRepositoryFixture) func() (uuid.UUID, error) {
+				snapshotID := uuid.New()
+				auditID := uuid.New()
+				if _, err := fixture.postgres.Exec(fixture.ctx, `
+					INSERT INTO audit_events (id, event_type, outcome, metadata, created_at)
+					VALUES ($1, 'browser_login', 'success', '{}'::jsonb, $2)
+				`, auditID, fixture.now); err != nil {
+					t.Fatalf("seed duplicate audit: %v", err)
+				}
+				ids := []uuid.UUID{snapshotID, auditID}
+				return func() (uuid.UUID, error) {
+					value := ids[0]
+					ids = ids[1:]
+					return value, nil
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newOrganizationRepositoryFixture(t)
+			owner := fixture.actor(t, byte(190+index), "Rollback Policy Owner")
+			organization, err := fixture.repository.Create(fixture.ctx, fixture.createTransaction(
+				owner, "Rollback Policy", byte(190+index), 3,
+			))
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			newUUID := test.configure(t, fixture)
+			service, err := NewService(ServiceConfig{
+				Repository: fixture.repository, OwnedLimit: 3, DepartmentLimit: 50,
+				MemberLimit: 500, PendingInvitationLimit: 100,
+				Clock: func() time.Time { return fixture.now.Add(12 * time.Hour) }, NewUUID: newUUID,
+			})
+			if err != nil {
+				t.Fatalf("NewService() error = %v", err)
+			}
+			if _, err := service.PublishPolicy(t.Context(), owner, PublishPolicyCommand{
+				OrganizationID: organization.ID, Document: DefaultPolicyDocument(),
+				ExpectedOrganizationRevision: 1, ExpectedPolicyVersion: 2,
+				IdempotencyKey: "policy-rollback", RequestID: "policy-rollback",
+			}); !errors.Is(err, ErrServiceUnavailable) {
+				t.Fatalf("PublishPolicy() error = %v", err)
+			}
+			var policyCount int
+			var revision int64
+			if err := fixture.postgres.QueryRow(fixture.ctx, `
+				SELECT (SELECT count(*) FROM organization_policy_snapshots WHERE organization_id = $1), revision
+				FROM organizations WHERE id = $1
+			`, organization.ID).Scan(&policyCount, &revision); err != nil || policyCount != 1 || revision != 1 {
+				t.Fatalf("rollback policy_count=%d revision=%d error=%v", policyCount, revision, err)
+			}
+		})
+	}
+}
+
+func TestServiceOrganizationAuditIsPrivilegedAndKeysetPaged(t *testing.T) {
+	fixture := newOrganizationRepositoryFixture(t)
+	actors, organization := fixture.organizationWithRoles(t, 180)
+	service := fixture.organizationService(t, 50)
+	if _, err := service.Rename(t.Context(), actors[RoleOwner], RenameCommand{
+		OrganizationID: organization.ID, DisplayName: "Audited Organization",
+		ExpectedRevision: organization.Revision, RequestID: "audit-rename",
+	}); err != nil {
+		t.Fatalf("Rename() error = %v", err)
+	}
+	if _, err := service.CreateDepartment(t.Context(), actors[RoleAdmin], CreateDepartmentCommand{
+		OrganizationID: organization.ID, DisplayName: "Audited Department", RequestID: "audit-department",
+	}); err != nil {
+		t.Fatalf("CreateDepartment() error = %v", err)
+	}
+	for _, role := range []Role{RoleOwner, RoleAdmin, RoleAuditor} {
+		first, err := service.ListAudit(t.Context(), actors[role], organization.ID, Page{Limit: 2})
+		if err != nil || len(first.Items) != 2 || first.Next == nil || first.Items[0].ActorDisplay == nil {
+			t.Fatalf("ListAudit(%s first) = %+v, %v", role, first, err)
+		}
+		second, err := service.ListAudit(t.Context(), actors[role], organization.ID, Page{Limit: 2, After: first.Next})
+		if err != nil || len(second.Items) != 1 || second.Next != nil {
+			t.Fatalf("ListAudit(%s second) = %+v, %v", role, second, err)
+		}
+	}
+	if _, err := service.ListAudit(t.Context(), actors[RoleMember], organization.ID, Page{Limit: 20}); !errors.Is(err, ErrOrganizationForbidden) {
+		t.Fatalf("ListAudit(Member) error = %v", err)
+	}
+	if _, err := service.ListAudit(t.Context(), actors["outsider"], organization.ID, Page{Limit: 20}); !errors.Is(err, ErrOrganizationNotFound) {
+		t.Fatalf("ListAudit(outsider) error = %v", err)
+	}
+}
 
 func TestServiceOrganizationRoleMatrixRecomputesAuthorizationInTransaction(t *testing.T) {
 	type operation struct {
@@ -466,7 +1142,7 @@ func TestServiceConcurrentOwnerTransfersCommitExactlyOneOwner(t *testing.T) {
 func (f *organizationRepositoryFixture) organizationService(t *testing.T, departmentLimit int) *Service {
 	t.Helper()
 	service, err := NewService(ServiceConfig{
-		Repository: f.repository, DepartmentLimit: departmentLimit,
+		Repository: f.repository, OwnedLimit: 3, DepartmentLimit: departmentLimit, MemberLimit: 500, PendingInvitationLimit: 100,
 		Clock:   func() time.Time { return f.now.Add(12 * time.Hour) },
 		NewUUID: uuid.NewRandom,
 	})

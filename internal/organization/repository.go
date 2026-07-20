@@ -20,7 +20,15 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const operationOrganizationCreate = "organization_create"
+const (
+	operationOrganizationCreate           = "organization_create"
+	operationOrganizationInvitationCreate = "organization_invitation_create"
+	operationOrganizationInvitationAccept = "organization_invitation_accept"
+	operationOrganizationArchive          = "organization_archive"
+	operationOrganizationRestore          = "organization_restore"
+	operationOrganizationDissolve         = "organization_dissolve"
+	operationOrganizationPolicyPublish    = "organization_policy_publish"
+)
 
 type IdempotencyEvidence struct {
 	KeyDigest     [sha256.Size]byte
@@ -69,6 +77,16 @@ type DepartmentPage struct {
 	Next  *PageCursor
 }
 
+type PolicyPage struct {
+	Items []PolicySummary
+	Next  *PageCursor
+}
+
+type AuditPage struct {
+	Items []AuditSummary
+	Next  *PageCursor
+}
+
 type Repository interface {
 	Create(context.Context, CreateTransaction) (OrganizationSummary, error)
 	ListForActor(context.Context, uuid.UUID, Page) (OrganizationPage, error)
@@ -76,19 +94,31 @@ type Repository interface {
 	ListMembers(context.Context, uuid.UUID, uuid.UUID, Page) (MemberPage, error)
 	ListDepartments(context.Context, uuid.UUID, uuid.UUID, Page) (DepartmentPage, error)
 	CurrentPolicy(context.Context, uuid.UUID, uuid.UUID, bool) (PolicySnapshot, error)
+	ListPolicySnapshots(context.Context, uuid.UUID, uuid.UUID, Page) (PolicyPage, error)
+	GetPolicySnapshot(context.Context, uuid.UUID, uuid.UUID) (PolicySnapshot, error)
+	ListAudit(context.Context, uuid.UUID, uuid.UUID, Page) (AuditPage, error)
 }
 
 type PolicySigner interface {
 	SignPolicy(PolicySignatureInput) (PolicyAttestation, error)
 }
 
-type PostgresRepository struct {
-	postgres *pgxpool.Pool
-	signer   PolicySigner
+type AssetGuard interface {
+	DissolutionBlockers(context.Context, uuid.UUID) ([]string, error)
 }
 
-func NewPostgresRepository(postgres *pgxpool.Pool, signer PolicySigner) *PostgresRepository {
-	return &PostgresRepository{postgres: postgres, signer: signer}
+type PostgresRepository struct {
+	postgres   *pgxpool.Pool
+	signer     PolicySigner
+	assetGuard AssetGuard
+}
+
+func NewPostgresRepository(postgres *pgxpool.Pool, signer PolicySigner, guards ...AssetGuard) *PostgresRepository {
+	repository := &PostgresRepository{postgres: postgres, signer: signer}
+	if len(guards) == 1 {
+		repository.assetGuard = guards[0]
+	}
+	return repository
 }
 
 func (r *PostgresRepository) Create(ctx context.Context, command CreateTransaction) (OrganizationSummary, error) {
@@ -452,6 +482,214 @@ func (r *PostgresRepository) CurrentPolicy(
 	snapshot.Document = canonical.Document
 	snapshot.Signature = append([]byte(nil), snapshot.Signature...)
 	return snapshot, nil
+}
+
+func (r *PostgresRepository) ListPolicySnapshots(
+	ctx context.Context,
+	actorUserID uuid.UUID,
+	organizationID uuid.UUID,
+	page Page,
+) (PolicyPage, error) {
+	if r == nil || r.postgres == nil || actorUserID == uuid.Nil || organizationID == uuid.Nil || !validPage(page, true) {
+		return PolicyPage{}, ErrInvalidRequest
+	}
+	role, err := requireOrganizationMembership(ctx, r.postgres, actorUserID, organizationID)
+	if err != nil {
+		return PolicyPage{}, err
+	}
+	if role != RoleOwner && role != RoleAdmin && role != RoleAuditor {
+		return PolicyPage{}, ErrOrganizationForbidden
+	}
+	afterVersion, afterID, err := decodePolicyPageCursor(page.After)
+	if err != nil {
+		return PolicyPage{}, ErrInvalidRequest
+	}
+	rows, err := r.postgres.Query(ctx, `
+		SELECT id, policy_version, schema_version, content_digest, issuer, signing_key_id, created_at
+		FROM organization_policy_snapshots
+		WHERE organization_id = $1
+		  AND ($2::bigint IS NULL OR (policy_version, id) < ($2, $3::uuid))
+		ORDER BY policy_version DESC, id DESC
+		LIMIT $4
+	`, organizationID, afterVersion, afterID, page.Limit+1)
+	if err != nil {
+		return PolicyPage{}, ErrServiceUnavailable
+	}
+	defer rows.Close()
+	items := make([]PolicySummary, 0, page.Limit+1)
+	for rows.Next() {
+		item, err := scanOrganizationPolicySummary(rows)
+		if err != nil {
+			return PolicyPage{}, err
+		}
+		items = append(items, item)
+	}
+	if rows.Err() != nil {
+		return PolicyPage{}, ErrServiceUnavailable
+	}
+	result := PolicyPage{Items: items}
+	if len(items) > page.Limit {
+		result.Items = items[:page.Limit]
+		last := result.Items[len(result.Items)-1]
+		result.Next = &PageCursor{SortKey: strconv.FormatInt(last.PolicyVersion, 10), ID: last.ID}
+	}
+	return result, nil
+}
+
+func (r *PostgresRepository) GetPolicySnapshot(
+	ctx context.Context,
+	actorUserID uuid.UUID,
+	snapshotID uuid.UUID,
+) (PolicySnapshot, error) {
+	if r == nil || r.postgres == nil {
+		return PolicySnapshot{}, ErrServiceUnavailable
+	}
+	if actorUserID == uuid.Nil || snapshotID == uuid.Nil {
+		return PolicySnapshot{}, ErrInvalidRequest
+	}
+	return loadOrganizationPolicySnapshotForActor(ctx, r.postgres, actorUserID, snapshotID)
+}
+
+func (r *PostgresRepository) ListAudit(
+	ctx context.Context,
+	actorUserID uuid.UUID,
+	organizationID uuid.UUID,
+	page Page,
+) (AuditPage, error) {
+	if r == nil || r.postgres == nil || actorUserID == uuid.Nil || organizationID == uuid.Nil || !validPage(page, true) {
+		return AuditPage{}, ErrInvalidRequest
+	}
+	role, err := requireOrganizationMembership(ctx, r.postgres, actorUserID, organizationID)
+	if err != nil {
+		return AuditPage{}, err
+	}
+	if role != RoleOwner && role != RoleAdmin && role != RoleAuditor {
+		return AuditPage{}, ErrOrganizationForbidden
+	}
+	afterTime, afterID, err := decodeTimePageCursor(page.After)
+	if err != nil {
+		return AuditPage{}, ErrInvalidRequest
+	}
+	rows, err := r.postgres.Query(ctx, `
+		SELECT event.id, event.event_type, COALESCE(event.object_type, ''), event.object_id,
+		       event.outcome, COALESCE(event.reason_code, ''), COALESCE(event.request_id, ''),
+		       actor.nickname, subject.nickname, event.created_at
+		FROM audit_events event
+		LEFT JOIN users actor ON actor.id = event.actor_user_id
+		LEFT JOIN users subject ON subject.id = event.subject_user_id
+		WHERE event.organization_id = $1
+		  AND ($2::timestamptz IS NULL OR (event.created_at, event.id) < ($2, $3::uuid))
+		ORDER BY event.created_at DESC, event.id DESC
+		LIMIT $4
+	`, organizationID, afterTime, afterID, page.Limit+1)
+	if err != nil {
+		return AuditPage{}, ErrServiceUnavailable
+	}
+	defer rows.Close()
+	items := make([]AuditSummary, 0, page.Limit+1)
+	for rows.Next() {
+		var item AuditSummary
+		var objectID pgtype.UUID
+		if err := rows.Scan(
+			&item.ID, &item.EventType, &item.ObjectType, &objectID, &item.Outcome, &item.ReasonCode,
+			&item.RequestID, &item.ActorDisplay, &item.SubjectDisplay, &item.CreatedAt,
+		); err != nil {
+			return AuditPage{}, ErrServiceUnavailable
+		}
+		if item.ID == uuid.Nil || strings.TrimSpace(item.EventType) == "" || strings.TrimSpace(item.Outcome) == "" {
+			return AuditPage{}, ErrServiceUnavailable
+		}
+		if objectID.Valid {
+			value := uuid.UUID(objectID.Bytes)
+			item.ObjectID = &value
+		}
+		item.CreatedAt = item.CreatedAt.UTC()
+		items = append(items, item)
+	}
+	if rows.Err() != nil {
+		return AuditPage{}, ErrServiceUnavailable
+	}
+	result := AuditPage{Items: items}
+	if len(items) > page.Limit {
+		result.Items = items[:page.Limit]
+		last := result.Items[len(result.Items)-1]
+		result.Next = &PageCursor{SortKey: last.CreatedAt.Format(time.RFC3339Nano), ID: last.ID}
+	}
+	return result, nil
+}
+
+func loadOrganizationPolicySnapshotForActor(
+	ctx context.Context,
+	queryer interface {
+		QueryRow(context.Context, string, ...any) pgx.Row
+	},
+	actorUserID uuid.UUID,
+	snapshotID uuid.UUID,
+) (PolicySnapshot, error) {
+	var snapshot PolicySnapshot
+	var role string
+	var document []byte
+	var digest []byte
+	if err := queryer.QueryRow(ctx, `
+		SELECT membership.role, policy.id, policy.policy_version, policy.schema_version,
+		       policy.content_digest, policy.issuer, policy.signing_key_id, policy.created_at,
+		       policy.policy_document::text, policy.signature
+		FROM organization_policy_snapshots policy
+		JOIN organizations organization ON organization.id = policy.organization_id
+		JOIN organization_memberships membership
+		  ON membership.organization_id = policy.organization_id AND membership.user_id = $1
+		WHERE policy.id = $2 AND organization.status IN ('active', 'archived')
+	`, actorUserID, snapshotID).Scan(
+		&role, &snapshot.ID, &snapshot.PolicyVersion, &snapshot.SchemaVersion,
+		&digest, &snapshot.Issuer, &snapshot.SigningKeyID, &snapshot.CreatedAt, &document, &snapshot.Signature,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return PolicySnapshot{}, ErrOrganizationNotFound
+		}
+		return PolicySnapshot{}, ErrServiceUnavailable
+	}
+	parsedRole, err := ParseRole(role)
+	if err != nil {
+		return PolicySnapshot{}, ErrServiceUnavailable
+	}
+	if parsedRole != RoleOwner && parsedRole != RoleAdmin && parsedRole != RoleAuditor {
+		return PolicySnapshot{}, ErrOrganizationForbidden
+	}
+	if !copyDigest(&snapshot.ContentDigest, digest) || snapshot.ID == uuid.Nil || snapshot.PolicyVersion <= 0 ||
+		snapshot.SchemaVersion != 1 || strings.TrimSpace(snapshot.Issuer) == "" || strings.TrimSpace(snapshot.SigningKeyID) == "" ||
+		len(snapshot.Signature) != ed25519.SignatureSize {
+		return PolicySnapshot{}, ErrServiceUnavailable
+	}
+	decoded, err := DecodePolicyDocument(document)
+	if err != nil {
+		return PolicySnapshot{}, ErrServiceUnavailable
+	}
+	canonical, err := CanonicalizePolicy(decoded)
+	if err != nil || canonical.ContentDigest != snapshot.ContentDigest {
+		return PolicySnapshot{}, ErrServiceUnavailable
+	}
+	snapshot.Document = canonical.Document
+	snapshot.Signature = append([]byte(nil), snapshot.Signature...)
+	snapshot.CreatedAt = snapshot.CreatedAt.UTC()
+	return snapshot, nil
+}
+
+func scanOrganizationPolicySummary(row rowScanner) (PolicySummary, error) {
+	var result PolicySummary
+	var digest []byte
+	if err := row.Scan(
+		&result.ID, &result.PolicyVersion, &result.SchemaVersion, &digest,
+		&result.Issuer, &result.SigningKeyID, &result.CreatedAt,
+	); err != nil {
+		return PolicySummary{}, ErrServiceUnavailable
+	}
+	if result.ID == uuid.Nil || result.PolicyVersion <= 0 || result.SchemaVersion != 1 ||
+		strings.TrimSpace(result.Issuer) == "" || strings.TrimSpace(result.SigningKeyID) == "" ||
+		!copyDigest(&result.ContentDigest, digest) {
+		return PolicySummary{}, ErrServiceUnavailable
+	}
+	result.CreatedAt = result.CreatedAt.UTC()
+	return result, nil
 }
 
 const organizationListQuery = `
@@ -1631,4 +1869,999 @@ func cloneUUIDPointer(value *uuid.UUID) *uuid.UUID {
 func postgresUniqueViolation(err error) bool {
 	var postgresError *pgconn.PgError
 	return errors.As(err, &postgresError) && postgresError.Code == "23505"
+}
+
+func (r *PostgresRepository) publishPolicy(
+	ctx context.Context,
+	actor Actor,
+	command publishPolicyTransaction,
+) (PolicySnapshot, error) {
+	canonical, canonicalErr := CanonicalizePolicy(command.Canonical.Document)
+	if r == nil || r.postgres == nil || r.signer == nil || actor.Validate() != nil || canonicalErr != nil ||
+		command.OrganizationID == uuid.Nil || command.SnapshotID == uuid.Nil ||
+		command.ExpectedOrganizationRevision <= 0 || command.ExpectedPolicyVersion <= 1 ||
+		canonical.ContentDigest != command.Canonical.ContentDigest || !bytes.Equal(canonical.CanonicalJSON, command.Canonical.CanonicalJSON) ||
+		!validIdempotencyEvidence(command.Idempotency, command.ChangedAt) || !validMutationEvidence(command.mutationEvidence) {
+		return PolicySnapshot{}, ErrInvalidRequest
+	}
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return PolicySnapshot{}, ErrServiceUnavailable
+	}
+	defer rollbackOrganizationTransaction(tx)
+	if err := lockActiveOrganizationActor(ctx, tx, actor); err != nil {
+		return PolicySnapshot{}, err
+	}
+	if err := lockOrganizationIdempotency(ctx, tx, actor.UserID, command.Idempotency.KeyDigest); err != nil {
+		return PolicySnapshot{}, err
+	}
+	replayOrganizationID, replaySnapshotID, found, err := readOrganizationOperationIdempotency(
+		ctx, tx, actor.UserID, operationOrganizationPolicyPublish, command.Idempotency,
+	)
+	if err != nil {
+		return PolicySnapshot{}, err
+	}
+	if found {
+		if replayOrganizationID != command.OrganizationID {
+			return PolicySnapshot{}, ErrIdempotencyConflict
+		}
+		result, err := loadOrganizationPolicySnapshotForActor(ctx, tx, actor.UserID, replaySnapshotID)
+		if err != nil {
+			return PolicySnapshot{}, err
+		}
+		if err := commitOrganizationTransaction(ctx, tx); err != nil {
+			return PolicySnapshot{}, err
+		}
+		return result, nil
+	}
+	organization, err := loadLockedOrganization(ctx, tx, actor, command.OrganizationID)
+	if err != nil {
+		return PolicySnapshot{}, err
+	}
+	if err := requireActiveOrganizationMutation(organization, true); err != nil {
+		return PolicySnapshot{}, err
+	}
+	if organization.Revision != command.ExpectedOrganizationRevision {
+		return PolicySnapshot{}, ErrOrganizationConflict
+	}
+	var currentPolicyVersion int64
+	if err := tx.QueryRow(ctx, `
+		SELECT policy.policy_version
+		FROM organizations organization
+		JOIN organization_policy_snapshots policy
+		  ON policy.organization_id = organization.id AND policy.id = organization.current_policy_snapshot_id
+		WHERE organization.id = $1
+	`, command.OrganizationID).Scan(&currentPolicyVersion); err != nil {
+		return PolicySnapshot{}, ErrServiceUnavailable
+	}
+	if command.ExpectedPolicyVersion != currentPolicyVersion+1 {
+		return PolicySnapshot{}, ErrPolicyVersionConflict
+	}
+	changedAt := command.ChangedAt.UTC()
+	if changedAt.Before(organization.UpdatedAt) {
+		return PolicySnapshot{}, ErrInvalidRequest
+	}
+	attestation, err := r.signer.SignPolicy(PolicySignatureInput{
+		OrganizationID: command.OrganizationID, SnapshotID: command.SnapshotID,
+		PolicyVersion: command.ExpectedPolicyVersion, ContentDigest: canonical.ContentDigest,
+	})
+	if err != nil || !validPolicyAttestation(command.OrganizationID, command.SnapshotID,
+		command.ExpectedPolicyVersion, canonical.ContentDigest, attestation) {
+		return PolicySnapshot{}, ErrServiceUnavailable
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO organization_policy_snapshots (
+			id, organization_id, policy_version, schema_version, policy_document, content_digest,
+			issuer, signing_key_id, signature, issued_by_user_id, created_at
+		) VALUES ($1, $2, $3, 1, $4::jsonb, $5, $6, $7, $8, $9, $10)
+	`, command.SnapshotID, command.OrganizationID, command.ExpectedPolicyVersion,
+		string(canonical.CanonicalJSON), canonical.ContentDigest[:], attestation.Issuer, attestation.KeyID,
+		attestation.Signature, actor.UserID, changedAt); err != nil {
+		if postgresUniqueViolation(err) {
+			return PolicySnapshot{}, ErrPolicyVersionConflict
+		}
+		return PolicySnapshot{}, ErrServiceUnavailable
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE organizations
+		SET current_policy_snapshot_id = $2, revision = revision + 1, updated_at = $3
+		WHERE id = $1 AND status = 'active' AND revision = $4
+	`, command.OrganizationID, command.SnapshotID, changedAt, command.ExpectedOrganizationRevision)
+	if err != nil {
+		return PolicySnapshot{}, ErrServiceUnavailable
+	}
+	if tag.RowsAffected() != 1 {
+		return PolicySnapshot{}, ErrOrganizationConflict
+	}
+	if err := insertOrganizationIdempotency(ctx, tx, actor.UserID, command.OrganizationID,
+		operationOrganizationPolicyPublish, "organization_policy_snapshot", command.SnapshotID,
+		command.Idempotency, changedAt); err != nil {
+		return PolicySnapshot{}, err
+	}
+	if err := recordOrganizationAudit(ctx, tx, actor, command.Audit, "organization_policy_published",
+		command.OrganizationID, "organization_policy_snapshot", command.SnapshotID, changedAt, map[string]string{
+			"policy_snapshot_id": command.SnapshotID.String(),
+			"policy_version":     strconv.FormatInt(command.ExpectedPolicyVersion, 10),
+			"content_digest":     hex.EncodeToString(canonical.ContentDigest[:]),
+			"previous_revision":  strconv.FormatInt(command.ExpectedOrganizationRevision, 10),
+			"revision":           strconv.FormatInt(command.ExpectedOrganizationRevision+1, 10),
+		}); err != nil {
+		return PolicySnapshot{}, err
+	}
+	result, err := loadOrganizationPolicySnapshotForActor(ctx, tx, actor.UserID, command.SnapshotID)
+	if err != nil {
+		return PolicySnapshot{}, err
+	}
+	if err := commitOrganizationTransaction(ctx, tx); err != nil {
+		return PolicySnapshot{}, err
+	}
+	return result, nil
+}
+
+func validPolicyAttestation(
+	organizationID uuid.UUID,
+	snapshotID uuid.UUID,
+	policyVersion int64,
+	digest [sha256.Size]byte,
+	attestation PolicyAttestation,
+) bool {
+	return attestation.OrganizationID == organizationID && attestation.SnapshotID == snapshotID &&
+		attestation.PolicyVersion == policyVersion && attestation.ContentDigest == digest &&
+		strings.TrimSpace(attestation.Issuer) != "" && attestation.Issuer == strings.TrimSpace(attestation.Issuer) &&
+		len(attestation.Issuer) <= 512 && strings.TrimSpace(attestation.KeyID) != "" &&
+		attestation.KeyID == strings.TrimSpace(attestation.KeyID) && len(attestation.KeyID) <= 128 &&
+		len(attestation.Signature) == ed25519.SignatureSize
+}
+
+func (r *PostgresRepository) archive(
+	ctx context.Context,
+	actor Actor,
+	command organizationLifecycleTransaction,
+) (OrganizationSummary, error) {
+	if r == nil || r.postgres == nil || actor.Validate() != nil || command.OrganizationID == uuid.Nil ||
+		command.ExpectedRevision <= 0 || !validIdempotencyEvidence(command.Idempotency, command.ChangedAt) ||
+		!validMutationEvidence(command.mutationEvidence) {
+		return OrganizationSummary{}, ErrInvalidRequest
+	}
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return OrganizationSummary{}, ErrServiceUnavailable
+	}
+	defer rollbackOrganizationTransaction(tx)
+	if err := lockActiveOrganizationActor(ctx, tx, actor); err != nil {
+		return OrganizationSummary{}, err
+	}
+	if err := lockOrganizationIdempotency(ctx, tx, actor.UserID, command.Idempotency.KeyDigest); err != nil {
+		return OrganizationSummary{}, err
+	}
+	replayOrganizationID, _, found, err := readOrganizationOperationIdempotency(
+		ctx, tx, actor.UserID, operationOrganizationArchive, command.Idempotency,
+	)
+	if err != nil {
+		return OrganizationSummary{}, err
+	}
+	if found {
+		return commitOrganizationSummaryReplay(ctx, tx, actor.UserID, replayOrganizationID)
+	}
+	organization, err := loadLockedOrganization(ctx, tx, actor, command.OrganizationID)
+	if err != nil {
+		return OrganizationSummary{}, err
+	}
+	if organization.ActorRole != RoleOwner {
+		return OrganizationSummary{}, ErrOrganizationForbidden
+	}
+	if organization.Status != OrganizationStatusActive {
+		return OrganizationSummary{}, ErrOrganizationArchived
+	}
+	if organization.Revision != command.ExpectedRevision {
+		return OrganizationSummary{}, ErrOrganizationConflict
+	}
+	changedAt := command.ChangedAt.UTC()
+	if changedAt.Before(organization.UpdatedAt) {
+		return OrganizationSummary{}, ErrInvalidRequest
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE organizations
+		SET status = 'archived', revision = revision + 1, updated_at = $2, archived_at = $2
+		WHERE id = $1 AND status = 'active' AND revision = $3
+	`, command.OrganizationID, changedAt, command.ExpectedRevision)
+	if err != nil {
+		return OrganizationSummary{}, ErrServiceUnavailable
+	}
+	if tag.RowsAffected() != 1 {
+		return OrganizationSummary{}, ErrOrganizationConflict
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE organization_invitations
+		SET status = 'revoked', revoked_at = $2
+		WHERE organization_id = $1 AND status = 'pending'
+	`, command.OrganizationID, changedAt); err != nil {
+		return OrganizationSummary{}, ErrServiceUnavailable
+	}
+	if err := insertOrganizationIdempotency(ctx, tx, actor.UserID, command.OrganizationID,
+		operationOrganizationArchive, "organization", command.OrganizationID,
+		command.Idempotency, changedAt); err != nil {
+		return OrganizationSummary{}, err
+	}
+	if err := recordOrganizationAudit(ctx, tx, actor, command.Audit, "organization_archived",
+		command.OrganizationID, "organization", command.OrganizationID, changedAt, map[string]string{
+			"previous_status": string(OrganizationStatusActive), "status": string(OrganizationStatusArchived),
+			"previous_revision": strconv.FormatInt(command.ExpectedRevision, 10),
+			"revision":          strconv.FormatInt(command.ExpectedRevision+1, 10),
+		}); err != nil {
+		return OrganizationSummary{}, err
+	}
+	return commitOrganizationSummaryReplay(ctx, tx, actor.UserID, command.OrganizationID)
+}
+
+func (r *PostgresRepository) restore(
+	ctx context.Context,
+	actor Actor,
+	command organizationLifecycleTransaction,
+) (OrganizationSummary, error) {
+	if r == nil || r.postgres == nil || actor.Validate() != nil || command.OrganizationID == uuid.Nil ||
+		command.ExpectedRevision <= 0 || command.OwnedLimit <= 0 ||
+		!validIdempotencyEvidence(command.Idempotency, command.ChangedAt) || !validMutationEvidence(command.mutationEvidence) {
+		return OrganizationSummary{}, ErrInvalidRequest
+	}
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return OrganizationSummary{}, ErrServiceUnavailable
+	}
+	defer rollbackOrganizationTransaction(tx)
+	if err := lockActiveOrganizationActor(ctx, tx, actor); err != nil {
+		return OrganizationSummary{}, err
+	}
+	if err := lockOrganizationIdempotency(ctx, tx, actor.UserID, command.Idempotency.KeyDigest); err != nil {
+		return OrganizationSummary{}, err
+	}
+	replayOrganizationID, _, found, err := readOrganizationOperationIdempotency(
+		ctx, tx, actor.UserID, operationOrganizationRestore, command.Idempotency,
+	)
+	if err != nil {
+		return OrganizationSummary{}, err
+	}
+	if found {
+		return commitOrganizationSummaryReplay(ctx, tx, actor.UserID, replayOrganizationID)
+	}
+	organization, err := loadLockedOrganization(ctx, tx, actor, command.OrganizationID)
+	if err != nil {
+		return OrganizationSummary{}, err
+	}
+	if organization.ActorRole != RoleOwner {
+		return OrganizationSummary{}, ErrOrganizationForbidden
+	}
+	if organization.Status != OrganizationStatusArchived || organization.Revision != command.ExpectedRevision {
+		return OrganizationSummary{}, ErrOrganizationConflict
+	}
+	if err := lockOrganizationCreationQuota(ctx, tx, actor.UserID); err != nil {
+		return OrganizationSummary{}, err
+	}
+	var owned int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*)
+		FROM organization_memberships membership
+		JOIN organizations organization ON organization.id = membership.organization_id
+		WHERE membership.user_id = $1 AND membership.role = 'owner'
+		  AND organization.status IN ('active', 'archived')
+	`, actor.UserID).Scan(&owned); err != nil {
+		return OrganizationSummary{}, ErrServiceUnavailable
+	}
+	if owned > command.OwnedLimit {
+		return OrganizationSummary{}, ErrOrganizationLimitReached
+	}
+	changedAt := command.ChangedAt.UTC()
+	if changedAt.Before(organization.UpdatedAt) {
+		return OrganizationSummary{}, ErrInvalidRequest
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE organizations
+		SET status = 'active', revision = revision + 1, updated_at = $2, archived_at = NULL
+		WHERE id = $1 AND status = 'archived' AND revision = $3
+	`, command.OrganizationID, changedAt, command.ExpectedRevision)
+	if err != nil {
+		return OrganizationSummary{}, ErrServiceUnavailable
+	}
+	if tag.RowsAffected() != 1 {
+		return OrganizationSummary{}, ErrOrganizationConflict
+	}
+	if err := insertOrganizationIdempotency(ctx, tx, actor.UserID, command.OrganizationID,
+		operationOrganizationRestore, "organization", command.OrganizationID,
+		command.Idempotency, changedAt); err != nil {
+		return OrganizationSummary{}, err
+	}
+	if err := recordOrganizationAudit(ctx, tx, actor, command.Audit, "organization_restored",
+		command.OrganizationID, "organization", command.OrganizationID, changedAt, map[string]string{
+			"previous_status": string(OrganizationStatusArchived), "status": string(OrganizationStatusActive),
+			"previous_revision": strconv.FormatInt(command.ExpectedRevision, 10),
+			"revision":          strconv.FormatInt(command.ExpectedRevision+1, 10),
+		}); err != nil {
+		return OrganizationSummary{}, err
+	}
+	return commitOrganizationSummaryReplay(ctx, tx, actor.UserID, command.OrganizationID)
+}
+
+func (r *PostgresRepository) dissolve(
+	ctx context.Context,
+	actor Actor,
+	command dissolveOrganizationTransaction,
+) (OrganizationSummary, error) {
+	displayName, nameErr := NormalizeOrganizationName(command.DisplayName)
+	if r == nil || r.postgres == nil || actor.Validate() != nil || nameErr != nil || displayName != command.DisplayName || command.OrganizationID == uuid.Nil ||
+		command.ExpectedRevision <= 0 || !validIdempotencyEvidence(command.Idempotency, command.ChangedAt) ||
+		!validMutationEvidence(command.mutationEvidence) {
+		return OrganizationSummary{}, ErrInvalidRequest
+	}
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return OrganizationSummary{}, ErrServiceUnavailable
+	}
+	defer rollbackOrganizationTransaction(tx)
+	if err := lockActiveOrganizationActor(ctx, tx, actor); err != nil {
+		return OrganizationSummary{}, err
+	}
+	if err := lockOrganizationIdempotency(ctx, tx, actor.UserID, command.Idempotency.KeyDigest); err != nil {
+		return OrganizationSummary{}, err
+	}
+	replayOrganizationID, _, found, err := readOrganizationOperationIdempotency(
+		ctx, tx, actor.UserID, operationOrganizationDissolve, command.Idempotency,
+	)
+	if err != nil {
+		return OrganizationSummary{}, err
+	}
+	if found {
+		result, err := loadDissolvedOrganizationSummary(ctx, tx, replayOrganizationID)
+		if err != nil {
+			return OrganizationSummary{}, err
+		}
+		if err := commitOrganizationTransaction(ctx, tx); err != nil {
+			return OrganizationSummary{}, err
+		}
+		return result, nil
+	}
+	organization, err := loadLockedOrganization(ctx, tx, actor, command.OrganizationID)
+	if err != nil {
+		return OrganizationSummary{}, err
+	}
+	if organization.ActorRole != RoleOwner {
+		return OrganizationSummary{}, ErrOrganizationForbidden
+	}
+	if organization.Status != OrganizationStatusArchived || organization.Revision != command.ExpectedRevision {
+		return OrganizationSummary{}, ErrOrganizationConflict
+	}
+	var storedDisplayName string
+	if err := tx.QueryRow(ctx, `SELECT display_name FROM organizations WHERE id = $1`, command.OrganizationID).Scan(&storedDisplayName); err != nil {
+		return OrganizationSummary{}, ErrServiceUnavailable
+	}
+	if displayName != storedDisplayName {
+		return OrganizationSummary{}, ErrOrganizationConflict
+	}
+	changedAt := command.ChangedAt.UTC()
+	if changedAt.Before(organization.UpdatedAt) {
+		return OrganizationSummary{}, ErrInvalidRequest
+	}
+	if r.assetGuard == nil {
+		return OrganizationSummary{}, ErrServiceUnavailable
+	}
+	blockers, err := r.assetGuard.DissolutionBlockers(ctx, command.OrganizationID)
+	if err != nil {
+		return OrganizationSummary{}, ErrServiceUnavailable
+	}
+	if len(blockers) > 0 {
+		return OrganizationSummary{}, ErrDissolutionBlocked
+	}
+	var memberCount int
+	var pendingInvitationCount int
+	var assignedDepartmentCount int
+	if err := tx.QueryRow(ctx, `
+		SELECT
+			(SELECT count(*) FROM organization_memberships WHERE organization_id = $1),
+			(SELECT count(*) FROM organization_invitations WHERE organization_id = $1 AND status = 'pending'),
+			(SELECT count(*) FROM organization_memberships WHERE organization_id = $1 AND department_id IS NOT NULL)
+	`, command.OrganizationID).Scan(&memberCount, &pendingInvitationCount, &assignedDepartmentCount); err != nil {
+		return OrganizationSummary{}, ErrServiceUnavailable
+	}
+	if memberCount != 1 || pendingInvitationCount != 0 || assignedDepartmentCount != 0 {
+		return OrganizationSummary{}, ErrDissolutionBlocked
+	}
+	if err := recordOrganizationAudit(ctx, tx, actor, command.Audit, "organization_dissolved",
+		command.OrganizationID, "organization", command.OrganizationID, changedAt, map[string]string{
+			"previous_status": string(OrganizationStatusArchived), "status": string(OrganizationStatusDissolved),
+			"previous_revision": strconv.FormatInt(command.ExpectedRevision, 10),
+			"revision":          strconv.FormatInt(command.ExpectedRevision+1, 10),
+		}); err != nil {
+		return OrganizationSummary{}, err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM organization_invitations WHERE organization_id = $1`, command.OrganizationID); err != nil {
+		return OrganizationSummary{}, ErrServiceUnavailable
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM organization_memberships WHERE organization_id = $1`, command.OrganizationID); err != nil {
+		return OrganizationSummary{}, ErrServiceUnavailable
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM organization_departments WHERE organization_id = $1`, command.OrganizationID); err != nil {
+		return OrganizationSummary{}, ErrServiceUnavailable
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM organization_idempotency_records WHERE organization_id = $1`, command.OrganizationID); err != nil {
+		return OrganizationSummary{}, ErrServiceUnavailable
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE organizations
+		SET display_name = 'Dissolved Organization', status = 'dissolved', revision = revision + 1,
+		    updated_at = $2, dissolved_at = $2
+		WHERE id = $1 AND status = 'archived' AND revision = $3
+	`, command.OrganizationID, changedAt, command.ExpectedRevision)
+	if err != nil {
+		return OrganizationSummary{}, ErrServiceUnavailable
+	}
+	if tag.RowsAffected() != 1 {
+		return OrganizationSummary{}, ErrOrganizationConflict
+	}
+	if err := insertOrganizationIdempotency(ctx, tx, actor.UserID, command.OrganizationID,
+		operationOrganizationDissolve, "organization", command.OrganizationID,
+		command.Idempotency, changedAt); err != nil {
+		return OrganizationSummary{}, err
+	}
+	result, err := loadDissolvedOrganizationSummary(ctx, tx, command.OrganizationID)
+	if err != nil {
+		return OrganizationSummary{}, err
+	}
+	if err := commitOrganizationTransaction(ctx, tx); err != nil {
+		return OrganizationSummary{}, err
+	}
+	return result, nil
+}
+
+func commitOrganizationSummaryReplay(
+	ctx context.Context,
+	tx pgx.Tx,
+	actorUserID uuid.UUID,
+	organizationID uuid.UUID,
+) (OrganizationSummary, error) {
+	result, err := loadOrganizationSummary(ctx, tx, actorUserID, organizationID)
+	if err != nil {
+		return OrganizationSummary{}, err
+	}
+	if err := commitOrganizationTransaction(ctx, tx); err != nil {
+		return OrganizationSummary{}, err
+	}
+	return result, nil
+}
+
+func loadDissolvedOrganizationSummary(
+	ctx context.Context,
+	queryer interface {
+		QueryRow(context.Context, string, ...any) pgx.Row
+	},
+	organizationID uuid.UUID,
+) (OrganizationSummary, error) {
+	var result OrganizationSummary
+	var status string
+	var digest []byte
+	if err := queryer.QueryRow(ctx, `
+		SELECT organization.id, organization.display_name, organization.status, organization.revision,
+		       policy.policy_version, policy.content_digest,
+		       organization.created_at, organization.updated_at, organization.archived_at
+		FROM organizations organization
+		JOIN organization_policy_snapshots policy
+		  ON policy.organization_id = organization.id AND policy.id = organization.current_policy_snapshot_id
+		WHERE organization.id = $1 AND organization.status = 'dissolved'
+	`, organizationID).Scan(
+		&result.ID, &result.DisplayName, &status, &result.Revision,
+		&result.CurrentPolicyVersion, &digest, &result.CreatedAt, &result.UpdatedAt, &result.ArchivedAt,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return OrganizationSummary{}, ErrOrganizationNotFound
+		}
+		return OrganizationSummary{}, ErrServiceUnavailable
+	}
+	parsedStatus, err := ParseOrganizationStatus(status)
+	if err != nil || parsedStatus != OrganizationStatusDissolved || result.ID == uuid.Nil || result.Revision <= 0 ||
+		result.CurrentPolicyVersion <= 0 || !copyDigest(&result.CurrentPolicyDigest, digest) {
+		return OrganizationSummary{}, ErrServiceUnavailable
+	}
+	result.Status = parsedStatus
+	result.Role = RoleOwner
+	result.MutationState = MutationStateDissolved
+	return result, nil
+}
+
+func (r *PostgresRepository) createInvitation(
+	ctx context.Context,
+	actor Actor,
+	command createInvitationTransaction,
+) (invitationCreation, error) {
+	secretDigest, secretErr := InvitationDigest(command.Secret.RawToken)
+	if r == nil || r.postgres == nil || actor.Validate() != nil || secretErr != nil ||
+		secretDigest != command.Secret.Digest || command.OrganizationID == uuid.Nil || command.InvitationID == uuid.Nil ||
+		command.PendingLimit <= 0 || !validIdempotencyEvidence(command.Idempotency, command.ChangedAt) ||
+		!validMutationEvidence(command.mutationEvidence) {
+		return invitationCreation{}, ErrInvalidRequest
+	}
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return invitationCreation{}, ErrServiceUnavailable
+	}
+	defer rollbackOrganizationTransaction(tx)
+	if err := lockActiveOrganizationActor(ctx, tx, actor); err != nil {
+		return invitationCreation{}, err
+	}
+	if err := lockOrganizationIdempotency(ctx, tx, actor.UserID, command.Idempotency.KeyDigest); err != nil {
+		return invitationCreation{}, err
+	}
+	replayOrganizationID, replayResourceID, found, err := readOrganizationOperationIdempotency(
+		ctx, tx, actor.UserID, operationOrganizationInvitationCreate, command.Idempotency,
+	)
+	if err != nil {
+		return invitationCreation{}, err
+	}
+	if found {
+		invitation, err := loadOrganizationInvitation(ctx, tx, replayOrganizationID, replayResourceID, command.ChangedAt, false)
+		if err != nil {
+			return invitationCreation{}, err
+		}
+		if err := commitOrganizationTransaction(ctx, tx); err != nil {
+			return invitationCreation{}, err
+		}
+		return invitationCreation{Invitation: invitation}, nil
+	}
+	organization, err := loadLockedOrganization(ctx, tx, actor, command.OrganizationID)
+	if err != nil {
+		return invitationCreation{}, err
+	}
+	if err := requireActiveOrganizationMutation(organization, true); err != nil {
+		return invitationCreation{}, err
+	}
+	createdAt := command.ChangedAt.UTC()
+	if _, err := tx.Exec(ctx, `
+		UPDATE organization_invitations
+		SET status = 'expired'
+		WHERE organization_id = $1 AND status = 'pending' AND expires_at <= $2
+	`, command.OrganizationID, createdAt); err != nil {
+		return invitationCreation{}, ErrServiceUnavailable
+	}
+	var pending int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM organization_invitations
+		WHERE organization_id = $1 AND status = 'pending'
+	`, command.OrganizationID).Scan(&pending); err != nil {
+		return invitationCreation{}, ErrServiceUnavailable
+	}
+	if pending >= command.PendingLimit {
+		return invitationCreation{}, ErrInvitationLimitReached
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO organization_invitations (
+			id, organization_id, token_digest, created_by_user_id, status, created_at, expires_at
+		) VALUES ($1, $2, $3, $4, 'pending', $5, $6)
+	`, command.InvitationID, command.OrganizationID, command.Secret.Digest[:], actor.UserID,
+		createdAt, createdAt.Add(organizationInvitationLifetime)); err != nil {
+		return invitationCreation{}, ErrServiceUnavailable
+	}
+	if err := insertOrganizationIdempotency(ctx, tx, actor.UserID, command.OrganizationID,
+		operationOrganizationInvitationCreate, "organization_invitation", command.InvitationID,
+		command.Idempotency, createdAt); err != nil {
+		return invitationCreation{}, err
+	}
+	if err := recordOrganizationAudit(ctx, tx, actor, command.Audit, "organization_invitation_created",
+		command.OrganizationID, "organization_invitation", command.InvitationID, createdAt, map[string]string{
+			"invitation_id": command.InvitationID.String(),
+		}); err != nil {
+		return invitationCreation{}, err
+	}
+	invitation, err := loadOrganizationInvitation(ctx, tx, command.OrganizationID, command.InvitationID, createdAt, false)
+	if err != nil {
+		return invitationCreation{}, err
+	}
+	if err := commitOrganizationTransaction(ctx, tx); err != nil {
+		return invitationCreation{}, err
+	}
+	secret := command.Secret
+	return invitationCreation{Invitation: invitation, Secret: &secret}, nil
+}
+
+func (r *PostgresRepository) revokeInvitation(
+	ctx context.Context,
+	actor Actor,
+	command revokeInvitationTransaction,
+) error {
+	if r == nil || r.postgres == nil || actor.Validate() != nil || command.OrganizationID == uuid.Nil ||
+		command.InvitationID == uuid.Nil || !validMutationEvidence(command.mutationEvidence) {
+		return ErrInvalidRequest
+	}
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return ErrServiceUnavailable
+	}
+	defer rollbackOrganizationTransaction(tx)
+	if err := lockActiveOrganizationActor(ctx, tx, actor); err != nil {
+		return err
+	}
+	organization, err := loadLockedOrganization(ctx, tx, actor, command.OrganizationID)
+	if err != nil {
+		return err
+	}
+	if err := requireActiveOrganizationMutation(organization, true); err != nil {
+		return err
+	}
+	invitation, err := loadOrganizationInvitation(ctx, tx, command.OrganizationID, command.InvitationID, command.ChangedAt, true)
+	if err != nil {
+		return err
+	}
+	if invitation.Status != InvitationStatusPending || !command.ChangedAt.UTC().Before(invitation.ExpiresAt) {
+		return ErrInvitationUnavailable
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE organization_invitations
+		SET status = 'revoked', revoked_at = $3
+		WHERE organization_id = $1 AND id = $2 AND status = 'pending'
+	`, command.OrganizationID, command.InvitationID, command.ChangedAt.UTC())
+	if err != nil || tag.RowsAffected() != 1 {
+		return ErrInvitationUnavailable
+	}
+	if err := recordOrganizationAudit(ctx, tx, actor, command.Audit, "organization_invitation_revoked",
+		command.OrganizationID, "organization_invitation", command.InvitationID, command.ChangedAt.UTC(), map[string]string{
+			"invitation_id": command.InvitationID.String(),
+		}); err != nil {
+		return err
+	}
+	return commitOrganizationTransaction(ctx, tx)
+}
+
+func (r *PostgresRepository) acceptInvitation(
+	ctx context.Context,
+	actor Actor,
+	command acceptInvitationTransaction,
+) (InvitationAcceptance, error) {
+	if r == nil || r.postgres == nil || actor.Validate() != nil || command.MemberLimit <= 0 ||
+		zeroDigest32(command.TokenDigest) || !validIdempotencyEvidence(command.Idempotency, command.ChangedAt) ||
+		!validMutationEvidence(command.mutationEvidence) {
+		return InvitationAcceptance{}, ErrInvalidRequest
+	}
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return InvitationAcceptance{}, ErrServiceUnavailable
+	}
+	defer rollbackOrganizationTransaction(tx)
+	if err := lockActiveOrganizationActor(ctx, tx, actor); err != nil {
+		return InvitationAcceptance{}, err
+	}
+	if err := lockOrganizationIdempotency(ctx, tx, actor.UserID, command.Idempotency.KeyDigest); err != nil {
+		return InvitationAcceptance{}, err
+	}
+	replayOrganizationID, _, found, err := readOrganizationOperationIdempotency(
+		ctx, tx, actor.UserID, operationOrganizationInvitationAccept, command.Idempotency,
+	)
+	if err != nil {
+		return InvitationAcceptance{}, err
+	}
+	if found {
+		result, err := loadInvitationAcceptance(ctx, tx, actor.UserID, replayOrganizationID)
+		if err != nil {
+			return InvitationAcceptance{}, err
+		}
+		if err := commitOrganizationTransaction(ctx, tx); err != nil {
+			return InvitationAcceptance{}, err
+		}
+		return result, nil
+	}
+	var organizationID uuid.UUID
+	if err := tx.QueryRow(ctx, `
+		SELECT organization_id FROM organization_invitations WHERE token_digest = $1
+	`, command.TokenDigest[:]).Scan(&organizationID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return InvitationAcceptance{}, ErrInvitationUnavailable
+		}
+		return InvitationAcceptance{}, ErrServiceUnavailable
+	}
+	var organizationStatus string
+	if err := tx.QueryRow(ctx, `
+		SELECT status FROM organizations WHERE id = $1 FOR UPDATE
+	`, organizationID).Scan(&organizationStatus); err != nil {
+		return InvitationAcceptance{}, ErrInvitationUnavailable
+	}
+	if organizationStatus != string(OrganizationStatusActive) {
+		return InvitationAcceptance{}, ErrInvitationUnavailable
+	}
+	invitation, err := loadOrganizationInvitationByDigest(ctx, tx, command.TokenDigest, command.ChangedAt, true)
+	if err != nil || invitation.Status != InvitationStatusPending ||
+		!command.ChangedAt.UTC().Before(invitation.ExpiresAt) {
+		return InvitationAcceptance{}, ErrInvitationUnavailable
+	}
+	existing, existingErr := loadOrganizationMember(ctx, tx, organizationID, actor.UserID, true)
+	if existingErr != nil && !errors.Is(existingErr, ErrOrganizationNotFound) {
+		return InvitationAcceptance{}, existingErr
+	}
+	if errors.Is(existingErr, ErrOrganizationNotFound) {
+		var members int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM organization_memberships WHERE organization_id = $1
+		`, organizationID).Scan(&members); err != nil {
+			return InvitationAcceptance{}, ErrServiceUnavailable
+		}
+		if members >= command.MemberLimit {
+			return InvitationAcceptance{}, ErrMemberLimitReached
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO organization_memberships (
+				organization_id, user_id, role, revision, joined_at, updated_at
+			) VALUES ($1, $2, 'member', 1, $3, $3)
+		`, organizationID, actor.UserID, command.ChangedAt.UTC()); err != nil {
+			return InvitationAcceptance{}, ErrServiceUnavailable
+		}
+	} else {
+		_ = existing
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE organization_invitations
+		SET status = 'accepted', accepted_by_user_id = $2, accepted_at = $3
+		WHERE id = $1 AND status = 'pending'
+	`, invitation.ID, actor.UserID, command.ChangedAt.UTC())
+	if err != nil || tag.RowsAffected() != 1 {
+		return InvitationAcceptance{}, ErrInvitationUnavailable
+	}
+	if err := insertOrganizationIdempotency(ctx, tx, actor.UserID, organizationID,
+		operationOrganizationInvitationAccept, "organization_membership", actor.UserID,
+		command.Idempotency, command.ChangedAt.UTC()); err != nil {
+		return InvitationAcceptance{}, err
+	}
+	if err := recordOrganizationAudit(ctx, tx, actor, command.Audit, "organization_invitation_accepted",
+		organizationID, "organization_invitation", invitation.ID, command.ChangedAt.UTC(), map[string]string{
+			"invitation_id": invitation.ID.String(), "membership_user_id": actor.UserID.String(),
+		}); err != nil {
+		return InvitationAcceptance{}, err
+	}
+	result, err := loadInvitationAcceptance(ctx, tx, actor.UserID, organizationID)
+	if err != nil {
+		return InvitationAcceptance{}, err
+	}
+	if err := commitOrganizationTransaction(ctx, tx); err != nil {
+		return InvitationAcceptance{}, err
+	}
+	return result, nil
+}
+
+func (r *PostgresRepository) listInvitations(
+	ctx context.Context,
+	actorUserID uuid.UUID,
+	organizationID uuid.UUID,
+	page Page,
+) (InvitationPage, error) {
+	if r == nil || r.postgres == nil || actorUserID == uuid.Nil || organizationID == uuid.Nil || !validPage(page, true) {
+		return InvitationPage{}, ErrInvalidRequest
+	}
+	role, err := requireOrganizationMembership(ctx, r.postgres, actorUserID, organizationID)
+	if err != nil {
+		return InvitationPage{}, err
+	}
+	if role != RoleOwner && role != RoleAdmin {
+		return InvitationPage{}, ErrOrganizationForbidden
+	}
+	afterTime, afterID, err := decodeTimePageCursor(page.After)
+	if err != nil {
+		return InvitationPage{}, ErrInvalidRequest
+	}
+	rows, err := r.postgres.Query(ctx, `
+		SELECT id, status, created_by_user_id, accepted_by_user_id,
+		       created_at, expires_at, accepted_at, revoked_at
+		FROM organization_invitations
+		WHERE organization_id = $1
+		  AND ($2::timestamptz IS NULL OR (created_at, id) < ($2, $3::uuid))
+		ORDER BY created_at DESC, id DESC
+		LIMIT $4
+	`, organizationID, afterTime, afterID, page.Limit+1)
+	if err != nil {
+		return InvitationPage{}, ErrServiceUnavailable
+	}
+	defer rows.Close()
+	items := make([]InvitationSummary, 0, page.Limit+1)
+	for rows.Next() {
+		item, err := scanOrganizationInvitation(rows, time.Now().UTC())
+		if err != nil {
+			return InvitationPage{}, err
+		}
+		items = append(items, item)
+	}
+	if rows.Err() != nil {
+		return InvitationPage{}, ErrServiceUnavailable
+	}
+	result := InvitationPage{Items: items}
+	if len(items) > page.Limit {
+		result.Items = items[:page.Limit]
+		last := result.Items[len(result.Items)-1]
+		result.Next = &PageCursor{SortKey: last.CreatedAt.UTC().Format(time.RFC3339Nano), ID: last.ID}
+	}
+	return result, nil
+}
+
+func loadOrganizationInvitation(
+	ctx context.Context,
+	queryer interface {
+		QueryRow(context.Context, string, ...any) pgx.Row
+	},
+	organizationID uuid.UUID,
+	invitationID uuid.UUID,
+	now time.Time,
+	forUpdate bool,
+) (InvitationSummary, error) {
+	query := `
+		SELECT id, status, created_by_user_id, accepted_by_user_id,
+		       created_at, expires_at, accepted_at, revoked_at
+		FROM organization_invitations
+		WHERE organization_id = $1 AND id = $2
+	`
+	if forUpdate {
+		query += ` FOR UPDATE`
+	}
+	result, err := scanOrganizationInvitation(queryer.QueryRow(ctx, query, organizationID, invitationID), now)
+	if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, ErrOrganizationNotFound) {
+		return InvitationSummary{}, ErrInvitationUnavailable
+	}
+	return result, err
+}
+
+func loadOrganizationInvitationByDigest(
+	ctx context.Context,
+	queryer interface {
+		QueryRow(context.Context, string, ...any) pgx.Row
+	},
+	digest [sha256.Size]byte,
+	now time.Time,
+	forUpdate bool,
+) (InvitationSummary, error) {
+	query := `
+		SELECT id, status, created_by_user_id, accepted_by_user_id,
+		       created_at, expires_at, accepted_at, revoked_at
+		FROM organization_invitations
+		WHERE token_digest = $1
+	`
+	if forUpdate {
+		query += ` FOR UPDATE`
+	}
+	result, err := scanOrganizationInvitation(queryer.QueryRow(ctx, query, digest[:]), now)
+	if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, ErrOrganizationNotFound) {
+		return InvitationSummary{}, ErrInvitationUnavailable
+	}
+	return result, err
+}
+
+func scanOrganizationInvitation(row rowScanner, now time.Time) (InvitationSummary, error) {
+	var result InvitationSummary
+	var status string
+	var createdBy pgtype.UUID
+	var acceptedBy pgtype.UUID
+	var acceptedAt pgtype.Timestamptz
+	var revokedAt pgtype.Timestamptz
+	if err := row.Scan(
+		&result.ID, &status, &createdBy, &acceptedBy,
+		&result.CreatedAt, &result.ExpiresAt, &acceptedAt, &revokedAt,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return InvitationSummary{}, ErrOrganizationNotFound
+		}
+		return InvitationSummary{}, ErrServiceUnavailable
+	}
+	parsedStatus, err := ParseInvitationStatus(status)
+	if err != nil || result.ID == uuid.Nil {
+		return InvitationSummary{}, ErrServiceUnavailable
+	}
+	result.Status = parsedStatus
+	if result.Status == InvitationStatusPending && !now.UTC().Before(result.ExpiresAt.UTC()) {
+		result.Status = InvitationStatusExpired
+	}
+	if createdBy.Valid {
+		value := uuid.UUID(createdBy.Bytes)
+		result.CreatedByUserID = &value
+	}
+	if acceptedBy.Valid {
+		value := uuid.UUID(acceptedBy.Bytes)
+		result.AcceptedByUserID = &value
+	}
+	if acceptedAt.Valid {
+		value := acceptedAt.Time.UTC()
+		result.AcceptedAt = &value
+	}
+	if revokedAt.Valid {
+		value := revokedAt.Time.UTC()
+		result.RevokedAt = &value
+	}
+	result.CreatedAt = result.CreatedAt.UTC()
+	result.ExpiresAt = result.ExpiresAt.UTC()
+	return result, nil
+}
+
+func loadInvitationAcceptance(
+	ctx context.Context,
+	queryer interface {
+		QueryRow(context.Context, string, ...any) pgx.Row
+	},
+	actorUserID uuid.UUID,
+	organizationID uuid.UUID,
+) (InvitationAcceptance, error) {
+	organization, err := loadOrganizationSummary(ctx, queryer, actorUserID, organizationID)
+	if err != nil {
+		return InvitationAcceptance{}, err
+	}
+	member, err := loadOrganizationMember(ctx, queryer, organizationID, actorUserID, false)
+	if err != nil {
+		return InvitationAcceptance{}, err
+	}
+	return InvitationAcceptance{Organization: organization, Member: member}, nil
+}
+
+func readOrganizationOperationIdempotency(
+	ctx context.Context,
+	tx pgx.Tx,
+	actorUserID uuid.UUID,
+	operation string,
+	evidence IdempotencyEvidence,
+) (uuid.UUID, uuid.UUID, bool, error) {
+	var organizationID uuid.UUID
+	var resourceID uuid.UUID
+	var requestDigest []byte
+	err := tx.QueryRow(ctx, `
+		SELECT organization_id, resource_id, request_digest
+		FROM organization_idempotency_records
+		WHERE actor_user_id = $1 AND operation = $2 AND key_digest = $3
+	`, actorUserID, operation, evidence.KeyDigest[:]).Scan(&organizationID, &resourceID, &requestDigest)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, uuid.Nil, false, nil
+	}
+	if err != nil {
+		return uuid.Nil, uuid.Nil, false, ErrServiceUnavailable
+	}
+	if organizationID == uuid.Nil || resourceID == uuid.Nil || len(requestDigest) != sha256.Size ||
+		subtle.ConstantTimeCompare(requestDigest, evidence.RequestDigest[:]) != 1 {
+		return uuid.Nil, uuid.Nil, false, ErrIdempotencyConflict
+	}
+	return organizationID, resourceID, true, nil
+}
+
+func insertOrganizationIdempotency(
+	ctx context.Context,
+	tx pgx.Tx,
+	actorUserID uuid.UUID,
+	organizationID uuid.UUID,
+	operation string,
+	resourceType string,
+	resourceID uuid.UUID,
+	evidence IdempotencyEvidence,
+	createdAt time.Time,
+) error {
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO organization_idempotency_records (
+			actor_user_id, organization_id, operation, key_digest, request_digest,
+			resource_type, resource_id, created_at, expires_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	`, actorUserID, organizationID, operation, evidence.KeyDigest[:], evidence.RequestDigest[:],
+		resourceType, resourceID, createdAt.UTC(), evidence.ExpiresAt.UTC()); err != nil {
+		return ErrServiceUnavailable
+	}
+	return nil
+}
+
+func validIdempotencyEvidence(evidence IdempotencyEvidence, createdAt time.Time) bool {
+	return !zeroDigest32(evidence.KeyDigest) && !zeroDigest32(evidence.RequestDigest) && !createdAt.IsZero() &&
+		evidence.ExpiresAt.UTC().Equal(createdAt.UTC().Add(organizationIdempotencyLifetime))
+}
+
+func decodeTimePageCursor(cursor *PageCursor) (any, any, error) {
+	if cursor == nil {
+		return nil, nil, nil
+	}
+	value, err := time.Parse(time.RFC3339Nano, cursor.SortKey)
+	if err != nil || cursor.ID == uuid.Nil {
+		return nil, nil, ErrInvalidRequest
+	}
+	return value.UTC(), cursor.ID, nil
+}
+
+func decodePolicyPageCursor(cursor *PageCursor) (any, any, error) {
+	if cursor == nil {
+		return nil, nil, nil
+	}
+	value, err := strconv.ParseInt(cursor.SortKey, 10, 64)
+	if err != nil || value <= 0 || cursor.ID == uuid.Nil {
+		return nil, nil, ErrInvalidRequest
+	}
+	return value, cursor.ID, nil
 }
