@@ -22,6 +22,7 @@ import (
 const (
 	metadataRequestBodyLimit    = 64 * 1024
 	publicationRequestBodyLimit = 5 * 1024 * 1024 / 2
+	candidateRequestBodyLimit   = 5 * 1024 * 1024 / 4
 )
 
 type HTTPService interface {
@@ -43,6 +44,11 @@ type HTTPService interface {
 	SelectInstallationVersion(context.Context, Principal, SelectInstallationVersionRequest) (Installation, error)
 	ArchiveInstallation(context.Context, Principal, ArchiveInstallationRequest) (Installation, error)
 	RecordRuntimeBinding(context.Context, Principal, RuntimeBindingRecordCommand, string) (RuntimeBindingRecord, error)
+	SubmitExperienceCandidate(context.Context, Principal, uuid.UUID, SubmitExperienceCandidateRequest) (ExperienceCandidate, error)
+	ListOwnExperienceCandidates(context.Context, Principal, uuid.UUID) ([]ExperienceCandidate, error)
+	ListWorkspaceExperienceCandidates(context.Context, Principal, uuid.UUID) ([]ExperienceCandidate, error)
+	GetExperienceCandidate(context.Context, Principal, uuid.UUID, uuid.UUID, string) (ExperienceCandidate, error)
+	ReviewExperienceCandidate(context.Context, Principal, uuid.UUID, ReviewExperienceCandidateRequest) (ExperienceCandidate, error)
 }
 
 type AccessAuthenticator interface {
@@ -72,6 +78,11 @@ func NewHandler(config HTTPConfig) http.Handler {
 	router.Get("/api/v1/workspaces/{workspaceID}/agent-definitions/{definitionID}", handler.getWorkspaceDefinition)
 	router.Get("/api/v1/workspaces/{workspaceID}/agent-definitions/{definitionID}/versions", handler.listWorkspaceVersions)
 	router.Post("/api/v1/workspaces/{workspaceID}/agent-definitions/{definitionID}/versions", handler.publishWorkspaceNext)
+	router.Post("/api/v1/workspaces/{workspaceID}/agent-definitions/{definitionID}/experience-candidates", handler.submitExperienceCandidate)
+	router.Get("/api/v1/workspaces/{workspaceID}/experience-candidates/mine", handler.listOwnExperienceCandidates)
+	router.Get("/api/v1/workspaces/{workspaceID}/experience-candidates", handler.listWorkspaceExperienceCandidates)
+	router.Get("/api/v1/workspaces/{workspaceID}/experience-candidates/{candidateID}", handler.getExperienceCandidate)
+	router.Post("/api/v1/workspaces/{workspaceID}/experience-candidates/{candidateID}/review", handler.reviewExperienceCandidate)
 	router.Get("/api/v1/agent-versions/{versionID}", handler.getVersion)
 	router.Get("/api/v1/policy-snapshots/{policySnapshotID}", handler.getPolicySnapshot)
 	router.Post("/api/v1/agent-versions/{versionID}/revocations", handler.revokeVersion)
@@ -836,41 +847,53 @@ func publicRuntimeBinding(value RuntimeBindingRecord) runtimeBindingResponse {
 }
 
 func writeAgentServiceError(response http.ResponseWriter, err error) {
+	writeAgentServiceErrorWithRequestID(response, err, newAgentRequestID())
+}
+
+func writeAgentServiceErrorWithRequestID(response http.ResponseWriter, err error, requestID string) {
 	switch {
 	case errors.Is(err, ErrInvalidRequest), errors.Is(err, ErrInvalidRepositoryCommand):
-		writeAgentError(response, http.StatusBadRequest, "invalid_request")
+		writeAgentErrorWithRequestID(response, http.StatusBadRequest, "invalid_request", requestID)
 	case errors.Is(err, ErrInvalidAgentContent):
-		writeAgentError(response, http.StatusBadRequest, "invalid_agent_content")
+		writeAgentErrorWithRequestID(response, http.StatusBadRequest, "invalid_agent_content", requestID)
+	case errors.Is(err, ErrInvalidExperienceCandidate):
+		writeAgentErrorWithRequestID(response, http.StatusBadRequest, "invalid_experience_candidate", requestID)
 	case errors.Is(err, ErrRuntimeIncompatible):
-		writeAgentError(response, http.StatusBadRequest, "runtime_incompatible")
+		writeAgentErrorWithRequestID(response, http.StatusBadRequest, "runtime_incompatible", requestID)
 	case errors.Is(err, ErrInvalidDeviceProof):
-		writeAgentError(response, http.StatusBadRequest, "invalid_device_proof")
+		writeAgentErrorWithRequestID(response, http.StatusBadRequest, "invalid_device_proof", requestID)
 	case errors.Is(err, ErrNotFound):
-		writeAgentError(response, http.StatusNotFound, "not_found")
+		writeAgentErrorWithRequestID(response, http.StatusNotFound, "not_found", requestID)
 	case errors.Is(err, ErrVersionConflict):
-		writeAgentError(response, http.StatusConflict, "version_conflict")
+		writeAgentErrorWithRequestID(response, http.StatusConflict, "version_conflict", requestID)
 	case errors.Is(err, ErrIdempotencyConflict):
-		writeAgentError(response, http.StatusConflict, "idempotency_conflict")
+		writeAgentErrorWithRequestID(response, http.StatusConflict, "idempotency_conflict", requestID)
+	case errors.Is(err, ErrExperienceCandidateAlreadyReviewed):
+		writeAgentErrorWithRequestID(response, http.StatusConflict, "candidate_already_reviewed", requestID)
 	case errors.Is(err, ErrDefinitionArchived):
-		writeAgentError(response, http.StatusConflict, "definition_archived")
+		writeAgentErrorWithRequestID(response, http.StatusConflict, "definition_archived", requestID)
 	case errors.Is(err, ErrVersionRevoked):
-		writeAgentError(response, http.StatusConflict, "version_revoked")
+		writeAgentErrorWithRequestID(response, http.StatusConflict, "version_revoked", requestID)
 	case errors.Is(err, ErrActivationConflict):
-		writeAgentError(response, http.StatusConflict, "activation_conflict")
+		writeAgentErrorWithRequestID(response, http.StatusConflict, "activation_conflict", requestID)
 	case errors.Is(err, ErrInstallationArchived):
-		writeAgentError(response, http.StatusConflict, "installation_archived")
+		writeAgentErrorWithRequestID(response, http.StatusConflict, "installation_archived", requestID)
 	case errors.Is(err, ErrWorkspaceForbidden):
-		writeAgentError(response, http.StatusForbidden, "workspace_forbidden")
+		writeAgentErrorWithRequestID(response, http.StatusForbidden, "workspace_forbidden", requestID)
 	case errors.Is(err, ErrWorkspaceArchived):
-		writeAgentError(response, http.StatusConflict, "workspace_archived")
+		writeAgentErrorWithRequestID(response, http.StatusConflict, "workspace_archived", requestID)
 	case errors.Is(err, ErrWorkspaceOwnerUnavailable):
-		writeAgentError(response, http.StatusConflict, "workspace_owner_unavailable")
+		writeAgentErrorWithRequestID(response, http.StatusConflict, "workspace_owner_unavailable", requestID)
 	default:
-		writeAgentError(response, http.StatusServiceUnavailable, "service_unavailable")
+		writeAgentErrorWithRequestID(response, http.StatusServiceUnavailable, "service_unavailable", requestID)
 	}
 }
 
 func writeAgentError(response http.ResponseWriter, status int, code string) {
+	writeAgentErrorWithRequestID(response, status, code, newAgentRequestID())
+}
+
+func writeAgentErrorWithRequestID(response http.ResponseWriter, status int, code string, requestID string) {
 	writeAgentJSON(response, status, struct {
 		Error struct {
 			Code      string `json:"code"`
@@ -881,7 +904,7 @@ func writeAgentError(response http.ResponseWriter, status int, code string) {
 		Code      string `json:"code"`
 		Message   string `json:"message"`
 		RequestID string `json:"request_id"`
-	}{Code: code, Message: "localized by the client", RequestID: newAgentRequestID()}})
+	}{Code: code, Message: "localized by the client", RequestID: requestID}})
 }
 
 func newAgentRequestID() string {

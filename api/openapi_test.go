@@ -121,8 +121,8 @@ func TestOpenAPIContainsStrictUserAgentControlPlaneContract(t *testing.T) {
 		t.Fatalf("read openapi.yaml: %v", err)
 	}
 	document := string(contents)
-	if !strings.Contains(document, "version: 0.4.0") {
-		t.Fatal("OpenAPI version was not advanced for Workspace Agent V1")
+	if !strings.Contains(document, "version: 0.5.0") {
+		t.Fatal("OpenAPI version was not advanced for ExperienceCandidate V1")
 	}
 	for _, path := range []string{
 		"/api/v1/agent-definitions:",
@@ -190,6 +190,66 @@ func TestOpenAPIContainsStrictUserAgentControlPlaneContract(t *testing.T) {
 	for _, forbidden := range []string{"owner_scope:", "tenant_id:", "owner_id:", "actor_user_id:", "actor_role:"} {
 		if strings.Contains(installationSchema, forbidden) {
 			t.Fatalf("installation schema exposed ownership input %q", forbidden)
+		}
+	}
+}
+
+func TestOpenAPIContainsStrictExperienceCandidateContract(t *testing.T) {
+	contents, err := os.ReadFile("openapi.yaml")
+	if err != nil {
+		t.Fatalf("read openapi.yaml: %v", err)
+	}
+	document := string(contents)
+	for _, path := range []string{
+		"/api/v1/workspaces/{workspace_id}/agent-definitions/{definition_id}/experience-candidates:",
+		"/api/v1/workspaces/{workspace_id}/experience-candidates/mine:",
+		"/api/v1/workspaces/{workspace_id}/experience-candidates:",
+		"/api/v1/workspaces/{workspace_id}/experience-candidates/{candidate_id}:",
+		"/api/v1/workspaces/{workspace_id}/experience-candidates/{candidate_id}/review:",
+	} {
+		if !strings.Contains(document, path) {
+			t.Fatalf("OpenAPI is missing %s", path)
+		}
+	}
+	for _, schema := range []string{
+		"ExperienceCandidateAsset:", "ExperienceCandidateBundle:", "ExperienceCandidateSummary:",
+		"ExperienceCandidateDetail:", "ExperienceCandidateListResponse:", "ReviewExperienceCandidateRequest:",
+		"ExperienceCandidateFinding:", "ExperienceCandidateErrorEnvelope:",
+	} {
+		if !strings.Contains(document, schema) {
+			t.Fatalf("OpenAPI is missing candidate schema %q", schema)
+		}
+	}
+	for _, contract := range []string{
+		"maximum ExperienceCandidate request body is 1310720 bytes", "experience-candidate-dlp-v1",
+		"enum: [APPROVED, REJECTED]", "enum: [text/markdown, text/plain]", "maxItems: 32",
+	} {
+		if !strings.Contains(document, contract) {
+			t.Fatalf("OpenAPI is missing candidate contract %q", contract)
+		}
+	}
+	for _, code := range []string{"invalid_experience_candidate", "candidate_dlp_blocked", "candidate_already_reviewed"} {
+		if !strings.Contains(document, "- "+code) {
+			t.Fatalf("OpenAPI is missing candidate error code %q", code)
+		}
+	}
+	start := strings.Index(document, "    SubmitExperienceCandidateRequest:\n")
+	end := strings.Index(document, "    ReviewExperienceCandidateRequest:\n")
+	if start < 0 || end <= start {
+		t.Fatal("OpenAPI is missing bounded candidate submission/review schemas")
+	}
+	submissionSchema := document[start:end]
+	for _, required := range []string{"source_version_id:", "bundle:", "content_digest:"} {
+		if !strings.Contains(submissionSchema, required) {
+			t.Fatalf("candidate submission schema is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"definition_id:", "workspace_id:", "owner_scope:", "owner_id:", "profile_path:",
+		"source_path:", "installation_id:", "dlp_override:", "reviewed_by_user_id:",
+	} {
+		if strings.Contains(submissionSchema, forbidden) {
+			t.Fatalf("candidate submission schema exposed forbidden input %q", forbidden)
 		}
 	}
 }

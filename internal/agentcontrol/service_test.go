@@ -683,6 +683,11 @@ type stubServiceRepository struct {
 	selectInstallationVersion func(context.Context, Principal, VersionSelectionCommand) (Installation, error)
 	archiveInstallation       func(context.Context, Principal, ArchiveInstallationCommand) (Installation, error)
 	insertRuntimeBinding      func(context.Context, Principal, PersistRuntimeBindingCommand) (RuntimeBindingRecord, error)
+	submitExperienceCandidate func(context.Context, Principal, SubmitExperienceCandidateCommand) (ExperienceCandidate, bool, error)
+	listOwnCandidates         func(context.Context, Principal, uuid.UUID) ([]ExperienceCandidate, error)
+	listWorkspaceCandidates   func(context.Context, Principal, uuid.UUID) ([]ExperienceCandidate, error)
+	findExperienceCandidate   func(context.Context, Principal, uuid.UUID, uuid.UUID, AuditEvidence, time.Time) (ExperienceCandidate, bool, error)
+	reviewExperienceCandidate func(context.Context, Principal, ReviewExperienceCandidateCommand) (ExperienceCandidate, bool, error)
 }
 
 func (s *stubServiceRepository) PublishInitial(ctx context.Context, principal Principal, command InitialPublicationCommand) (Publication, error) {
@@ -854,6 +859,64 @@ func (s *stubServiceRepository) InsertRuntimeBinding(ctx context.Context, princi
 		return RuntimeBindingRecord{}, errors.New("unexpected InsertRuntimeBinding call")
 	}
 	return s.insertRuntimeBinding(ctx, principal, command)
+}
+
+func (s *stubServiceRepository) SubmitExperienceCandidate(
+	ctx context.Context,
+	principal Principal,
+	command SubmitExperienceCandidateCommand,
+) (ExperienceCandidate, bool, error) {
+	if s.submitExperienceCandidate == nil {
+		return ExperienceCandidate{}, false, errors.New("unexpected SubmitExperienceCandidate call")
+	}
+	return s.submitExperienceCandidate(ctx, principal, command)
+}
+
+func (s *stubServiceRepository) ListOwnExperienceCandidates(
+	ctx context.Context,
+	principal Principal,
+	workspaceID uuid.UUID,
+) ([]ExperienceCandidate, error) {
+	if s.listOwnCandidates == nil {
+		return nil, errors.New("unexpected ListOwnExperienceCandidates call")
+	}
+	return s.listOwnCandidates(ctx, principal, workspaceID)
+}
+
+func (s *stubServiceRepository) ListWorkspaceExperienceCandidates(
+	ctx context.Context,
+	principal Principal,
+	workspaceID uuid.UUID,
+) ([]ExperienceCandidate, error) {
+	if s.listWorkspaceCandidates == nil {
+		return nil, errors.New("unexpected ListWorkspaceExperienceCandidates call")
+	}
+	return s.listWorkspaceCandidates(ctx, principal, workspaceID)
+}
+
+func (s *stubServiceRepository) FindExperienceCandidate(
+	ctx context.Context,
+	principal Principal,
+	workspaceID uuid.UUID,
+	candidateID uuid.UUID,
+	audit AuditEvidence,
+	accessedAt time.Time,
+) (ExperienceCandidate, bool, error) {
+	if s.findExperienceCandidate == nil {
+		return ExperienceCandidate{}, false, errors.New("unexpected FindExperienceCandidate call")
+	}
+	return s.findExperienceCandidate(ctx, principal, workspaceID, candidateID, audit, accessedAt)
+}
+
+func (s *stubServiceRepository) ReviewExperienceCandidate(
+	ctx context.Context,
+	principal Principal,
+	command ReviewExperienceCandidateCommand,
+) (ExperienceCandidate, bool, error) {
+	if s.reviewExperienceCandidate == nil {
+		return ExperienceCandidate{}, false, errors.New("unexpected ReviewExperienceCandidate call")
+	}
+	return s.reviewExperienceCandidate(ctx, principal, command)
 }
 
 func publicationFromInitial(command InitialPublicationCommand, material VersionMaterial) Publication {

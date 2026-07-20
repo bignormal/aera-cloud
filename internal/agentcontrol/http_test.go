@@ -207,6 +207,8 @@ func TestHTTPAgentControlMapsStableServiceErrorsWithoutDisclosingObjectExistence
 		{ErrInvalidRequest, http.StatusBadRequest, "invalid_request"},
 		{ErrInvalidRepositoryCommand, http.StatusBadRequest, "invalid_request"},
 		{ErrInvalidAgentContent, http.StatusBadRequest, "invalid_agent_content"},
+		{ErrInvalidExperienceCandidate, http.StatusBadRequest, "invalid_experience_candidate"},
+		{ErrExperienceCandidateAlreadyReviewed, http.StatusConflict, "candidate_already_reviewed"},
 		{ErrRuntimeIncompatible, http.StatusBadRequest, "runtime_incompatible"},
 		{ErrInvalidDeviceProof, http.StatusBadRequest, "invalid_device_proof"},
 		{ErrServiceUnavailable, http.StatusServiceUnavailable, "service_unavailable"},
@@ -274,6 +276,7 @@ type agentControlHTTPFixture struct {
 	definitionID   uuid.UUID
 	versionID      uuid.UUID
 	installationID uuid.UUID
+	candidateID    uuid.UUID
 	policyID       uuid.UUID
 	profileID      uuid.UUID
 	digest         [sha256.Size]byte
@@ -285,6 +288,7 @@ func newAgentControlHTTPFixture(t *testing.T) *agentControlHTTPFixture {
 	workspaceID := uuid.New()
 	definitionID, versionID := uuid.New(), uuid.New()
 	installationID, policyID, profileID := uuid.New(), uuid.New(), uuid.New()
+	candidateID := uuid.New()
 	digest := sha256.Sum256([]byte("version"))
 	latest := versionID
 	now := time.Date(2026, 7, 19, 14, 0, 0, 0, time.UTC)
@@ -305,6 +309,18 @@ func newAgentControlHTTPFixture(t *testing.T) *agentControlHTTPFixture {
 		PolicySnapshotID: &policyID, UpdatePolicy: installationUpdatePolicy, Status: InstallationStatusActive,
 		CreatedAt: now, UpdatedAt: now, ActivatedAt: &now,
 	}
+	candidateBundle := validExperienceCandidateBundle()
+	candidateCanonical, err := CanonicalizeExperienceCandidate(candidateBundle)
+	if err != nil {
+		t.Fatalf("CanonicalizeExperienceCandidate() error = %v", err)
+	}
+	candidate := ExperienceCandidate{
+		ID: candidateID, WorkspaceID: workspaceID, AgentDefinitionID: definitionID,
+		SourceAgentVersionID: versionID, SubmittedByUserID: &principal.UserID,
+		SubmittedFromDeviceID: &principal.DeviceID, SkillName: candidateBundle.SkillName,
+		DLPContractVersion: ExperienceCandidateDLPVersion, ContentDigest: candidateCanonical.ContentDigest,
+		Bundle: candidateCanonical.Bundle, CreatedAt: now,
+	}
 	service := &stubAgentControlHTTPService{
 		definitions: []Definition{definition}, definition: definition, versions: []Version{version}, version: version,
 		publication: Publication{Definition: definition, Version: version},
@@ -315,6 +331,7 @@ func newAgentControlHTTPFixture(t *testing.T) *agentControlHTTPFixture {
 			RuntimeProfileID: profileID, RuntimeVersion: "0.18.2-agentera.1", PolicySnapshotID: policyID,
 			ToolPermissionDigest: sha256.Sum256([]byte("tools")), CreatedAt: now,
 		},
+		candidates: []ExperienceCandidate{candidate}, candidate: candidate,
 	}
 	authenticator := &stubAgentControlAuthenticator{claims: session.AccessClaims{AccessBinding: session.AccessBinding{
 		UserID: principal.UserID, DeviceID: principal.DeviceID, PersonalSpaceID: principal.PersonalSpaceID, SessionID: uuid.New(),
@@ -323,25 +340,35 @@ func newAgentControlHTTPFixture(t *testing.T) *agentControlHTTPFixture {
 		handler: NewHandler(HTTPConfig{Service: service, AccessTokens: authenticator}),
 		service: service, authenticator: authenticator, principal: principal,
 		workspaceID: workspaceID, definitionID: definitionID, versionID: versionID, installationID: installationID,
-		policyID: policyID, profileID: profileID, digest: digest,
+		policyID: policyID, profileID: profileID, candidateID: candidateID, digest: digest,
 	}
 }
 
 type stubAgentControlHTTPService struct {
-	lastPrincipal           Principal
-	lastWorkspaceID         uuid.UUID
-	lastInstallationRequest CreateInstallationRequest
-	err                     error
-	definitions             []Definition
-	definition              Definition
-	versions                []Version
-	version                 Version
-	publication             Publication
-	creation                InstallationCreation
-	policy                  PolicySnapshot
-	installation            Installation
-	revocation              VersionRevocation
-	binding                 RuntimeBindingRecord
+	lastPrincipal            Principal
+	lastWorkspaceID          uuid.UUID
+	lastInstallationRequest  CreateInstallationRequest
+	err                      error
+	definitions              []Definition
+	definition               Definition
+	versions                 []Version
+	version                  Version
+	publication              Publication
+	creation                 InstallationCreation
+	policy                   PolicySnapshot
+	installation             Installation
+	revocation               VersionRevocation
+	binding                  RuntimeBindingRecord
+	candidates               []ExperienceCandidate
+	candidate                ExperienceCandidate
+	lastCandidateSubmit      SubmitExperienceCandidateRequest
+	lastCandidateReview      ReviewExperienceCandidateRequest
+	lastCandidateID          uuid.UUID
+	lastCandidateRequestID   string
+	candidateSubmitCalls     int
+	candidateReviewCalls     int
+	candidateOwnListCalls    int
+	candidateReviewListCalls int
 }
 
 func (s *stubAgentControlHTTPService) ListDefinitions(_ context.Context, principal Principal) ([]Definition, error) {
@@ -464,6 +491,69 @@ func (s *stubAgentControlHTTPService) ArchiveInstallation(_ context.Context, pri
 func (s *stubAgentControlHTTPService) RecordRuntimeBinding(_ context.Context, principal Principal, _ RuntimeBindingRecordCommand, _ string) (RuntimeBindingRecord, error) {
 	s.lastPrincipal = principal
 	return s.binding, s.err
+}
+
+func (s *stubAgentControlHTTPService) SubmitExperienceCandidate(
+	_ context.Context,
+	principal Principal,
+	workspaceID uuid.UUID,
+	request SubmitExperienceCandidateRequest,
+) (ExperienceCandidate, error) {
+	s.lastPrincipal = principal
+	s.lastWorkspaceID = workspaceID
+	s.lastCandidateSubmit = request
+	s.candidateSubmitCalls++
+	return s.candidate, s.err
+}
+
+func (s *stubAgentControlHTTPService) ListOwnExperienceCandidates(
+	_ context.Context,
+	principal Principal,
+	workspaceID uuid.UUID,
+) ([]ExperienceCandidate, error) {
+	s.lastPrincipal = principal
+	s.lastWorkspaceID = workspaceID
+	s.candidateOwnListCalls++
+	return s.candidates, s.err
+}
+
+func (s *stubAgentControlHTTPService) ListWorkspaceExperienceCandidates(
+	_ context.Context,
+	principal Principal,
+	workspaceID uuid.UUID,
+) ([]ExperienceCandidate, error) {
+	s.lastPrincipal = principal
+	s.lastWorkspaceID = workspaceID
+	s.candidateReviewListCalls++
+	return s.candidates, s.err
+}
+
+func (s *stubAgentControlHTTPService) GetExperienceCandidate(
+	_ context.Context,
+	principal Principal,
+	workspaceID uuid.UUID,
+	candidateID uuid.UUID,
+	requestID string,
+) (ExperienceCandidate, error) {
+	s.lastPrincipal = principal
+	s.lastWorkspaceID = workspaceID
+	s.lastCandidateID = candidateID
+	s.lastCandidateRequestID = requestID
+	return s.candidate, s.err
+}
+
+func (s *stubAgentControlHTTPService) ReviewExperienceCandidate(
+	_ context.Context,
+	principal Principal,
+	workspaceID uuid.UUID,
+	request ReviewExperienceCandidateRequest,
+) (ExperienceCandidate, error) {
+	s.lastPrincipal = principal
+	s.lastWorkspaceID = workspaceID
+	s.lastCandidateID = request.CandidateID
+	s.lastCandidateReview = request
+	s.candidateReviewCalls++
+	return s.candidate, s.err
 }
 
 type stubAgentControlAuthenticator struct {

@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: AgentEra App Cloud API
-  version: 0.4.0
-  description: Account, device authorization, USER and Workspace Agent, and Workspace control-plane contract for AgentEra Studio.
+  version: 0.5.0
+  description: Account, device authorization, USER and Workspace Agent, ExperienceCandidate, and Workspace control-plane contract for AgentEra Studio.
 servers:
   - url: https://accounts.agentera.example
 paths:
@@ -1099,6 +1099,158 @@ paths:
           $ref: '#/components/responses/InvalidRequest'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/workspaces/{workspace_id}/agent-definitions/{definition_id}/experience-candidates:
+    post:
+      operationId: submitExperienceCandidate
+      description: Explicitly contributes one canonical Skill candidate from the authenticated actor's exact active USER Installation. The maximum ExperienceCandidate request body is 1310720 bytes.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceID'
+        - $ref: '#/components/parameters/AgentDefinitionID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitExperienceCandidateRequest'
+      responses:
+        '201':
+          description: Immutable candidate accepted after cloud canonicalization, digest verification, authorization, and DLP.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExperienceCandidateDetail'
+        '400':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '403':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '404':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '409':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '413':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '503':
+          $ref: '#/components/responses/ExperienceCandidateError'
+  /api/v1/workspaces/{workspace_id}/experience-candidates/mine:
+    get:
+      operationId: listOwnExperienceCandidates
+      description: Lists only candidates submitted by the authenticated active Workspace member; bundle content is omitted.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceID'
+      responses:
+        '200':
+          description: Candidate summaries owned by the authenticated submitter.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExperienceCandidateListResponse'
+        '400':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '404':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '409':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '503':
+          $ref: '#/components/responses/ExperienceCandidateError'
+  /api/v1/workspaces/{workspace_id}/experience-candidates:
+    get:
+      operationId: listWorkspaceExperienceCandidates
+      description: Owner or Admin lists Workspace candidate summaries and terminal history without bundle content.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceID'
+      responses:
+        '200':
+          description: Review queue and terminal candidate summaries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExperienceCandidateListResponse'
+        '400':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '403':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '404':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '409':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '503':
+          $ref: '#/components/responses/ExperienceCandidateError'
+  /api/v1/workspaces/{workspace_id}/experience-candidates/{candidate_id}:
+    get:
+      operationId: getExperienceCandidate
+      description: Returns canonical candidate content only to its active submitter or an authorized Workspace reviewer.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceID'
+        - $ref: '#/components/parameters/ExperienceCandidateID'
+      responses:
+        '200':
+          description: Authorized candidate detail with the canonical bundle.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExperienceCandidateDetail'
+        '400':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '403':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '404':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '409':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '503':
+          $ref: '#/components/responses/ExperienceCandidateError'
+  /api/v1/workspaces/{workspace_id}/experience-candidates/{candidate_id}/review:
+    post:
+      operationId: reviewExperienceCandidate
+      description: Owner or Admin records the single terminal approval or rejection. The maximum Agent metadata request body is 65536 bytes.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceID'
+        - $ref: '#/components/parameters/ExperienceCandidateID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewExperienceCandidateRequest'
+      responses:
+        '200':
+          description: Candidate detail with its terminal review.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExperienceCandidateDetail'
+        '400':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '403':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '404':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '409':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '503':
+          $ref: '#/components/responses/ExperienceCandidateError'
   /api/v1/agent-definitions:
     get:
       operationId: listUserAgentDefinitions
@@ -1565,6 +1717,14 @@ components:
       name: definition_id
       in: path
       required: true
+      schema:
+        type: string
+        format: uuid
+    ExperienceCandidateID:
+      name: candidate_id
+      in: path
+      required: true
+      description: Canonical immutable ExperienceCandidate UUID within the exact Workspace.
       schema:
         type: string
         format: uuid
@@ -2117,6 +2277,246 @@ components:
               type: string
               minLength: 1
               maxLength: 128
+    ExperienceCandidateAsset:
+      type: object
+      additionalProperties: false
+      required: [path, media_type, content]
+      properties:
+        path:
+          type: string
+          minLength: 1
+          maxLength: 512
+          description: Normalized candidate-relative path below skills/{skill_name}/.
+        media_type:
+          type: string
+          enum: [text/markdown, text/plain]
+        content:
+          type: string
+          maxLength: 262144
+          description: UTF-8 text only; server byte limits remain authoritative.
+    ExperienceCandidateBundle:
+      type: object
+      additionalProperties: false
+      required: [schema_version, skill_name, assets]
+      properties:
+        schema_version:
+          const: 1
+        skill_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          pattern: '^[a-z0-9](?:[a-z0-9_-]{0,98}[a-z0-9])?$'
+        assets:
+          type: array
+          minItems: 1
+          maxItems: 32
+          items:
+            $ref: '#/components/schemas/ExperienceCandidateAsset'
+    SubmitExperienceCandidateRequest:
+      type: object
+      additionalProperties: false
+      required: [source_version_id, bundle, content_digest]
+      properties:
+        source_version_id:
+          type: string
+          format: uuid
+        bundle:
+          $ref: '#/components/schemas/ExperienceCandidateBundle'
+        content_digest:
+          $ref: '#/components/schemas/SHA256Digest'
+    ReviewExperienceCandidateRequest:
+      type: object
+      additionalProperties: false
+      required: [decision]
+      description: APPROVED accepts no reason or note. REJECTED requires a bounded lowercase reason code and permits one safe single-line note.
+      properties:
+        decision:
+          type: string
+          enum: [APPROVED, REJECTED]
+        reason_code:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[a-z][a-z0-9_]{0,63}$'
+        safe_note:
+          type: string
+          minLength: 1
+          maxLength: 240
+    ExperienceCandidateReview:
+      type: object
+      additionalProperties: false
+      required: [id, reviewed_by_user_id, decision, reviewed_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        reviewed_by_user_id:
+          type: [string, 'null']
+          format: uuid
+        decision:
+          type: string
+          enum: [APPROVED, REJECTED]
+        reason_code:
+          type: string
+          minLength: 1
+          maxLength: 64
+        safe_note:
+          type: string
+          minLength: 1
+          maxLength: 240
+        reviewed_at:
+          type: string
+          format: date-time
+    ExperienceCandidateSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - workspace_id
+        - agent_definition_id
+        - source_agent_version_id
+        - submitted_by_user_id
+        - skill_name
+        - dlp_contract_version
+        - content_digest
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        workspace_id:
+          type: string
+          format: uuid
+        agent_definition_id:
+          type: string
+          format: uuid
+        source_agent_version_id:
+          type: string
+          format: uuid
+        submitted_by_user_id:
+          type: [string, 'null']
+          format: uuid
+        skill_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        dlp_contract_version:
+          const: experience-candidate-dlp-v1
+        content_digest:
+          $ref: '#/components/schemas/SHA256Digest'
+        created_at:
+          type: string
+          format: date-time
+        review:
+          $ref: '#/components/schemas/ExperienceCandidateReview'
+    ExperienceCandidateDetail:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - workspace_id
+        - agent_definition_id
+        - source_agent_version_id
+        - submitted_by_user_id
+        - skill_name
+        - dlp_contract_version
+        - content_digest
+        - created_at
+        - bundle
+      properties:
+        id:
+          type: string
+          format: uuid
+        workspace_id:
+          type: string
+          format: uuid
+        agent_definition_id:
+          type: string
+          format: uuid
+        source_agent_version_id:
+          type: string
+          format: uuid
+        submitted_by_user_id:
+          type: [string, 'null']
+          format: uuid
+        skill_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        dlp_contract_version:
+          const: experience-candidate-dlp-v1
+        content_digest:
+          $ref: '#/components/schemas/SHA256Digest'
+        created_at:
+          type: string
+          format: date-time
+        review:
+          $ref: '#/components/schemas/ExperienceCandidateReview'
+        bundle:
+          $ref: '#/components/schemas/ExperienceCandidateBundle'
+    ExperienceCandidateListResponse:
+      type: object
+      additionalProperties: false
+      required: [candidates]
+      properties:
+        candidates:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExperienceCandidateSummary'
+    ExperienceCandidateFinding:
+      type: object
+      additionalProperties: false
+      required: [code, path]
+      properties:
+        code:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[a-z][a-z0-9_]{0,63}$'
+        path:
+          type: string
+          minLength: 1
+          maxLength: 512
+        line:
+          type: integer
+          minimum: 1
+    ExperienceCandidateErrorCode:
+      type: string
+      enum:
+        - invalid_request
+        - invalid_experience_candidate
+        - candidate_dlp_blocked
+        - candidate_already_reviewed
+        - idempotency_conflict
+        - definition_archived
+        - workspace_forbidden
+        - not_found
+        - workspace_archived
+        - workspace_owner_unavailable
+        - service_unavailable
+    ExperienceCandidateErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, request_id]
+          properties:
+            code:
+              $ref: '#/components/schemas/ExperienceCandidateErrorCode'
+            message:
+              const: localized by the client
+            request_id:
+              type: string
+              minLength: 1
+              maxLength: 128
+            findings:
+              type: array
+              maxItems: 128
+              items:
+                $ref: '#/components/schemas/ExperienceCandidateFinding'
     AgentDefinitionList:
       type: object
       additionalProperties: false
@@ -2836,6 +3236,9 @@ components:
         - device_not_found
         - self_revoke_replayed
         - invalid_agent_content
+        - invalid_experience_candidate
+        - candidate_dlp_blocked
+        - candidate_already_reviewed
         - runtime_incompatible
         - invalid_device_proof
         - not_found
@@ -2923,6 +3326,12 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorEnvelope'
+    ExperienceCandidateError:
+      description: Candidate validation, DLP, visibility, Workspace lifecycle, terminal review, idempotency, or service failure without private evidence text.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ExperienceCandidateErrorEnvelope'
     WorkspaceInvalidRequest:
       description: The Workspace request, identifier, revision, content type, or bounded body is invalid.
       content:

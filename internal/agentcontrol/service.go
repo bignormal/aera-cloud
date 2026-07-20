@@ -39,6 +39,11 @@ type ServiceRepository interface {
 	SelectInstallationVersion(context.Context, Principal, VersionSelectionCommand) (Installation, error)
 	ArchiveInstallation(context.Context, Principal, ArchiveInstallationCommand) (Installation, error)
 	InsertRuntimeBinding(context.Context, Principal, PersistRuntimeBindingCommand) (RuntimeBindingRecord, error)
+	SubmitExperienceCandidate(context.Context, Principal, SubmitExperienceCandidateCommand) (ExperienceCandidate, bool, error)
+	ListOwnExperienceCandidates(context.Context, Principal, uuid.UUID) ([]ExperienceCandidate, error)
+	ListWorkspaceExperienceCandidates(context.Context, Principal, uuid.UUID) ([]ExperienceCandidate, error)
+	FindExperienceCandidate(context.Context, Principal, uuid.UUID, uuid.UUID, AuditEvidence, time.Time) (ExperienceCandidate, bool, error)
+	ReviewExperienceCandidate(context.Context, Principal, ReviewExperienceCandidateCommand) (ExperienceCandidate, bool, error)
 }
 
 type ServiceConfig struct {
