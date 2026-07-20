@@ -2,7 +2,6 @@ package organization
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -36,6 +35,7 @@ var (
 	ErrDissolutionBlocked                = errors.New("organization dissolution is blocked")
 	ErrRateLimited                       = errors.New("organization rate limit exceeded")
 	ErrServiceUnavailable                = errors.New("organization service is unavailable")
+	ErrInvalidSignature                  = errors.New("organization policy signature is invalid")
 )
 
 type Role string
@@ -165,7 +165,7 @@ type PolicySummary struct {
 
 type PolicySnapshot struct {
 	PolicySummary
-	Document  json.RawMessage
+	Document  PolicyDocument
 	Signature []byte
 }
 
