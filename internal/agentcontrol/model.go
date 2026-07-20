@@ -23,7 +23,40 @@ var (
 
 type OwnerScope string
 
-const OwnerScopeUser OwnerScope = "USER"
+const (
+	OwnerScopeUser      OwnerScope = "USER"
+	OwnerScopeWorkspace OwnerScope = "WORKSPACE"
+)
+
+type AssetOwner struct {
+	Scope           OwnerScope
+	PersonalSpaceID uuid.UUID
+	UserID          uuid.UUID
+	WorkspaceID     uuid.UUID
+}
+
+func (o AssetOwner) Validate() error {
+	switch o.Scope {
+	case OwnerScopeUser:
+		if o.PersonalSpaceID == uuid.Nil || o.UserID == uuid.Nil || o.WorkspaceID != uuid.Nil {
+			return ErrInvalidAgentContent
+		}
+	case OwnerScopeWorkspace:
+		if o.WorkspaceID == uuid.Nil || o.PersonalSpaceID != uuid.Nil || o.UserID != uuid.Nil {
+			return ErrInvalidAgentContent
+		}
+	default:
+		return ErrInvalidAgentContent
+	}
+	return nil
+}
+
+func (o AssetOwner) Key() uuid.UUID {
+	if o.Scope == OwnerScopeWorkspace {
+		return o.WorkspaceID
+	}
+	return o.UserID
+}
 
 type Owner struct {
 	TenantID uuid.UUID

@@ -72,10 +72,6 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	assertUniqueConstraint(t, ctx, postgres, "agent_versions", "agent_versions_definition_version_key", []string{"definition_id", "version_number"})
 	assertUniqueConstraint(t, ctx, postgres, "agent_version_revocations", "agent_version_revocations_version_key", []string{"version_id"})
 	assertUniqueConstraint(t, ctx, postgres, "policy_snapshots", "policy_snapshots_installation_version_key", []string{"installation_id", "policy_version"})
-	assertUniqueConstraint(t, ctx, postgres, "agent_control_idempotency_keys", "agent_control_idempotency_owner_operation_key", []string{
-		"tenant_id", "owner_scope", "owner_id", "operation", "key_hash",
-	})
-
 	assertCheckConstraintContains(t, ctx, postgres, "agent_versions", "agent_versions_content_digest_length_check", "octet_length(content_digest) = 32")
 	assertCheckConstraintContains(t, ctx, postgres, "agent_versions", "agent_versions_signature_length_check", "octet_length(signature) = 64")
 	assertCheckConstraintContains(t, ctx, postgres, "policy_snapshots", "policy_snapshots_content_digest_length_check", "octet_length(content_digest) = 32")
@@ -96,28 +92,43 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	assertCheckConstraintContains(t, ctx, postgres, "workspace_idempotency_records", "workspace_idempotency_key_digest_length_check", "octet_length(key_digest) = 32")
 	assertCheckConstraintContains(t, ctx, postgres, "workspace_idempotency_records", "workspace_idempotency_request_digest_length_check", "octet_length(request_digest) = 32")
 	assertCheckConstraintContains(t, ctx, postgres, "workspace_idempotency_records", "workspace_idempotency_expiry_check", "expires_at")
+	assertCheckConstraintContains(t, ctx, postgres, "agent_definitions", "agent_definitions_owner_variant_check", "WORKSPACE")
+	assertCheckConstraintContains(t, ctx, postgres, "agent_definitions", "agent_definitions_owner_variant_check", "workspace_id")
+	assertCheckConstraintContains(t, ctx, postgres, "agent_versions", "agent_versions_owner_variant_check", "WORKSPACE")
+	assertCheckConstraintContains(t, ctx, postgres, "agent_control_idempotency_keys", "agent_control_idempotency_owner_variant_check", "WORKSPACE")
 
 	assertForeignKeyConstraintContains(t, ctx, postgres, "workspaces", "workspaces_owner_user_fk", "ON DELETE RESTRICT")
 	assertForeignKeyConstraintContains(t, ctx, postgres, "workspace_memberships", "workspace_memberships_workspace_fk", "ON DELETE CASCADE")
 	assertForeignKeyConstraintContains(t, ctx, postgres, "workspace_memberships", "workspace_memberships_user_fk", "ON DELETE CASCADE")
 	assertForeignKeyConstraintContains(t, ctx, postgres, "workspace_invitations", "workspace_invitations_created_by_user_fk", "ON DELETE SET NULL")
 	assertForeignKeyConstraintContains(t, ctx, postgres, "workspace_invitations", "workspace_invitations_accepted_by_user_fk", "ON DELETE SET NULL")
+	assertForeignKeyConstraintContains(t, ctx, postgres, "agent_definitions", "agent_definitions_workspace_fk", "ON DELETE RESTRICT")
+	assertForeignKeyConstraintContains(t, ctx, postgres, "agent_versions", "agent_versions_workspace_fk", "ON DELETE RESTRICT")
+	assertForeignKeyConstraintContains(t, ctx, postgres, "agent_control_idempotency_keys", "agent_control_idempotency_workspace_fk", "ON DELETE CASCADE")
 
 	assertIndexDefinitionContains(t, ctx, postgres, "workspace_memberships_one_owner_idx", "UNIQUE", "workspace_id", "WHERE", "owner")
 	assertIndexDefinitionContains(t, ctx, postgres, "workspaces_owner_active_idx", "owner_user_id", "WHERE", "active")
 	assertIndexDefinitionContains(t, ctx, postgres, "workspace_memberships_user_list_idx", "user_id", "workspace_id")
 	assertIndexDefinitionContains(t, ctx, postgres, "workspace_invitations_pending_idx", "workspace_id", "expires_at", "pending")
 	assertIndexDefinitionContains(t, ctx, postgres, "workspace_idempotency_expiry_idx", "expires_at")
+	assertIndexDefinitionContains(t, ctx, postgres, "agent_control_idempotency_user_operation_key", "UNIQUE", "tenant_id", "owner_id", "operation", "key_hash", "USER")
+	assertIndexDefinitionContains(t, ctx, postgres, "agent_control_idempotency_workspace_operation_key", "UNIQUE", "workspace_id", "operation", "key_hash", "WORKSPACE")
 
 	assertColumns(t, ctx, postgres, "agent_definitions", []string{
 		"id", "tenant_id", "owner_scope", "owner_id", "display_name", "icon_media_type", "icon_data",
-		"status", "latest_version_id", "created_by", "created_at", "updated_at",
+		"status", "latest_version_id", "created_by", "created_at", "updated_at", "workspace_id",
 	})
 	assertColumns(t, ctx, postgres, "agent_versions", []string{
 		"id", "definition_id", "tenant_id", "owner_scope", "owner_id", "version_number",
 		"canonical_manifest", "bundle", "content_digest", "signing_key_id", "signature",
-		"runtime_minimum_version", "runtime_maximum_version_exclusive", "published_by", "published_at",
+		"runtime_minimum_version", "runtime_maximum_version_exclusive", "published_by", "published_at", "workspace_id",
 	})
+	assertColumns(t, ctx, postgres, "agent_control_idempotency_keys", []string{"workspace_id"})
+	for _, table := range []string{"agent_definitions", "agent_versions", "agent_control_idempotency_keys"} {
+		assertColumnNullable(t, ctx, postgres, table, "tenant_id", true)
+		assertColumnNullable(t, ctx, postgres, table, "owner_id", true)
+		assertColumnNullable(t, ctx, postgres, table, "workspace_id", true)
+	}
 	assertColumns(t, ctx, postgres, "installations", []string{
 		"id", "tenant_id", "owner_scope", "owner_id", "device_id", "device_installation_id",
 		"definition_id", "selected_version_id", "runtime_profile_id", "policy_snapshot_id", "update_policy",
@@ -155,8 +166,8 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	if err := postgres.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if applied != 9 {
-		t.Fatalf("applied migration count = %d, want 9", applied)
+	if applied != 10 {
+		t.Fatalf("applied migration count = %d, want 10", applied)
 	}
 	var receiptConsumedColumn bool
 	if err := postgres.QueryRow(ctx, `
@@ -211,6 +222,29 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	}
 	if adminAuditColumns != 2 {
 		t.Fatalf("restricted audit column count = %d, want 2", adminAuditColumns)
+	}
+}
+
+func assertColumnNullable(
+	t *testing.T,
+	ctx context.Context,
+	postgres *pgxpool.Pool,
+	table string,
+	column string,
+	want bool,
+) {
+	t.Helper()
+	var nullable string
+	if err := postgres.QueryRow(ctx, `
+		SELECT is_nullable
+		FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
+	`, table, column).Scan(&nullable); err != nil {
+		t.Fatalf("read nullable state for %s.%s: %v", table, column, err)
+	}
+	got := nullable == "YES"
+	if got != want {
+		t.Fatalf("nullable state for %s.%s = %t, want %t", table, column, got, want)
 	}
 }
 
