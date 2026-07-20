@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -40,21 +41,28 @@ var (
 		"workspace_id": {}, "membership_user_id": {}, "invitation_id": {},
 		"role": {}, "previous_role": {},
 	}
+	organizationMetadataKeys = map[string]struct{}{
+		"organization_id": {}, "membership_user_id": {}, "department_id": {}, "invitation_id": {},
+		"policy_snapshot_id": {}, "role": {}, "previous_role": {}, "policy_version": {},
+		"revision": {}, "previous_revision": {}, "status": {}, "previous_status": {},
+		"content_digest": {},
+	}
 )
 
 type Event struct {
-	ID          uuid.UUID
-	EventType   string
-	ActorUserID *uuid.UUID
-	DeviceID    *uuid.UUID
-	ObjectType  string
-	ObjectID    *uuid.UUID
-	Outcome     Outcome
-	ReasonCode  string
-	RequestID   string
-	IPHMAC      []byte
-	Metadata    map[string]string
-	OccurredAt  time.Time
+	ID             uuid.UUID
+	EventType      string
+	ActorUserID    *uuid.UUID
+	DeviceID       *uuid.UUID
+	OrganizationID *uuid.UUID
+	ObjectType     string
+	ObjectID       *uuid.UUID
+	Outcome        Outcome
+	ReasonCode     string
+	RequestID      string
+	IPHMAC         []byte
+	Metadata       map[string]string
+	OccurredAt     time.Time
 }
 
 type Recorder interface {
@@ -114,8 +122,8 @@ func (r *PostgresRecorder) Record(ctx context.Context, event Event) error {
 	_, err = r.executor.Exec(ctx, `
 		INSERT INTO audit_events (
 			id, event_type, actor_user_id, device_id, object_type, object_id,
-			outcome, reason_code, request_id, ip_hmac, metadata, created_at
-		) VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, $7, NULLIF($8, ''), NULLIF($9, ''), $10, $11::jsonb, $12)
+			outcome, reason_code, request_id, ip_hmac, metadata, created_at, organization_id
+		) VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, $7, NULLIF($8, ''), NULLIF($9, ''), $10, $11::jsonb, $12, $13)
 	`,
 		event.ID,
 		event.EventType,
@@ -129,6 +137,7 @@ func (r *PostgresRecorder) Record(ctx context.Context, event Event) error {
 		nilIfEmpty(event.IPHMAC),
 		string(encodedMetadata),
 		event.OccurredAt.UTC(),
+		event.OrganizationID,
 	)
 	if err != nil {
 		return errors.New("audit event could not be recorded")
@@ -151,13 +160,20 @@ func validEvent(event Event) bool {
 	if event.DeviceID != nil && *event.DeviceID == uuid.Nil {
 		return false
 	}
+	if event.OrganizationID != nil && *event.OrganizationID == uuid.Nil {
+		return false
+	}
 	if event.ObjectID != nil && *event.ObjectID == uuid.Nil {
 		return false
 	}
-	return validMetadata(event.EventType, event.Metadata)
+	isOrganizationEvent := strings.HasPrefix(event.EventType, "organization_")
+	if isOrganizationEvent != (event.OrganizationID != nil) {
+		return false
+	}
+	return validMetadata(event.EventType, event.Metadata, event.OrganizationID)
 }
 
-func validMetadata(eventType string, metadata map[string]string) bool {
+func validMetadata(eventType string, metadata map[string]string, organizationID *uuid.UUID) bool {
 	if len(metadata) == 0 {
 		return true
 	}
@@ -166,6 +182,9 @@ func validMetadata(eventType string, metadata map[string]string) bool {
 	}
 	if strings.HasPrefix(eventType, "workspace_") {
 		return validWorkspaceMetadata(metadata)
+	}
+	if strings.HasPrefix(eventType, "organization_") {
+		return validOrganizationMetadata(metadata, organizationID)
 	}
 	if !strings.HasPrefix(eventType, "agent_") && !strings.HasPrefix(eventType, "runtime_binding_") {
 		return false
@@ -245,6 +264,48 @@ func validMetadata(eventType string, metadata map[string]string) bool {
 				return false
 			}
 			if _, err := uuid.Parse(value); err != nil {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func validOrganizationMetadata(metadata map[string]string, organizationID *uuid.UUID) bool {
+	if organizationID == nil || len(metadata) > len(organizationMetadataKeys) {
+		return false
+	}
+	for key, value := range metadata {
+		if !namePattern.MatchString(key) || !safeMetadataValue(value) {
+			return false
+		}
+		if _, allowed := organizationMetadataKeys[key]; !allowed {
+			return false
+		}
+		switch key {
+		case "role", "previous_role":
+			if value != "owner" && value != "admin" && value != "auditor" && value != "member" {
+				return false
+			}
+		case "policy_version", "revision", "previous_revision":
+			parsed, err := strconv.ParseInt(value, 10, 64)
+			if err != nil || parsed <= 0 || strconv.FormatInt(parsed, 10) != value {
+				return false
+			}
+		case "status", "previous_status":
+			switch value {
+			case "active", "archived", "dissolved", "pending", "accepted", "revoked", "expired":
+			default:
+				return false
+			}
+		case "content_digest":
+			decoded, err := hex.DecodeString(value)
+			if err != nil || len(decoded) != 32 || value != strings.ToLower(value) {
+				return false
+			}
+		default:
+			parsed, err := uuid.Parse(value)
+			if err != nil || (key == "organization_id" && parsed != *organizationID) {
 				return false
 			}
 		}
