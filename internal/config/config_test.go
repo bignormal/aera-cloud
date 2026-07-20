@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadAcceptsLoopbackHTTPInDevelopment(t *testing.T) {
@@ -82,6 +84,15 @@ func TestLoadAcceptsLoopbackHTTPInDevelopment(t *testing.T) {
 	if cfg.LoginIdentityLimit != 5 || cfg.LoginIPLimit != 20 || cfg.LoginWindowSeconds != 600 {
 		t.Fatalf("login limits = %d / %d / %d", cfg.LoginIdentityLimit, cfg.LoginIPLimit, cfg.LoginWindowSeconds)
 	}
+	assertConfigField(t, cfg, "WorkspaceActiveOwnedLimit", 10)
+	assertConfigField(t, cfg, "WorkspaceMemberLimit", 100)
+	assertConfigField(t, cfg, "WorkspacePendingInviteLimit", 20)
+	assertConfigField(t, cfg, "WorkspaceCreateRateLimit", int64(10))
+	assertConfigField(t, cfg, "WorkspaceCreateRateWindow", time.Hour)
+	assertConfigField(t, cfg, "WorkspaceInviteRateLimit", int64(20))
+	assertConfigField(t, cfg, "WorkspaceInviteRateWindow", time.Hour)
+	assertConfigField(t, cfg, "WorkspaceAcceptRateLimit", int64(30))
+	assertConfigField(t, cfg, "WorkspaceAcceptRateWindow", 10*time.Minute)
 	if cfg.TermsVersion != "terms-2026-07" || cfg.PrivacyVersion != "privacy-2026-07" {
 		t.Fatalf("legal versions = %q / %q", cfg.TermsVersion, cfg.PrivacyVersion)
 	}
@@ -340,6 +351,58 @@ func TestLoadRejectsInvalidBrowserAuthenticationConfiguration(t *testing.T) {
 	}
 }
 
+func TestLoadRequiresWorkspaceConfiguration(t *testing.T) {
+	keys := []string{
+		"AGENTERA_CLOUD_WORKSPACE_ACTIVE_OWNED_LIMIT",
+		"AGENTERA_CLOUD_WORKSPACE_MEMBER_LIMIT",
+		"AGENTERA_CLOUD_WORKSPACE_PENDING_INVITE_LIMIT",
+		"AGENTERA_CLOUD_WORKSPACE_CREATE_RATE_LIMIT",
+		"AGENTERA_CLOUD_WORKSPACE_CREATE_RATE_WINDOW",
+		"AGENTERA_CLOUD_WORKSPACE_INVITE_RATE_LIMIT",
+		"AGENTERA_CLOUD_WORKSPACE_INVITE_RATE_WINDOW",
+		"AGENTERA_CLOUD_WORKSPACE_ACCEPT_RATE_LIMIT",
+		"AGENTERA_CLOUD_WORKSPACE_ACCEPT_RATE_WINDOW",
+	}
+	for _, key := range keys {
+		t.Run(key, func(t *testing.T) {
+			env := validEnvironment("production")
+			delete(env, key)
+			_, err := Load(mapLookup(env))
+			if err == nil || !strings.Contains(err.Error(), key) || !strings.Contains(err.Error(), "required") {
+				t.Fatalf("Load() error = %v, want required %s", err, key)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsInvalidWorkspaceConfiguration(t *testing.T) {
+	tests := []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{name: "zero active workspace limit", key: "AGENTERA_CLOUD_WORKSPACE_ACTIVE_OWNED_LIMIT", value: "0"},
+		{name: "negative member limit", key: "AGENTERA_CLOUD_WORKSPACE_MEMBER_LIMIT", value: "-1"},
+		{name: "zero pending invitation limit", key: "AGENTERA_CLOUD_WORKSPACE_PENDING_INVITE_LIMIT", value: "0"},
+		{name: "zero workspace creation rate", key: "AGENTERA_CLOUD_WORKSPACE_CREATE_RATE_LIMIT", value: "0"},
+		{name: "zero workspace creation window", key: "AGENTERA_CLOUD_WORKSPACE_CREATE_RATE_WINDOW", value: "0s"},
+		{name: "negative invitation creation rate", key: "AGENTERA_CLOUD_WORKSPACE_INVITE_RATE_LIMIT", value: "-1"},
+		{name: "invalid invitation creation window", key: "AGENTERA_CLOUD_WORKSPACE_INVITE_RATE_WINDOW", value: "one-hour"},
+		{name: "zero invitation acceptance rate", key: "AGENTERA_CLOUD_WORKSPACE_ACCEPT_RATE_LIMIT", value: "0"},
+		{name: "negative invitation acceptance window", key: "AGENTERA_CLOUD_WORKSPACE_ACCEPT_RATE_WINDOW", value: "-1s"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			env := validEnvironment("production")
+			env[test.key] = test.value
+			_, err := Load(mapLookup(env))
+			if err == nil || !strings.Contains(err.Error(), test.key) {
+				t.Fatalf("Load() error = %v, want validation for %s", err, test.key)
+			}
+		})
+	}
+}
+
 func TestEnvironmentExamplePreservesKeyRingJSONWhenSourced(t *testing.T) {
 	environmentFile, err := filepath.Abs(filepath.Join("..", "..", ".env.example"))
 	if err != nil {
@@ -449,6 +512,15 @@ func validEnvironment(environment string) map[string]string {
 		"AGENTERA_CLOUD_LOGIN_IDENTITY_LIMIT":                 "5",
 		"AGENTERA_CLOUD_LOGIN_IP_LIMIT":                       "20",
 		"AGENTERA_CLOUD_LOGIN_WINDOW_SECONDS":                 "600",
+		"AGENTERA_CLOUD_WORKSPACE_ACTIVE_OWNED_LIMIT":         "10",
+		"AGENTERA_CLOUD_WORKSPACE_MEMBER_LIMIT":               "100",
+		"AGENTERA_CLOUD_WORKSPACE_PENDING_INVITE_LIMIT":       "20",
+		"AGENTERA_CLOUD_WORKSPACE_CREATE_RATE_LIMIT":          "10",
+		"AGENTERA_CLOUD_WORKSPACE_CREATE_RATE_WINDOW":         "1h",
+		"AGENTERA_CLOUD_WORKSPACE_INVITE_RATE_LIMIT":          "20",
+		"AGENTERA_CLOUD_WORKSPACE_INVITE_RATE_WINDOW":         "1h",
+		"AGENTERA_CLOUD_WORKSPACE_ACCEPT_RATE_LIMIT":          "30",
+		"AGENTERA_CLOUD_WORKSPACE_ACCEPT_RATE_WINDOW":         "10m",
 		"AGENTERA_CLOUD_TERMS_VERSION":                        "terms-2026-07",
 		"AGENTERA_CLOUD_PRIVACY_VERSION":                      "privacy-2026-07",
 		"AGENTERA_CLOUD_SMTP_HOST":                            "smtp.example.com",
@@ -473,5 +545,17 @@ func mapLookup(values map[string]string) LookupEnv {
 	return func(key string) (string, bool) {
 		value, ok := values[key]
 		return value, ok
+	}
+}
+
+func assertConfigField(t *testing.T, cfg Config, name string, expected any) {
+	t.Helper()
+	field := reflect.ValueOf(cfg).FieldByName(name)
+	if !field.IsValid() {
+		t.Fatalf("Config.%s does not exist", name)
+	}
+	actual := field.Interface()
+	if !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("Config.%s = %#v, want %#v", name, actual, expected)
 	}
 }

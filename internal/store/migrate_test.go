@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"sync"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bignormal/aera-cloud/internal/testkit"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -49,6 +51,10 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 		"policy_snapshots",
 		"runtime_binding_records",
 		"agent_control_idempotency_keys",
+		"workspaces",
+		"workspace_memberships",
+		"workspace_invitations",
+		"workspace_idempotency_records",
 	}
 	for _, table := range tables {
 		var exists bool
@@ -81,6 +87,27 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	assertCheckConstraintExcludes(t, ctx, postgres, "installations", "installations_lifecycle_check", "policy_snapshot_id IS NULL")
 	assertCheckConstraintContains(t, ctx, postgres, "installations", "installations_status_check", "pending")
 	assertCheckConstraintContains(t, ctx, postgres, "installations", "installations_update_policy_check", "manual")
+	assertCheckConstraintContains(t, ctx, postgres, "workspaces", "workspaces_display_name_check", "char_length(btrim(display_name))")
+	assertCheckConstraintContains(t, ctx, postgres, "workspaces", "workspaces_lifecycle_check", "archived_at")
+	assertCheckConstraintContains(t, ctx, postgres, "workspace_memberships", "workspace_memberships_role_check", "owner")
+	assertCheckConstraintContains(t, ctx, postgres, "workspace_invitations", "workspace_invitations_token_digest_length_check", "octet_length(token_digest) = 32")
+	assertCheckConstraintContains(t, ctx, postgres, "workspace_invitations", "workspace_invitations_expiry_check", "expires_at")
+	assertCheckConstraintContains(t, ctx, postgres, "workspace_invitations", "workspace_invitations_lifecycle_check", "accepted_by_user_id")
+	assertCheckConstraintContains(t, ctx, postgres, "workspace_idempotency_records", "workspace_idempotency_key_digest_length_check", "octet_length(key_digest) = 32")
+	assertCheckConstraintContains(t, ctx, postgres, "workspace_idempotency_records", "workspace_idempotency_request_digest_length_check", "octet_length(request_digest) = 32")
+	assertCheckConstraintContains(t, ctx, postgres, "workspace_idempotency_records", "workspace_idempotency_expiry_check", "expires_at")
+
+	assertForeignKeyConstraintContains(t, ctx, postgres, "workspaces", "workspaces_owner_user_fk", "ON DELETE RESTRICT")
+	assertForeignKeyConstraintContains(t, ctx, postgres, "workspace_memberships", "workspace_memberships_workspace_fk", "ON DELETE CASCADE")
+	assertForeignKeyConstraintContains(t, ctx, postgres, "workspace_memberships", "workspace_memberships_user_fk", "ON DELETE CASCADE")
+	assertForeignKeyConstraintContains(t, ctx, postgres, "workspace_invitations", "workspace_invitations_created_by_user_fk", "ON DELETE SET NULL")
+	assertForeignKeyConstraintContains(t, ctx, postgres, "workspace_invitations", "workspace_invitations_accepted_by_user_fk", "ON DELETE SET NULL")
+
+	assertIndexDefinitionContains(t, ctx, postgres, "workspace_memberships_one_owner_idx", "UNIQUE", "workspace_id", "WHERE", "owner")
+	assertIndexDefinitionContains(t, ctx, postgres, "workspaces_owner_active_idx", "owner_user_id", "WHERE", "active")
+	assertIndexDefinitionContains(t, ctx, postgres, "workspace_memberships_user_list_idx", "user_id", "workspace_id")
+	assertIndexDefinitionContains(t, ctx, postgres, "workspace_invitations_pending_idx", "workspace_id", "expires_at", "pending")
+	assertIndexDefinitionContains(t, ctx, postgres, "workspace_idempotency_expiry_idx", "expires_at")
 
 	assertColumns(t, ctx, postgres, "agent_definitions", []string{
 		"id", "tenant_id", "owner_scope", "owner_id", "display_name", "icon_media_type", "icon_data",
@@ -96,6 +123,20 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 		"definition_id", "selected_version_id", "runtime_profile_id", "policy_snapshot_id", "update_policy",
 		"status", "created_by", "created_at", "updated_at", "activated_at", "archived_at",
 	})
+	assertColumns(t, ctx, postgres, "workspaces", []string{
+		"id", "owner_user_id", "display_name", "status", "revision", "created_at", "updated_at", "archived_at",
+	})
+	assertColumns(t, ctx, postgres, "workspace_memberships", []string{
+		"workspace_id", "user_id", "role", "revision", "joined_at", "updated_at",
+	})
+	assertColumns(t, ctx, postgres, "workspace_invitations", []string{
+		"id", "workspace_id", "token_digest", "created_by_user_id", "status", "accepted_by_user_id",
+		"created_at", "expires_at", "accepted_at", "revoked_at",
+	})
+	assertColumns(t, ctx, postgres, "workspace_idempotency_records", []string{
+		"actor_user_id", "workspace_id", "operation", "key_digest", "request_digest", "resource_type",
+		"resource_id", "created_at", "expires_at",
+	})
 
 	for table, trigger := range map[string]string{
 		"agent_versions":            "agent_versions_immutable_trigger",
@@ -105,13 +146,17 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	} {
 		assertTriggerExists(t, ctx, postgres, table, trigger)
 	}
+	assertTriggerExists(t, ctx, postgres, "workspaces", "workspaces_owner_user_immutable_trigger")
+	assertTriggerExists(t, ctx, postgres, "workspace_invitations", "workspace_invitations_lifecycle_trigger")
+	assertDeferredConstraintTrigger(t, ctx, postgres, "workspaces", "workspaces_owner_membership_constraint_trigger")
+	assertDeferredConstraintTrigger(t, ctx, postgres, "workspace_memberships", "workspace_memberships_owner_constraint_trigger")
 
 	var applied int
 	if err := postgres.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if applied != 8 {
-		t.Fatalf("applied migration count = %d, want 8", applied)
+	if applied != 9 {
+		t.Fatalf("applied migration count = %d, want 9", applied)
 	}
 	var receiptConsumedColumn bool
 	if err := postgres.QueryRow(ctx, `
@@ -166,6 +211,168 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	}
 	if adminAuditColumns != 2 {
 		t.Fatalf("restricted audit column count = %d, want 2", adminAuditColumns)
+	}
+}
+
+func TestWorkspaceOwnerInvariantRejectsMissingOrMismatchedOwnerAtCommit(t *testing.T) {
+	services := testkit.IntegrationServices(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	postgres, err := OpenPostgres(ctx, services.DatabaseURL)
+	if err != nil {
+		t.Fatalf("OpenPostgres() error = %v", err)
+	}
+	defer postgres.Close()
+	if err := ApplyMigrations(ctx, postgres); err != nil {
+		t.Fatalf("ApplyMigrations() error = %v", err)
+	}
+
+	ownerID := uuid.New()
+	otherID := uuid.New()
+	now := time.Date(2026, 7, 20, 8, 30, 0, 0, time.UTC)
+	if _, err := postgres.Exec(ctx, `
+		INSERT INTO users (id, status, created_at, updated_at)
+		VALUES ($1, 'active', $3, $3), ($2, 'active', $3, $3)
+	`, ownerID, otherID, now); err != nil {
+		t.Fatalf("insert users: %v", err)
+	}
+	defer func() {
+		_, _ = postgres.Exec(context.Background(), `DELETE FROM users WHERE id IN ($1, $2)`, ownerID, otherID)
+	}()
+	defer func() {
+		_, _ = postgres.Exec(context.Background(), `DELETE FROM workspaces WHERE owner_user_id = $1`, ownerID)
+	}()
+
+	validWorkspaceID := uuid.New()
+	valid, err := postgres.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin valid workspace transaction: %v", err)
+	}
+	defer func() { _ = valid.Rollback(context.Background()) }()
+	if _, err := valid.Exec(ctx, `
+		INSERT INTO workspaces (id, owner_user_id, display_name, status, revision, created_at, updated_at)
+		VALUES ($1, $2, 'Valid workspace', 'active', 1, $3, $3)
+	`, validWorkspaceID, ownerID, now); err != nil {
+		t.Fatalf("insert valid workspace: %v", err)
+	}
+	if _, err := valid.Exec(ctx, `
+		INSERT INTO workspace_memberships (workspace_id, user_id, role, revision, joined_at, updated_at)
+		VALUES ($1, $2, 'owner', 1, $3, $3)
+	`, validWorkspaceID, ownerID, now); err != nil {
+		t.Fatalf("insert valid Owner membership: %v", err)
+	}
+	if err := valid.Commit(ctx); err != nil {
+		t.Fatalf("commit valid workspace: %v", err)
+	}
+
+	if _, err := postgres.Exec(ctx, `UPDATE workspaces SET owner_user_id = $2 WHERE id = $1`, validWorkspaceID, otherID); err == nil {
+		t.Fatal("owner_user_id update succeeded, want immutable Owner rejection")
+	}
+
+	missingOwner, err := postgres.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin missing-Owner transaction: %v", err)
+	}
+	defer func() { _ = missingOwner.Rollback(context.Background()) }()
+	if _, err := missingOwner.Exec(ctx, `
+		INSERT INTO workspaces (id, owner_user_id, display_name, status, revision, created_at, updated_at)
+		VALUES ($1, $2, 'Missing Owner', 'active', 1, $3, $3)
+	`, uuid.New(), ownerID, now); err != nil {
+		t.Fatalf("insert missing-Owner workspace before deferred check: %v", err)
+	}
+	if err := missingOwner.Commit(ctx); err == nil {
+		t.Fatal("workspace without Owner membership committed")
+	}
+
+	mismatchedOwner, err := postgres.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin mismatched-Owner transaction: %v", err)
+	}
+	defer func() { _ = mismatchedOwner.Rollback(context.Background()) }()
+	mismatchedWorkspaceID := uuid.New()
+	if _, err := mismatchedOwner.Exec(ctx, `
+		INSERT INTO workspaces (id, owner_user_id, display_name, status, revision, created_at, updated_at)
+		VALUES ($1, $2, 'Mismatched Owner', 'active', 1, $3, $3)
+	`, mismatchedWorkspaceID, ownerID, now); err != nil {
+		t.Fatalf("insert mismatched workspace: %v", err)
+	}
+	if _, err := mismatchedOwner.Exec(ctx, `
+		INSERT INTO workspace_memberships (workspace_id, user_id, role, revision, joined_at, updated_at)
+		VALUES ($1, $2, 'owner', 1, $3, $3)
+	`, mismatchedWorkspaceID, otherID, now); err != nil {
+		t.Fatalf("insert mismatched Owner membership before deferred check: %v", err)
+	}
+	if err := mismatchedOwner.Commit(ctx); err == nil {
+		t.Fatal("workspace with mismatched Owner membership committed")
+	}
+}
+
+func TestWorkspaceInvitationTerminalStateCannotTransitionAgain(t *testing.T) {
+	services := testkit.IntegrationServices(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	postgres, err := OpenPostgres(ctx, services.DatabaseURL)
+	if err != nil {
+		t.Fatalf("OpenPostgres() error = %v", err)
+	}
+	defer postgres.Close()
+	if err := ApplyMigrations(ctx, postgres); err != nil {
+		t.Fatalf("ApplyMigrations() error = %v", err)
+	}
+
+	ownerID := uuid.New()
+	workspaceID := uuid.New()
+	invitationID := uuid.New()
+	now := time.Date(2026, 7, 20, 8, 45, 0, 0, time.UTC)
+	if _, err := postgres.Exec(ctx, `INSERT INTO users (id, status, created_at, updated_at) VALUES ($1, 'active', $2, $2)`, ownerID, now); err != nil {
+		t.Fatalf("insert invitation owner: %v", err)
+	}
+	defer func() { _, _ = postgres.Exec(context.Background(), `DELETE FROM users WHERE id = $1`, ownerID) }()
+	defer func() {
+		_, _ = postgres.Exec(context.Background(), `DELETE FROM workspaces WHERE id = $1`, workspaceID)
+	}()
+
+	tx, err := postgres.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin invitation fixture: %v", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO workspaces (id, owner_user_id, display_name, status, revision, created_at, updated_at)
+		VALUES ($1, $2, 'Invitation workspace', 'active', 1, $3, $3)
+	`, workspaceID, ownerID, now); err != nil {
+		t.Fatalf("insert invitation workspace: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO workspace_memberships (workspace_id, user_id, role, revision, joined_at, updated_at)
+		VALUES ($1, $2, 'owner', 1, $3, $3)
+	`, workspaceID, ownerID, now); err != nil {
+		t.Fatalf("insert invitation Owner membership: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit invitation workspace: %v", err)
+	}
+
+	if _, err := postgres.Exec(ctx, `
+		INSERT INTO workspace_invitations (
+			id, workspace_id, token_digest, created_by_user_id, status, created_at, expires_at
+		) VALUES ($1, $2, $3, $4, 'pending', $5, $6)
+	`, invitationID, workspaceID, bytes.Repeat([]byte{0x42}, 32), ownerID, now, now.Add(7*24*time.Hour)); err != nil {
+		t.Fatalf("insert pending invitation: %v", err)
+	}
+	if _, err := postgres.Exec(ctx, `
+		UPDATE workspace_invitations
+		SET status = 'accepted', accepted_by_user_id = $2, accepted_at = $3
+		WHERE id = $1
+	`, invitationID, ownerID, now.Add(time.Hour)); err != nil {
+		t.Fatalf("accept pending invitation: %v", err)
+	}
+	if _, err := postgres.Exec(ctx, `
+		UPDATE workspace_invitations
+		SET status = 'revoked', accepted_by_user_id = NULL, accepted_at = NULL, revoked_at = $2
+		WHERE id = $1
+	`, invitationID, now.Add(2*time.Hour)); err == nil {
+		t.Fatal("accepted invitation transitioned to revoked")
 	}
 }
 
@@ -260,6 +467,84 @@ func assertTriggerExists(t *testing.T, ctx context.Context, postgres *pgxpool.Po
 	}
 	if enabled != "O" {
 		t.Fatalf("trigger %s enabled state = %q, want O", name, enabled)
+	}
+}
+
+func assertForeignKeyConstraintContains(
+	t *testing.T,
+	ctx context.Context,
+	postgres *pgxpool.Pool,
+	table string,
+	name string,
+	expected string,
+) {
+	t.Helper()
+	var definition string
+	err := postgres.QueryRow(ctx, `
+		SELECT pg_get_constraintdef(c.oid)
+		FROM pg_constraint c
+		JOIN pg_class tbl ON tbl.oid = c.conrelid
+		WHERE tbl.relname = $1 AND c.conname = $2 AND c.contype = 'f'
+	`, table, name).Scan(&definition)
+	if err != nil {
+		t.Fatalf("read foreign key constraint %s: %v", name, err)
+	}
+	if !strings.Contains(definition, expected) {
+		t.Fatalf("foreign key constraint %s = %q, want it to contain %q", name, definition, expected)
+	}
+}
+
+func assertIndexDefinitionContains(
+	t *testing.T,
+	ctx context.Context,
+	postgres *pgxpool.Pool,
+	name string,
+	expected ...string,
+) {
+	t.Helper()
+	var definition string
+	err := postgres.QueryRow(ctx, `
+		SELECT pg_get_indexdef(i.indexrelid)
+		FROM pg_index i
+		JOIN pg_class idx ON idx.oid = i.indexrelid
+		WHERE idx.relname = $1
+	`, name).Scan(&definition)
+	if err != nil {
+		t.Fatalf("read index %s: %v", name, err)
+	}
+	for _, fragment := range expected {
+		if !strings.Contains(strings.ToLower(definition), strings.ToLower(fragment)) {
+			t.Fatalf("index %s = %q, want it to contain %q", name, definition, fragment)
+		}
+	}
+}
+
+func assertDeferredConstraintTrigger(
+	t *testing.T,
+	ctx context.Context,
+	postgres *pgxpool.Pool,
+	table string,
+	name string,
+) {
+	t.Helper()
+	var deferrable bool
+	var initiallyDeferred bool
+	err := postgres.QueryRow(ctx, `
+		SELECT tg.tgdeferrable, tg.tginitdeferred
+		FROM pg_trigger tg
+		JOIN pg_class tbl ON tbl.oid = tg.tgrelid
+		WHERE tbl.relname = $1 AND tg.tgname = $2 AND NOT tg.tgisinternal
+	`, table, name).Scan(&deferrable, &initiallyDeferred)
+	if err != nil {
+		t.Fatalf("read deferred constraint trigger %s: %v", name, err)
+	}
+	if !deferrable || !initiallyDeferred {
+		t.Fatalf(
+			"constraint trigger %s deferrable/initially deferred = %t/%t, want true/true",
+			name,
+			deferrable,
+			initiallyDeferred,
+		)
 	}
 }
 

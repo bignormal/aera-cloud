@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -52,6 +53,15 @@ const (
 	envLoginIdentityLimit              = "AGENTERA_CLOUD_LOGIN_IDENTITY_LIMIT"
 	envLoginIPLimit                    = "AGENTERA_CLOUD_LOGIN_IP_LIMIT"
 	envLoginWindowSeconds              = "AGENTERA_CLOUD_LOGIN_WINDOW_SECONDS"
+	envWorkspaceActiveOwnedLimit       = "AGENTERA_CLOUD_WORKSPACE_ACTIVE_OWNED_LIMIT"
+	envWorkspaceMemberLimit            = "AGENTERA_CLOUD_WORKSPACE_MEMBER_LIMIT"
+	envWorkspacePendingInviteLimit     = "AGENTERA_CLOUD_WORKSPACE_PENDING_INVITE_LIMIT"
+	envWorkspaceCreateRateLimit        = "AGENTERA_CLOUD_WORKSPACE_CREATE_RATE_LIMIT"
+	envWorkspaceCreateRateWindow       = "AGENTERA_CLOUD_WORKSPACE_CREATE_RATE_WINDOW"
+	envWorkspaceInviteRateLimit        = "AGENTERA_CLOUD_WORKSPACE_INVITE_RATE_LIMIT"
+	envWorkspaceInviteRateWindow       = "AGENTERA_CLOUD_WORKSPACE_INVITE_RATE_WINDOW"
+	envWorkspaceAcceptRateLimit        = "AGENTERA_CLOUD_WORKSPACE_ACCEPT_RATE_LIMIT"
+	envWorkspaceAcceptRateWindow       = "AGENTERA_CLOUD_WORKSPACE_ACCEPT_RATE_WINDOW"
 	envTermsVersion                    = "AGENTERA_CLOUD_TERMS_VERSION"
 	envPrivacyVersion                  = "AGENTERA_CLOUD_PRIVACY_VERSION"
 	envSMTPHost                        = "AGENTERA_CLOUD_SMTP_HOST"
@@ -103,6 +113,15 @@ type Config struct {
 	LoginIdentityLimit          int64
 	LoginIPLimit                int64
 	LoginWindowSeconds          int
+	WorkspaceActiveOwnedLimit   int
+	WorkspaceMemberLimit        int
+	WorkspacePendingInviteLimit int
+	WorkspaceCreateRateLimit    int64
+	WorkspaceCreateRateWindow   time.Duration
+	WorkspaceInviteRateLimit    int64
+	WorkspaceInviteRateWindow   time.Duration
+	WorkspaceAcceptRateLimit    int64
+	WorkspaceAcceptRateWindow   time.Duration
 	TermsVersion                string
 	PrivacyVersion              string
 	SMTPHost                    string
@@ -301,6 +320,42 @@ func Load(lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	workspaceActiveOwnedLimit, err := requiredInteger(lookup, envWorkspaceActiveOwnedLimit, 1, 1_000_000)
+	if err != nil {
+		return Config{}, err
+	}
+	workspaceMemberLimit, err := requiredInteger(lookup, envWorkspaceMemberLimit, 1, 1_000_000)
+	if err != nil {
+		return Config{}, err
+	}
+	workspacePendingInviteLimit, err := requiredInteger(lookup, envWorkspacePendingInviteLimit, 1, 1_000_000)
+	if err != nil {
+		return Config{}, err
+	}
+	workspaceCreateRateLimit, err := requiredInteger(lookup, envWorkspaceCreateRateLimit, 1, 1_000_000)
+	if err != nil {
+		return Config{}, err
+	}
+	workspaceCreateRateWindow, err := requiredPositiveDuration(lookup, envWorkspaceCreateRateWindow)
+	if err != nil {
+		return Config{}, err
+	}
+	workspaceInviteRateLimit, err := requiredInteger(lookup, envWorkspaceInviteRateLimit, 1, 1_000_000)
+	if err != nil {
+		return Config{}, err
+	}
+	workspaceInviteRateWindow, err := requiredPositiveDuration(lookup, envWorkspaceInviteRateWindow)
+	if err != nil {
+		return Config{}, err
+	}
+	workspaceAcceptRateLimit, err := requiredInteger(lookup, envWorkspaceAcceptRateLimit, 1, 1_000_000)
+	if err != nil {
+		return Config{}, err
+	}
+	workspaceAcceptRateWindow, err := requiredPositiveDuration(lookup, envWorkspaceAcceptRateWindow)
+	if err != nil {
+		return Config{}, err
+	}
 	termsVersion, err := requiredVersion(lookup, envTermsVersion)
 	if err != nil {
 		return Config{}, err
@@ -396,6 +451,15 @@ func Load(lookup LookupEnv) (Config, error) {
 		LoginIdentityLimit:          int64(loginIdentityLimit),
 		LoginIPLimit:                int64(loginIPLimit),
 		LoginWindowSeconds:          loginWindowSeconds,
+		WorkspaceActiveOwnedLimit:   workspaceActiveOwnedLimit,
+		WorkspaceMemberLimit:        workspaceMemberLimit,
+		WorkspacePendingInviteLimit: workspacePendingInviteLimit,
+		WorkspaceCreateRateLimit:    int64(workspaceCreateRateLimit),
+		WorkspaceCreateRateWindow:   workspaceCreateRateWindow,
+		WorkspaceInviteRateLimit:    int64(workspaceInviteRateLimit),
+		WorkspaceInviteRateWindow:   workspaceInviteRateWindow,
+		WorkspaceAcceptRateLimit:    int64(workspaceAcceptRateLimit),
+		WorkspaceAcceptRateWindow:   workspaceAcceptRateWindow,
 		TermsVersion:                termsVersion,
 		PrivacyVersion:              privacyVersion,
 		SMTPHost:                    smtpHost,
@@ -451,6 +515,18 @@ func requiredInteger(lookup LookupEnv, key string, minimum, maximum int) (int, e
 	parsed, err := strconv.Atoi(value)
 	if err != nil || parsed < minimum || parsed > maximum {
 		return 0, fmt.Errorf("%s must be an integer between %d and %d", key, minimum, maximum)
+	}
+	return parsed, nil
+}
+
+func requiredPositiveDuration(lookup LookupEnv, key string) (time.Duration, error) {
+	value, err := required(lookup, key)
+	if err != nil {
+		return 0, err
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed <= 0 {
+		return 0, fmt.Errorf("%s must be a positive duration", key)
 	}
 	return parsed, nil
 }
