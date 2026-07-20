@@ -285,6 +285,46 @@ func TestBuildAgentControlHandlerWiresAccessTokenOnlyRoute(t *testing.T) {
 	}
 }
 
+func TestBuildWorkspaceHandlerWiresConfiguredControlPlaneDependencies(t *testing.T) {
+	services := testkit.IntegrationServices(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	postgres, err := store.OpenPostgres(ctx, services.DatabaseURL)
+	if err != nil {
+		t.Fatalf("OpenPostgres() error = %v", err)
+	}
+	defer postgres.Close()
+	if err := store.ApplyMigrations(ctx, postgres); err != nil {
+		t.Fatalf("ApplyMigrations() error = %v", err)
+	}
+	redisStore, err := store.OpenRedis(ctx, store.RedisOptions{
+		Addr: services.RedisAddr, Username: services.RedisUsername, Password: services.RedisPassword, DB: services.RedisDB,
+	})
+	if err != nil {
+		t.Fatalf("OpenRedis() error = %v", err)
+	}
+	defer func() { _ = redisStore.Close() }()
+	cfg, err := config.Load(integrationLookup(services))
+	if err != nil {
+		t.Fatalf("config.Load() error = %v", err)
+	}
+
+	handler, err := buildWorkspaceHandler(cfg, postgres, redisStore.Client())
+	if err != nil {
+		t.Fatalf("buildWorkspaceHandler() error = %v", err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/workspaces", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), `"code":"session_revoked"`) {
+		t.Fatalf("response = %d %q", response.Code, response.Body.String())
+	}
+
+	if _, err := buildWorkspaceHandler(cfg, nil, redisStore.Client()); err == nil {
+		t.Fatal("buildWorkspaceHandler() accepted a nil PostgreSQL dependency")
+	}
+}
+
 func TestBuildMaintenanceRunnerUsesConfiguredStores(t *testing.T) {
 	services := testkit.IntegrationServices(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

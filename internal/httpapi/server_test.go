@@ -241,6 +241,43 @@ func TestAgentControlRoutesAreMountedWithoutCapturingOtherAPIRoutes(t *testing.T
 	}
 }
 
+func TestWorkspaceRoutesAreMountedWithoutCapturingOtherAPIRoutes(t *testing.T) {
+	routes := []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodGet, path: "/api/v1/workspaces"},
+		{method: http.MethodPost, path: "/api/v1/workspaces"},
+		{method: http.MethodPatch, path: "/api/v1/workspaces/workspace-id"},
+		{method: http.MethodGet, path: "/api/v1/workspaces/workspace-id/members"},
+		{method: http.MethodPost, path: "/api/v1/workspaces/workspace-id/invitations"},
+		{method: http.MethodPost, path: "/api/v1/workspace-invitations/accept"},
+	}
+	workspaceHandler := http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusTeapot)
+	})
+	handler := New(Dependencies{
+		PostgreSQL: &stubHealthChecker{}, Redis: &stubHealthChecker{}, Workspace: workspaceHandler,
+	})
+	for _, route := range routes {
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(route.method, route.path, nil))
+			if response.Code != http.StatusTeapot {
+				t.Fatalf("status = %d, want %d", response.Code, http.StatusTeapot)
+			}
+		})
+	}
+
+	for _, unrelated := range []string{"/api/v1/accounts/me", "/api/v1/agent-definitions", "/api/v1/workspace-missing"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, unrelated, nil))
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("unrelated path %s status = %d, want %d", unrelated, response.Code, http.StatusNotFound)
+		}
+	}
+}
+
 func TestWebAccountCenterHandlesOnlyUnmatchedNonServiceRoutes(t *testing.T) {
 	web := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.WriteHeader(http.StatusOK)

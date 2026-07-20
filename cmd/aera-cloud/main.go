@@ -31,6 +31,7 @@ import (
 	"github.com/bignormal/aera-cloud/internal/store"
 	"github.com/bignormal/aera-cloud/internal/verification"
 	"github.com/bignormal/aera-cloud/internal/webui"
+	"github.com/bignormal/aera-cloud/internal/workspace"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
@@ -103,6 +104,10 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 	if err != nil {
 		return err
 	}
+	workspaceHandler, err := buildWorkspaceHandler(cfg, postgres, redisStore.Client())
+	if err != nil {
+		return err
+	}
 	maintenanceRunner, err := buildMaintenanceRunner(cfg, postgres, redisStore.Client())
 	if err != nil {
 		return err
@@ -124,6 +129,7 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 		OAuth:        oauthHandler,
 		Devices:      deviceHandler,
 		AgentControl: agentControlHandler,
+		Workspace:    workspaceHandler,
 		Web:          webui.New(),
 	}))
 }
@@ -409,6 +415,46 @@ func buildAgentControlHandler(
 	return agentcontrol.NewHandler(agentcontrol.HTTPConfig{
 		Service: service, AccessTokens: accessAuthenticator,
 	}), nil
+}
+
+func buildWorkspaceHandler(
+	cfg config.Config,
+	postgres *pgxpool.Pool,
+	redisClient redis.UniversalClient,
+) (http.Handler, error) {
+	accessAuthenticator, err := buildAccessAuthenticator(cfg, postgres, redisClient)
+	if err != nil {
+		return nil, err
+	}
+	limiter, err := workspace.NewRedisWorkspaceLimiter(redisClient, workspace.LimitPolicies{
+		WorkspaceCreate: workspace.LimitPolicy{
+			Limit: cfg.WorkspaceCreateRateLimit, Window: cfg.WorkspaceCreateRateWindow,
+		},
+		InvitationCreate: workspace.LimitPolicy{
+			Limit: cfg.WorkspaceInviteRateLimit, Window: cfg.WorkspaceInviteRateWindow,
+		},
+		InvitationAccept: workspace.LimitPolicy{
+			Limit: cfg.WorkspaceAcceptRateLimit, Window: cfg.WorkspaceAcceptRateWindow,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	auditor, err := audit.NewPostgresRecorder(postgres)
+	if err != nil {
+		return nil, err
+	}
+	service, err := workspace.NewService(workspace.ServiceConfig{
+		Repository: workspace.NewPostgresRepository(postgres), Limiter: limiter, Auditor: auditor,
+		Random: workspace.DefaultServiceRandom(), Quotas: workspace.Quotas{
+			ActiveOwned: cfg.WorkspaceActiveOwnedLimit, Members: cfg.WorkspaceMemberLimit,
+			PendingInvitations: cfg.WorkspacePendingInviteLimit,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return workspace.NewHandler(workspace.HTTPConfig{Service: service, AccessTokens: accessAuthenticator}), nil
 }
 
 func buildAccessAuthenticator(
