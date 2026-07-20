@@ -6,6 +6,7 @@ const profile = {
   nickname: "Alice",
   status: "active",
   identity_kinds: ["email"],
+  owned_workspace_count: 2,
 };
 
 async function json(route: Route, body: unknown, status = 200) {
@@ -142,6 +143,7 @@ test("recovers a pending deletion through a verified identity without URL leakag
 
 test("warns that cloud deletion preserves local Hermes data before entering the cooling-off period", async ({ page }) => {
   await page.addInitScript(() => sessionStorage.setItem("agentera.csrf_token", "c".repeat(43)));
+  await page.route("**/api/v1/accounts/me", (route) => json(route, profile));
   await page.route("**/api/v1/verification/challenges", (route) => json(route, { status: "accepted" }, 202));
   await page.route("**/api/v1/verification/challenges/verify", (route) => json(route, {
     status: "verified", receipt: "deletion-receipt", expires_at: "2026-07-18T09:10:00Z",
@@ -150,6 +152,7 @@ test("warns that cloud deletion preserves local Hermes data before entering the 
   await page.goto("/delete-account");
 
   await expect(page.getByText(/不会删除本机 Hermes 会话、Memory、文件或学习成果/)).toBeVisible();
+  await expect(page.getByText(/此账户拥有 2 个工作空间/)).toBeVisible();
   await page.getByLabel("用于接收验证码的已绑定邮箱或手机号").fill("alice@example.com");
   await page.getByRole("button", { name: "发送注销验证码" }).click();
   await page.getByLabel("6 位验证码").fill("123456");

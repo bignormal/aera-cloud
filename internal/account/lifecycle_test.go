@@ -39,7 +39,7 @@ func TestProfileReturnsOnlyRedactedIdentityMetadata(t *testing.T) {
 	userID := uuid.New()
 	fixture.repository.profile = Profile{
 		UserID: userID, PersonalSpaceID: uuid.New(), Nickname: "Alice", Status: "active",
-		IdentityKinds: []secure.IdentityKind{secure.IdentityEmail, secure.IdentityPhone},
+		IdentityKinds: []secure.IdentityKind{secure.IdentityEmail, secure.IdentityPhone}, OwnedWorkspaceCount: 3,
 	}
 	fixture.repository.profileFound = true
 
@@ -47,7 +47,8 @@ func TestProfileReturnsOnlyRedactedIdentityMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Profile() error = %v", err)
 	}
-	if profile.UserID != userID || len(profile.IdentityKinds) != 2 || profile.IdentityKinds[0] != secure.IdentityEmail {
+	if profile.UserID != userID || len(profile.IdentityKinds) != 2 || profile.IdentityKinds[0] != secure.IdentityEmail ||
+		profile.OwnedWorkspaceCount != 3 {
 		t.Fatalf("Profile() = %+v", profile)
 	}
 }

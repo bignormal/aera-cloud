@@ -166,7 +166,7 @@ func TestHTTPHandlerServesRedactedProfileForBrowserSession(t *testing.T) {
 	userID := uuid.New()
 	service := &stubAccountService{profile: Profile{
 		UserID: userID, PersonalSpaceID: uuid.New(), Nickname: "Alice", Status: "active",
-		IdentityKinds: []secure.IdentityKind{secure.IdentityEmail, secure.IdentityPhone},
+		IdentityKinds: []secure.IdentityKind{secure.IdentityEmail, secure.IdentityPhone}, OwnedWorkspaceCount: 2,
 	}}
 	sessions := &stubBrowserSessions{readSession: browser.Session{Principal: browser.Principal{UserID: userID, PersonalSpaceID: uuid.New()}}}
 	handler := NewHandler(HTTPConfig{Accounts: service, BrowserSessions: sessions, Legal: currentLegal(t)})
@@ -175,11 +175,13 @@ func TestHTTPHandlerServesRedactedProfileForBrowserSession(t *testing.T) {
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/accounts/me", nil))
 
 	body := response.Body.String()
-	if response.Code != http.StatusOK || service.profileUserID != userID || !strings.Contains(body, `"identity_kinds":["email","phone"]`) {
+	if response.Code != http.StatusOK || service.profileUserID != userID || !strings.Contains(body, `"identity_kinds":["email","phone"]`) ||
+		!strings.Contains(body, `"owned_workspace_count":2`) {
 		t.Fatalf("profile response = %d %q, user=%s", response.Code, body, service.profileUserID)
 	}
-	if strings.Contains(body, "alice@example.com") || strings.Contains(body, "+861") {
-		t.Fatalf("profile response leaked identity value: %s", body)
+	if strings.Contains(body, "alice@example.com") || strings.Contains(body, "+861") ||
+		strings.Contains(body, `"workspace_names"`) || strings.Contains(body, `"members"`) {
+		t.Fatalf("profile response leaked identity or workspace detail: %s", body)
 	}
 }
 

@@ -14,6 +14,7 @@ export interface AccountProfile {
   nickname?: string;
   status: "active";
   identity_kinds: IdentityKind[];
+  owned_workspace_count: number;
 }
 
 export interface BrowserLoginResponse {

@@ -16,6 +16,7 @@ const (
 	verificationReceiptRetention = 11 * time.Minute
 	deletionRecoveryWindow       = 7 * 24 * time.Hour
 	deletionBatchSize            = 100
+	workspaceCleanupBatchSize    = 500
 )
 
 var ErrMaintenanceUnavailable = errors.New("maintenance storage is unavailable")
@@ -78,6 +79,31 @@ func (m *PostgresMaintenance) cleanupExpiredRows(ctx context.Context, now time.T
 		query string
 		args  []any
 	}{
+		{`WITH due AS (
+			SELECT id
+			FROM workspace_invitations
+			WHERE status = 'pending' AND expires_at <= $1
+			ORDER BY expires_at, id
+			LIMIT $2
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE workspace_invitations invitation
+		SET status = 'expired'
+		FROM due
+		WHERE invitation.id = due.id`, []any{now, workspaceCleanupBatchSize}},
+		{`WITH due AS (
+			SELECT actor_user_id, operation, key_digest
+			FROM workspace_idempotency_records
+			WHERE expires_at <= $1
+			ORDER BY expires_at, actor_user_id, operation, key_digest
+			LIMIT $2
+			FOR UPDATE SKIP LOCKED
+		)
+		DELETE FROM workspace_idempotency_records record
+		USING due
+		WHERE record.actor_user_id = due.actor_user_id
+		  AND record.operation = due.operation
+		  AND record.key_digest = due.key_digest`, []any{now, workspaceCleanupBatchSize}},
 		{`DELETE FROM verification_challenges
 			WHERE receipt_consumed_at IS NOT NULL
 			   OR (consumed_at IS NULL AND expires_at <= $1)

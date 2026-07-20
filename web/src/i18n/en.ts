@@ -70,6 +70,8 @@ export const en = {
   reauthenticate: "Sign in again to continue this security-sensitive action.",
   deleteTitle: "Delete AgentEra account",
   deleteWarning: "Deletion immediately revokes cloud sessions and starts a seven-day cooling-off period. It does not delete local Hermes sessions, Memory, files, or learned state. Handle local data separately first.",
+  ownedWorkspaceDeletionPrefix: "This account owns ",
+  ownedWorkspaceDeletionSuffix: " workspaces. They and their cloud workspace assets will be deleted when account deletion is finalized.",
   deletionIdentity: "Bound email or phone for the verification code",
   sendDeletionCode: "Send deletion code",
   verifyDeletionIdentity: "Verify deletion identity",

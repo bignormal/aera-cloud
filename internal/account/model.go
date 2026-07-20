@@ -46,11 +46,12 @@ type Principal struct {
 // Profile contains only account-center metadata. Login identity values remain
 // encrypted in storage and are never returned by this API.
 type Profile struct {
-	UserID          uuid.UUID             `json:"user_id"`
-	PersonalSpaceID uuid.UUID             `json:"personal_space_id"`
-	Nickname        string                `json:"nickname,omitempty"`
-	Status          string                `json:"status"`
-	IdentityKinds   []secure.IdentityKind `json:"identity_kinds"`
+	UserID              uuid.UUID             `json:"user_id"`
+	PersonalSpaceID     uuid.UUID             `json:"personal_space_id"`
+	Nickname            string                `json:"nickname,omitempty"`
+	Status              string                `json:"status"`
+	IdentityKinds       []secure.IdentityKind `json:"identity_kinds"`
+	OwnedWorkspaceCount int                   `json:"owned_workspace_count"`
 }
 
 type RegistrationRecord struct {

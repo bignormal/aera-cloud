@@ -23,7 +23,8 @@ func (r *PostgresRepository) Profile(ctx context.Context, userID uuid.UUID) (Pro
 	var identityKinds []string
 	err := r.postgres.QueryRow(ctx, `
 		SELECT u.id, ps.id, COALESCE(u.nickname, ''), u.status,
-			array_agg(i.kind ORDER BY i.kind)
+			array_agg(i.kind ORDER BY i.kind),
+			(SELECT count(*) FROM workspaces owned WHERE owned.owner_user_id = u.id)
 		FROM users u
 		JOIN personal_spaces ps ON ps.owner_user_id = u.id
 		JOIN identities i ON i.user_id = u.id
@@ -31,6 +32,7 @@ func (r *PostgresRepository) Profile(ctx context.Context, userID uuid.UUID) (Pro
 		GROUP BY u.id, ps.id
 	`, userID).Scan(
 		&profile.UserID, &profile.PersonalSpaceID, &profile.Nickname, &profile.Status, &identityKinds,
+		&profile.OwnedWorkspaceCount,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Profile{}, false, nil
@@ -370,17 +372,59 @@ func (r *PostgresRepository) FinalizeDeletion(
 	if status != "pending_deletion" || !requestedAt.Valid || finalizedAt.Before(requestedAt.Time.Add(deletionRecoveryWindow)) {
 		return ErrDeletionWindowExpired
 	}
+	ownedWorkspaceRows, err := tx.Query(ctx, `
+		SELECT id FROM workspaces WHERE owner_user_id = $1 ORDER BY id FOR UPDATE
+	`, userID)
+	if err != nil {
+		return ErrServiceUnavailable
+	}
+	ownedWorkspaceIDs := make([]uuid.UUID, 0)
+	for ownedWorkspaceRows.Next() {
+		var workspaceID uuid.UUID
+		if err := ownedWorkspaceRows.Scan(&workspaceID); err != nil {
+			ownedWorkspaceRows.Close()
+			return ErrServiceUnavailable
+		}
+		ownedWorkspaceIDs = append(ownedWorkspaceIDs, workspaceID)
+	}
+	ownedWorkspaceRows.Close()
+	if ownedWorkspaceRows.Err() != nil {
+		return ErrServiceUnavailable
+	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE audit_events
 		SET actor_user_id = CASE WHEN actor_user_id = $1 THEN NULL ELSE actor_user_id END,
 			subject_user_id = CASE WHEN subject_user_id = $1 THEN NULL ELSE subject_user_id END,
 			device_id = CASE WHEN device_id IN (SELECT id FROM devices WHERE user_id = $1) THEN NULL ELSE device_id END,
-			metadata = CASE WHEN metadata->>'owner_id' = $1::text THEN '{}'::jsonb ELSE metadata END,
+			metadata = CASE
+				WHEN metadata->>'owner_id' = $1::text
+					OR metadata->>'membership_user_id' = $1::text
+					OR metadata->>'workspace_id' IN (
+						SELECT owned_workspace_id::text FROM unnest($2::uuid[]) AS owned(owned_workspace_id)
+					)
+					OR metadata->>'invitation_id' IN (
+						SELECT invitation.id::text
+						FROM workspace_invitations invitation
+						WHERE invitation.workspace_id = ANY($2::uuid[])
+						   OR invitation.created_by_user_id = $1
+						   OR invitation.accepted_by_user_id = $1
+					)
+				THEN '{}'::jsonb
+				ELSE metadata
+			END,
 			object_id = CASE
 				WHEN actor_user_id = $1 OR subject_user_id = $1 OR object_id = $1
 					OR device_id IN (SELECT id FROM devices WHERE user_id = $1)
 					OR object_id IN (SELECT id FROM devices WHERE user_id = $1)
 					OR metadata->>'owner_id' = $1::text
+					OR object_id = ANY($2::uuid[])
+					OR object_id IN (
+						SELECT invitation.id
+						FROM workspace_invitations invitation
+						WHERE invitation.workspace_id = ANY($2::uuid[])
+						   OR invitation.created_by_user_id = $1
+						   OR invitation.accepted_by_user_id = $1
+					)
 					OR object_id IN (
 						SELECT id FROM agent_definitions WHERE owner_id = $1
 						UNION ALL SELECT id FROM agent_versions WHERE owner_id = $1
@@ -397,6 +441,25 @@ func (r *PostgresRepository) FinalizeDeletion(
 		   OR object_id = $1
 		   OR object_id IN (SELECT id FROM devices WHERE user_id = $1)
 		   OR metadata->>'owner_id' = $1::text
+		   OR metadata->>'membership_user_id' = $1::text
+		   OR object_id = ANY($2::uuid[])
+		   OR metadata->>'workspace_id' IN (
+				SELECT owned_workspace_id::text FROM unnest($2::uuid[]) AS owned(owned_workspace_id)
+		   )
+		   OR metadata->>'invitation_id' IN (
+				SELECT invitation.id::text
+				FROM workspace_invitations invitation
+				WHERE invitation.workspace_id = ANY($2::uuid[])
+				   OR invitation.created_by_user_id = $1
+				   OR invitation.accepted_by_user_id = $1
+		   )
+		   OR object_id IN (
+				SELECT invitation.id
+				FROM workspace_invitations invitation
+				WHERE invitation.workspace_id = ANY($2::uuid[])
+				   OR invitation.created_by_user_id = $1
+				   OR invitation.accepted_by_user_id = $1
+		   )
 		   OR object_id IN (
 				SELECT id FROM agent_definitions WHERE owner_id = $1
 				UNION ALL SELECT id FROM agent_versions WHERE owner_id = $1
@@ -405,7 +468,24 @@ func (r *PostgresRepository) FinalizeDeletion(
 				UNION ALL SELECT id FROM policy_snapshots WHERE owner_id = $1
 				UNION ALL SELECT id FROM runtime_binding_records WHERE owner_id = $1
 		   )
+	`, userID, ownedWorkspaceIDs); err != nil {
+		return ErrServiceUnavailable
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE workspace_invitations
+		SET created_by_user_id = CASE WHEN created_by_user_id = $1 THEN NULL ELSE created_by_user_id END,
+			accepted_by_user_id = CASE WHEN accepted_by_user_id = $1 THEN NULL ELSE accepted_by_user_id END
+		WHERE created_by_user_id = $1 OR accepted_by_user_id = $1
 	`, userID); err != nil {
+		return ErrServiceUnavailable
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM workspace_idempotency_records WHERE actor_user_id = $1`, userID); err != nil {
+		return ErrServiceUnavailable
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM workspace_memberships WHERE user_id = $1 AND role <> 'owner'`, userID); err != nil {
+		return ErrServiceUnavailable
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM workspaces WHERE id = ANY($1::uuid[])`, ownedWorkspaceIDs); err != nil {
 		return ErrServiceUnavailable
 	}
 	for _, statement := range []string{

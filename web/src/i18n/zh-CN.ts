@@ -70,6 +70,8 @@ export const zhCN = {
   reauthenticate: "请重新登录后继续安全操作。",
   deleteTitle: "注销 AgentEra 账户",
   deleteWarning: "注销立即撤销云端会话并进入 7 天冷静期，但不会删除本机 Hermes 会话、Memory、文件或学习成果。请先单独备份或处理本地数据。",
+  ownedWorkspaceDeletionPrefix: "此账户拥有 ",
+  ownedWorkspaceDeletionSuffix: " 个工作空间；注销最终完成时，这些工作空间及其云端资产将被删除。",
   deletionIdentity: "用于接收验证码的已绑定邮箱或手机号",
   sendDeletionCode: "发送注销验证码",
   verifyDeletionIdentity: "验证注销身份",
