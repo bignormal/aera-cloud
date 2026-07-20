@@ -72,6 +72,8 @@ func New(dependencies Dependencies) http.Handler {
 		router.Handle("/api/v1/agent-installations/*", dependencies.AgentControl)
 		router.Handle("/api/v1/policy-snapshots/*", dependencies.AgentControl)
 		router.Handle("/api/v1/runtime-binding-records", dependencies.AgentControl)
+		router.Handle("/api/v1/workspaces/{workspaceID}/agent-definitions", dependencies.AgentControl)
+		router.Handle("/api/v1/workspaces/{workspaceID}/agent-definitions/*", dependencies.AgentControl)
 	}
 	if dependencies.Workspace != nil {
 		router.Handle("/api/v1/workspaces", dependencies.Workspace)

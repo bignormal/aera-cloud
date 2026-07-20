@@ -1571,11 +1571,16 @@ const versionQuery = `
 		v.signing_key_id, v.signature, v.runtime_minimum_version,
 		COALESCE(v.runtime_maximum_version_exclusive, ''), v.published_at
 	FROM agent_versions v
+	LEFT JOIN workspaces workspace ON workspace.id = v.workspace_id
+	LEFT JOIN users workspace_owner ON workspace_owner.id = workspace.owner_user_id
 	LEFT JOIN workspace_memberships membership
 		ON membership.workspace_id = v.workspace_id AND membership.user_id = $2
 	WHERE v.id = $3 AND (
 		(v.tenant_id = $1 AND v.owner_scope = 'USER' AND v.owner_id = $2)
-		OR (v.owner_scope = 'WORKSPACE' AND membership.user_id IS NOT NULL)
+		OR (
+			v.owner_scope = 'WORKSPACE' AND membership.user_id IS NOT NULL
+			AND workspace.status = 'active' AND workspace_owner.status = 'active'
+		)
 	)
 `
 

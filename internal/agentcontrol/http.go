@@ -30,6 +30,11 @@ type HTTPService interface {
 	GetDefinition(context.Context, Principal, uuid.UUID, string) (Definition, error)
 	ListVersions(context.Context, Principal, uuid.UUID, string) ([]Version, error)
 	PublishNext(context.Context, Principal, PublishNextRequest) (Publication, error)
+	ListWorkspaceDefinitions(context.Context, Principal, uuid.UUID) ([]Definition, error)
+	PublishWorkspaceInitial(context.Context, Principal, uuid.UUID, PublishInitialRequest) (Publication, error)
+	GetWorkspaceDefinition(context.Context, Principal, uuid.UUID, uuid.UUID, string) (Definition, error)
+	ListWorkspaceVersions(context.Context, Principal, uuid.UUID, uuid.UUID, string) ([]Version, error)
+	PublishWorkspaceNext(context.Context, Principal, uuid.UUID, PublishNextRequest) (Publication, error)
 	GetVersion(context.Context, Principal, uuid.UUID, string) (Version, error)
 	GetPolicySnapshot(context.Context, Principal, uuid.UUID, string) (PolicySnapshot, error)
 	RevokeVersion(context.Context, Principal, RevokeVersionRequest) (VersionRevocation, error)
@@ -62,6 +67,11 @@ func NewHandler(config HTTPConfig) http.Handler {
 	router.Get("/api/v1/agent-definitions/{definitionID}", handler.getDefinition)
 	router.Get("/api/v1/agent-definitions/{definitionID}/versions", handler.listVersions)
 	router.Post("/api/v1/agent-definitions/{definitionID}/versions", handler.publishNext)
+	router.Get("/api/v1/workspaces/{workspaceID}/agent-definitions", handler.listWorkspaceDefinitions)
+	router.Post("/api/v1/workspaces/{workspaceID}/agent-definitions", handler.publishWorkspaceInitial)
+	router.Get("/api/v1/workspaces/{workspaceID}/agent-definitions/{definitionID}", handler.getWorkspaceDefinition)
+	router.Get("/api/v1/workspaces/{workspaceID}/agent-definitions/{definitionID}/versions", handler.listWorkspaceVersions)
+	router.Post("/api/v1/workspaces/{workspaceID}/agent-definitions/{definitionID}/versions", handler.publishWorkspaceNext)
 	router.Get("/api/v1/agent-versions/{versionID}", handler.getVersion)
 	router.Get("/api/v1/policy-snapshots/{policySnapshotID}", handler.getPolicySnapshot)
 	router.Post("/api/v1/agent-versions/{versionID}/revocations", handler.revokeVersion)
@@ -201,6 +211,162 @@ func (h *httpHandler) publishNext(response http.ResponseWriter, request *http.Re
 	writeAgentJSON(response, http.StatusCreated, publicPublication(publication))
 }
 
+func (h *httpHandler) listWorkspaceDefinitions(response http.ResponseWriter, request *http.Request) {
+	principal, ok := h.authorize(response, request)
+	if !ok {
+		return
+	}
+	workspaceID, ok := pathUUID(response, request, "workspaceID")
+	if !ok {
+		return
+	}
+	definitions, err := h.service.ListWorkspaceDefinitions(request.Context(), principal, workspaceID)
+	if err != nil {
+		writeAgentServiceError(response, err)
+		return
+	}
+	items := make([]definitionResponse, len(definitions))
+	for index, definition := range definitions {
+		items[index] = publicDefinition(definition)
+	}
+	writeAgentJSON(response, http.StatusOK, struct {
+		Definitions []definitionResponse `json:"definitions"`
+	}{Definitions: items})
+}
+
+func (h *httpHandler) publishWorkspaceInitial(response http.ResponseWriter, request *http.Request) {
+	principal, ok := h.authorize(response, request)
+	if !ok {
+		return
+	}
+	workspaceID, ok := pathUUID(response, request, "workspaceID")
+	if !ok {
+		return
+	}
+	idempotencyKey, ok := requireIdempotencyKey(response, request)
+	if !ok {
+		return
+	}
+	var payload struct {
+		DisplayName   string          `json:"display_name"`
+		IconMediaType string          `json:"icon_media_type,omitempty"`
+		IconData      string          `json:"icon_data,omitempty"`
+		Manifest      AgentManifestV1 `json:"manifest"`
+		Bundle        VersionBundleV1 `json:"bundle"`
+	}
+	if !decodeAgentJSON(response, request, publicationRequestBodyLimit, &payload) {
+		return
+	}
+	iconData, ok := decodeOptionalBase64URL(payload.IconData)
+	if !ok {
+		writeAgentError(response, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	publication, err := h.service.PublishWorkspaceInitial(
+		request.Context(), principal, workspaceID, PublishInitialRequest{
+			DisplayName: payload.DisplayName, IconMediaType: payload.IconMediaType, IconData: iconData,
+			Manifest: payload.Manifest, Bundle: payload.Bundle, IdempotencyKey: idempotencyKey,
+			RequestID: newAgentRequestID(),
+		},
+	)
+	if err != nil {
+		writeAgentServiceError(response, err)
+		return
+	}
+	writeAgentJSON(response, http.StatusCreated, publicPublication(publication))
+}
+
+func (h *httpHandler) getWorkspaceDefinition(response http.ResponseWriter, request *http.Request) {
+	principal, ok := h.authorize(response, request)
+	if !ok {
+		return
+	}
+	workspaceID, ok := pathUUID(response, request, "workspaceID")
+	if !ok {
+		return
+	}
+	definitionID, ok := pathUUID(response, request, "definitionID")
+	if !ok {
+		return
+	}
+	definition, err := h.service.GetWorkspaceDefinition(
+		request.Context(), principal, workspaceID, definitionID, newAgentRequestID(),
+	)
+	if err != nil {
+		writeAgentServiceError(response, err)
+		return
+	}
+	writeAgentJSON(response, http.StatusOK, publicDefinition(definition))
+}
+
+func (h *httpHandler) listWorkspaceVersions(response http.ResponseWriter, request *http.Request) {
+	principal, ok := h.authorize(response, request)
+	if !ok {
+		return
+	}
+	workspaceID, ok := pathUUID(response, request, "workspaceID")
+	if !ok {
+		return
+	}
+	definitionID, ok := pathUUID(response, request, "definitionID")
+	if !ok {
+		return
+	}
+	versions, err := h.service.ListWorkspaceVersions(
+		request.Context(), principal, workspaceID, definitionID, newAgentRequestID(),
+	)
+	if err != nil {
+		writeAgentServiceError(response, err)
+		return
+	}
+	items := make([]versionResponse, len(versions))
+	for index, version := range versions {
+		items[index] = publicVersion(version)
+	}
+	writeAgentJSON(response, http.StatusOK, struct {
+		Versions []versionResponse `json:"versions"`
+	}{Versions: items})
+}
+
+func (h *httpHandler) publishWorkspaceNext(response http.ResponseWriter, request *http.Request) {
+	principal, ok := h.authorize(response, request)
+	if !ok {
+		return
+	}
+	workspaceID, ok := pathUUID(response, request, "workspaceID")
+	if !ok {
+		return
+	}
+	definitionID, ok := pathUUID(response, request, "definitionID")
+	if !ok {
+		return
+	}
+	idempotencyKey, ok := requireIdempotencyKey(response, request)
+	if !ok {
+		return
+	}
+	var payload struct {
+		BaseVersionID uuid.UUID       `json:"base_version_id"`
+		Manifest      AgentManifestV1 `json:"manifest"`
+		Bundle        VersionBundleV1 `json:"bundle"`
+	}
+	if !decodeAgentJSON(response, request, publicationRequestBodyLimit, &payload) {
+		return
+	}
+	publication, err := h.service.PublishWorkspaceNext(
+		request.Context(), principal, workspaceID, PublishNextRequest{
+			DefinitionID: definitionID, BaseVersionID: payload.BaseVersionID,
+			Manifest: payload.Manifest, Bundle: payload.Bundle, IdempotencyKey: idempotencyKey,
+			RequestID: newAgentRequestID(),
+		},
+	)
+	if err != nil {
+		writeAgentServiceError(response, err)
+		return
+	}
+	writeAgentJSON(response, http.StatusCreated, publicPublication(publication))
+}
+
 func (h *httpHandler) getVersion(response http.ResponseWriter, request *http.Request) {
 	principal, ok := h.authorize(response, request)
 	if !ok {
@@ -278,14 +444,15 @@ func (h *httpHandler) createInstallation(response http.ResponseWriter, request *
 		return
 	}
 	var payload struct {
-		DefinitionID uuid.UUID `json:"definition_id"`
-		VersionID    uuid.UUID `json:"version_id"`
+		DefinitionID uuid.UUID  `json:"definition_id"`
+		VersionID    uuid.UUID  `json:"version_id"`
+		WorkspaceID  *uuid.UUID `json:"workspace_id,omitempty"`
 	}
 	if !decodeAgentJSON(response, request, metadataRequestBodyLimit, &payload) {
 		return
 	}
 	creation, err := h.service.CreateInstallation(request.Context(), principal, CreateInstallationRequest{
-		DefinitionID: payload.DefinitionID, VersionID: payload.VersionID,
+		DefinitionID: payload.DefinitionID, VersionID: payload.VersionID, SourceWorkspaceID: payload.WorkspaceID,
 		IdempotencyKey: idempotencyKey, RequestID: newAgentRequestID(),
 	})
 	if err != nil {
@@ -692,6 +859,12 @@ func writeAgentServiceError(response http.ResponseWriter, err error) {
 		writeAgentError(response, http.StatusConflict, "activation_conflict")
 	case errors.Is(err, ErrInstallationArchived):
 		writeAgentError(response, http.StatusConflict, "installation_archived")
+	case errors.Is(err, ErrWorkspaceForbidden):
+		writeAgentError(response, http.StatusForbidden, "workspace_forbidden")
+	case errors.Is(err, ErrWorkspaceArchived):
+		writeAgentError(response, http.StatusConflict, "workspace_archived")
+	case errors.Is(err, ErrWorkspaceOwnerUnavailable):
+		writeAgentError(response, http.StatusConflict, "workspace_owner_unavailable")
 	default:
 		writeAgentError(response, http.StatusServiceUnavailable, "service_unavailable")
 	}

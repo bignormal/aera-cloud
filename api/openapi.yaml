@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: AgentEra App Cloud API
-  version: 0.3.0
-  description: Account, device authorization, USER-owned Agent, and Workspace control-plane contract for AgentEra Studio.
+  version: 0.4.0
+  description: Account, device authorization, USER and Workspace Agent, and Workspace control-plane contract for AgentEra Studio.
 servers:
   - url: https://accounts.agentera.example
 paths:
@@ -953,6 +953,152 @@ paths:
           $ref: '#/components/responses/WorkspaceRateLimited'
         '503':
           $ref: '#/components/responses/WorkspaceServiceUnavailable'
+  /api/v1/workspaces/{workspace_id}/agent-definitions:
+    get:
+      operationId: listWorkspaceAgentDefinitions
+      description: Lists immutable Workspace Agent definitions for an active member of the exact Workspace.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceID'
+      responses:
+        '200':
+          description: WORKSPACE-owned Agent definitions visible through active membership.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentDefinitionList'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '404':
+          $ref: '#/components/responses/AgentNotFound'
+        '409':
+          $ref: '#/components/responses/AgentConflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    post:
+      operationId: publishInitialWorkspaceAgentVersion
+      description: Owner or Admin atomically publishes the first immutable version. The maximum agent publication request body is 2621440 bytes.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishInitialAgentRequest'
+      responses:
+        '201':
+          description: WORKSPACE-owned definition and immutable first version published atomically.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentPublication'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '403':
+          $ref: '#/components/responses/AgentWorkspaceForbidden'
+        '404':
+          $ref: '#/components/responses/AgentNotFound'
+        '409':
+          $ref: '#/components/responses/AgentConflict'
+        '413':
+          $ref: '#/components/responses/InvalidRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/workspaces/{workspace_id}/agent-definitions/{definition_id}:
+    get:
+      operationId: getWorkspaceAgentDefinition
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceID'
+        - $ref: '#/components/parameters/AgentDefinitionID'
+      responses:
+        '200':
+          description: One WORKSPACE-owned Agent definition from the exact Workspace.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentDefinition'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '404':
+          $ref: '#/components/responses/AgentNotFound'
+        '409':
+          $ref: '#/components/responses/AgentConflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/workspaces/{workspace_id}/agent-definitions/{definition_id}/versions:
+    get:
+      operationId: listWorkspaceAgentVersions
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceID'
+        - $ref: '#/components/parameters/AgentDefinitionID'
+      responses:
+        '200':
+          description: Immutable versions for one WORKSPACE-owned Agent definition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentVersionList'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '404':
+          $ref: '#/components/responses/AgentNotFound'
+        '409':
+          $ref: '#/components/responses/AgentConflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    post:
+      operationId: publishNextWorkspaceAgentVersion
+      description: Owner or Admin publishes the next immutable version using optimistic concurrency. The maximum agent publication request body is 2621440 bytes.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceID'
+        - $ref: '#/components/parameters/AgentDefinitionID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishNextAgentVersionRequest'
+      responses:
+        '201':
+          description: Immutable next Workspace version published and selected as latest.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentPublication'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '403':
+          $ref: '#/components/responses/AgentWorkspaceForbidden'
+        '404':
+          $ref: '#/components/responses/AgentNotFound'
+        '409':
+          $ref: '#/components/responses/AgentConflict'
+        '413':
+          $ref: '#/components/responses/InvalidRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /api/v1/agent-definitions:
     get:
       operationId: listUserAgentDefinitions
@@ -1158,7 +1304,7 @@ paths:
   /api/v1/agent-installations:
     post:
       operationId: createUserAgentInstallation
-      description: The maximum Agent metadata request body is 65536 bytes. The authenticated device determines installation ownership.
+      description: The maximum Agent metadata request body is 65536 bytes. The authenticated device determines USER installation ownership; optional workspace_id binds a WORKSPACE-owned source asset.
       security:
         - desktopAccessToken: []
       parameters:
@@ -2304,6 +2450,10 @@ components:
         version_id:
           type: string
           format: uuid
+        workspace_id:
+          type: string
+          format: uuid
+          description: Exact source Workspace for a WORKSPACE-owned definition and version; omitted for USER-owned assets.
     ActivateAgentInstallationRequest:
       type: object
       additionalProperties: false
@@ -2756,7 +2906,13 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorEnvelope'
     AgentNotFound:
-      description: The USER-owned Agent object is absent or outside the authenticated owner boundary.
+      description: The USER or Workspace Agent object is absent or outside the authenticated owner or membership boundary.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    AgentWorkspaceForbidden:
+      description: The authenticated Workspace member lacks the Owner or Admin role required to publish.
       content:
         application/json:
           schema:

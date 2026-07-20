@@ -232,6 +232,11 @@ func TestRepositoryWorkspaceLifecycleAndMembershipChangesFailClosed(t *testing.T
 	); !errors.Is(err, ErrWorkspaceArchived) {
 		t.Fatalf("ListWorkspaceDefinitions(archived) error = %v", err)
 	}
+	if _, found, err := fixture.repository.FindVersion(
+		fixture.ctx, owner, publication.Version.ID,
+	); err != nil || found {
+		t.Fatalf("FindVersion(archived Workspace) found=%v error=%v", found, err)
+	}
 
 	if _, err := fixture.postgres.Exec(fixture.ctx, `
 		UPDATE workspaces SET status = 'active', archived_at = NULL, revision = revision + 1, updated_at = $2

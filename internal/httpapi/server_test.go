@@ -278,6 +278,42 @@ func TestWorkspaceRoutesAreMountedWithoutCapturingOtherAPIRoutes(t *testing.T) {
 	}
 }
 
+func TestWorkspaceAgentRoutesReachAgentControlBeforeWorkspaceWildcard(t *testing.T) {
+	agentCalls := 0
+	workspaceCalls := 0
+	agentHandler := http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		agentCalls++
+		response.WriteHeader(http.StatusAccepted)
+	})
+	workspaceHandler := http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		workspaceCalls++
+		response.WriteHeader(http.StatusTeapot)
+	})
+	handler := New(Dependencies{
+		PostgreSQL: &stubHealthChecker{}, Redis: &stubHealthChecker{},
+		AgentControl: agentHandler, Workspace: workspaceHandler,
+	})
+
+	for _, path := range []string{
+		"/api/v1/workspaces/workspace-id/agent-definitions",
+		"/api/v1/workspaces/workspace-id/agent-definitions/definition-id",
+		"/api/v1/workspaces/workspace-id/agent-definitions/definition-id/versions",
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("nested Agent path %s status = %d", path, response.Code)
+		}
+	}
+	workspaceResponse := httptest.NewRecorder()
+	handler.ServeHTTP(workspaceResponse, httptest.NewRequest(
+		http.MethodGet, "/api/v1/workspaces/workspace-id/members", nil,
+	))
+	if workspaceResponse.Code != http.StatusTeapot || agentCalls != 3 || workspaceCalls != 1 {
+		t.Fatalf("routing calls Agent=%d Workspace=%d status=%d", agentCalls, workspaceCalls, workspaceResponse.Code)
+	}
+}
+
 func TestWebAccountCenterHandlesOnlyUnmatchedNonServiceRoutes(t *testing.T) {
 	web := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.WriteHeader(http.StatusOK)

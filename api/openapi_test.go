@@ -121,8 +121,8 @@ func TestOpenAPIContainsStrictUserAgentControlPlaneContract(t *testing.T) {
 		t.Fatalf("read openapi.yaml: %v", err)
 	}
 	document := string(contents)
-	if !strings.Contains(document, "version: 0.3.0") {
-		t.Fatal("OpenAPI version was not advanced for the Workspace control plane")
+	if !strings.Contains(document, "version: 0.4.0") {
+		t.Fatal("OpenAPI version was not advanced for Workspace Agent V1")
 	}
 	for _, path := range []string{
 		"/api/v1/agent-definitions:",
@@ -136,6 +136,9 @@ func TestOpenAPIContainsStrictUserAgentControlPlaneContract(t *testing.T) {
 		"/api/v1/agent-installations/{installation_id}/select-version:",
 		"/api/v1/agent-installations/{installation_id}/archive:",
 		"/api/v1/runtime-binding-records:",
+		"/api/v1/workspaces/{workspace_id}/agent-definitions:",
+		"/api/v1/workspaces/{workspace_id}/agent-definitions/{definition_id}:",
+		"/api/v1/workspaces/{workspace_id}/agent-definitions/{definition_id}/versions:",
 	} {
 		if !strings.Contains(document, path) {
 			t.Fatalf("OpenAPI is missing %s", path)
@@ -172,6 +175,21 @@ func TestOpenAPIContainsStrictUserAgentControlPlaneContract(t *testing.T) {
 	} {
 		if strings.Contains(document, forbidden) {
 			t.Fatalf("OpenAPI exposed local-only Agent state %q", forbidden)
+		}
+	}
+	start := strings.Index(document, "    CreateAgentInstallationRequest:\n")
+	end := strings.Index(document, "    ActivateAgentInstallationRequest:\n")
+	if start < 0 || end <= start {
+		t.Fatal("OpenAPI is missing the bounded installation request schema")
+	}
+	installationSchema := document[start:end]
+	if !strings.Contains(installationSchema, "        workspace_id:\n") ||
+		!strings.Contains(installationSchema, "Exact source Workspace") {
+		t.Fatalf("installation schema is missing exact Workspace source binding:\n%s", installationSchema)
+	}
+	for _, forbidden := range []string{"owner_scope:", "tenant_id:", "owner_id:", "actor_user_id:", "actor_role:"} {
+		if strings.Contains(installationSchema, forbidden) {
+			t.Fatalf("installation schema exposed ownership input %q", forbidden)
 		}
 	}
 }

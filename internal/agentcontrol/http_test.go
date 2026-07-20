@@ -24,6 +24,7 @@ func TestHTTPAgentControlRoutesUseOnlyAccessClaimsAndStrictContracts(t *testing.
 		body       string
 		status     int
 		idempotent bool
+		workspace  bool
 	}{
 		{name: "list definitions", method: http.MethodGet, path: "/api/v1/agent-definitions", status: http.StatusOK},
 		{name: "publish initial", method: http.MethodPost, path: "/api/v1/agent-definitions", body: initialPublicationJSON(), status: http.StatusCreated, idempotent: true},
@@ -38,6 +39,11 @@ func TestHTTPAgentControlRoutesUseOnlyAccessClaimsAndStrictContracts(t *testing.
 		{name: "select version", method: http.MethodPost, path: "/api/v1/agent-installations/" + fixture.installationID.String() + "/select-version", body: `{"version_id":"` + fixture.versionID.String() + `"}`, status: http.StatusOK, idempotent: true},
 		{name: "archive installation", method: http.MethodPost, path: "/api/v1/agent-installations/" + fixture.installationID.String() + "/archive", body: `{}`, status: http.StatusOK, idempotent: true},
 		{name: "record binding", method: http.MethodPost, path: "/api/v1/runtime-binding-records", body: bindingJSON(fixture), status: http.StatusCreated, idempotent: true},
+		{name: "list workspace definitions", method: http.MethodGet, path: "/api/v1/workspaces/" + fixture.workspaceID.String() + "/agent-definitions", status: http.StatusOK, workspace: true},
+		{name: "publish workspace initial", method: http.MethodPost, path: "/api/v1/workspaces/" + fixture.workspaceID.String() + "/agent-definitions", body: initialPublicationJSON(), status: http.StatusCreated, idempotent: true, workspace: true},
+		{name: "get workspace definition", method: http.MethodGet, path: "/api/v1/workspaces/" + fixture.workspaceID.String() + "/agent-definitions/" + fixture.definitionID.String(), status: http.StatusOK, workspace: true},
+		{name: "list workspace versions", method: http.MethodGet, path: "/api/v1/workspaces/" + fixture.workspaceID.String() + "/agent-definitions/" + fixture.definitionID.String() + "/versions", status: http.StatusOK, workspace: true},
+		{name: "publish workspace next", method: http.MethodPost, path: "/api/v1/workspaces/" + fixture.workspaceID.String() + "/agent-definitions/" + fixture.definitionID.String() + "/versions", body: nextPublicationJSON(fixture.versionID), status: http.StatusCreated, idempotent: true, workspace: true},
 	}
 
 	for _, route := range routes {
@@ -68,7 +74,42 @@ func TestHTTPAgentControlRoutesUseOnlyAccessClaimsAndStrictContracts(t *testing.
 			if fixture.service.lastPrincipal != fixture.principal {
 				t.Fatalf("service principal = %+v, want claims %+v", fixture.service.lastPrincipal, fixture.principal)
 			}
+			if route.workspace && fixture.service.lastWorkspaceID != fixture.workspaceID {
+				t.Fatalf("service Workspace = %s, want %s", fixture.service.lastWorkspaceID, fixture.workspaceID)
+			}
 		})
+	}
+}
+
+func TestHTTPAgentControlBindsInstallationToExactWorkspaceWithoutOwnershipFields(t *testing.T) {
+	fixture := newAgentControlHTTPFixture(t)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/agent-installations", strings.NewReader(
+		`{"definition_id":"`+fixture.definitionID.String()+`","version_id":"`+fixture.versionID.String()+`","workspace_id":"`+fixture.workspaceID.String()+`"}`,
+	))
+	request.Header.Set("Authorization", "Bearer valid-access-token")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "workspace-install")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("Workspace installation response = %d %q", response.Code, response.Body.String())
+	}
+	if fixture.service.lastInstallationRequest.SourceWorkspaceID == nil ||
+		*fixture.service.lastInstallationRequest.SourceWorkspaceID != fixture.workspaceID {
+		t.Fatalf("Workspace installation request = %+v", fixture.service.lastInstallationRequest)
+	}
+
+	for _, field := range []string{"owner_scope", "tenant_id", "owner_id", "actor_user_id", "actor_role"} {
+		body := `{"definition_id":"` + fixture.definitionID.String() + `","version_id":"` + fixture.versionID.String() + `","` + field + `":"forbidden"}`
+		forbidden := httptest.NewRequest(http.MethodPost, "/api/v1/agent-installations", strings.NewReader(body))
+		forbidden.Header.Set("Authorization", "Bearer valid-access-token")
+		forbidden.Header.Set("Content-Type", "application/json")
+		forbidden.Header.Set("Idempotency-Key", "forbidden-"+field)
+		forbiddenResponse := httptest.NewRecorder()
+		fixture.handler.ServeHTTP(forbiddenResponse, forbidden)
+		if forbiddenResponse.Code != http.StatusBadRequest {
+			t.Fatalf("%s response = %d %q", field, forbiddenResponse.Code, forbiddenResponse.Body.String())
+		}
 	}
 }
 
@@ -160,6 +201,9 @@ func TestHTTPAgentControlMapsStableServiceErrorsWithoutDisclosingObjectExistence
 		{ErrVersionRevoked, http.StatusConflict, "version_revoked"},
 		{ErrActivationConflict, http.StatusConflict, "activation_conflict"},
 		{ErrInstallationArchived, http.StatusConflict, "installation_archived"},
+		{ErrWorkspaceForbidden, http.StatusForbidden, "workspace_forbidden"},
+		{ErrWorkspaceArchived, http.StatusConflict, "workspace_archived"},
+		{ErrWorkspaceOwnerUnavailable, http.StatusConflict, "workspace_owner_unavailable"},
 		{ErrInvalidRequest, http.StatusBadRequest, "invalid_request"},
 		{ErrInvalidRepositoryCommand, http.StatusBadRequest, "invalid_request"},
 		{ErrInvalidAgentContent, http.StatusBadRequest, "invalid_agent_content"},
@@ -206,11 +250,27 @@ func TestHTTPAgentControlRejectsWrongMethodAndMalformedActivationProof(t *testin
 	}
 }
 
+func TestHTTPAgentControlRejectsMalformedWorkspacePath(t *testing.T) {
+	fixture := newAgentControlHTTPFixture(t)
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/workspaces/not-a-uuid/agent-definitions",
+		nil,
+	)
+	request.Header.Set("Authorization", "Bearer valid-access-token")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"invalid_request"`) {
+		t.Fatalf("malformed Workspace response = %d %q", response.Code, response.Body.String())
+	}
+}
+
 type agentControlHTTPFixture struct {
 	handler        http.Handler
 	service        *stubAgentControlHTTPService
 	authenticator  *stubAgentControlAuthenticator
 	principal      Principal
+	workspaceID    uuid.UUID
 	definitionID   uuid.UUID
 	versionID      uuid.UUID
 	installationID uuid.UUID
@@ -222,6 +282,7 @@ type agentControlHTTPFixture struct {
 func newAgentControlHTTPFixture(t *testing.T) *agentControlHTTPFixture {
 	t.Helper()
 	principal := Principal{UserID: uuid.New(), DeviceID: uuid.New(), PersonalSpaceID: uuid.New()}
+	workspaceID := uuid.New()
 	definitionID, versionID := uuid.New(), uuid.New()
 	installationID, policyID, profileID := uuid.New(), uuid.New(), uuid.New()
 	digest := sha256.Sum256([]byte("version"))
@@ -261,24 +322,26 @@ func newAgentControlHTTPFixture(t *testing.T) *agentControlHTTPFixture {
 	return &agentControlHTTPFixture{
 		handler: NewHandler(HTTPConfig{Service: service, AccessTokens: authenticator}),
 		service: service, authenticator: authenticator, principal: principal,
-		definitionID: definitionID, versionID: versionID, installationID: installationID,
+		workspaceID: workspaceID, definitionID: definitionID, versionID: versionID, installationID: installationID,
 		policyID: policyID, profileID: profileID, digest: digest,
 	}
 }
 
 type stubAgentControlHTTPService struct {
-	lastPrincipal Principal
-	err           error
-	definitions   []Definition
-	definition    Definition
-	versions      []Version
-	version       Version
-	publication   Publication
-	creation      InstallationCreation
-	policy        PolicySnapshot
-	installation  Installation
-	revocation    VersionRevocation
-	binding       RuntimeBindingRecord
+	lastPrincipal           Principal
+	lastWorkspaceID         uuid.UUID
+	lastInstallationRequest CreateInstallationRequest
+	err                     error
+	definitions             []Definition
+	definition              Definition
+	versions                []Version
+	version                 Version
+	publication             Publication
+	creation                InstallationCreation
+	policy                  PolicySnapshot
+	installation            Installation
+	revocation              VersionRevocation
+	binding                 RuntimeBindingRecord
 }
 
 func (s *stubAgentControlHTTPService) ListDefinitions(_ context.Context, principal Principal) ([]Definition, error) {
@@ -321,9 +384,66 @@ func (s *stubAgentControlHTTPService) RevokeVersion(_ context.Context, principal
 	return s.revocation, s.err
 }
 
-func (s *stubAgentControlHTTPService) CreateInstallation(_ context.Context, principal Principal, _ CreateInstallationRequest) (InstallationCreation, error) {
+func (s *stubAgentControlHTTPService) CreateInstallation(_ context.Context, principal Principal, request CreateInstallationRequest) (InstallationCreation, error) {
 	s.lastPrincipal = principal
+	s.lastInstallationRequest = request
 	return s.creation, s.err
+}
+
+func (s *stubAgentControlHTTPService) ListWorkspaceDefinitions(
+	_ context.Context,
+	principal Principal,
+	workspaceID uuid.UUID,
+) ([]Definition, error) {
+	s.lastPrincipal = principal
+	s.lastWorkspaceID = workspaceID
+	return s.definitions, s.err
+}
+
+func (s *stubAgentControlHTTPService) PublishWorkspaceInitial(
+	_ context.Context,
+	principal Principal,
+	workspaceID uuid.UUID,
+	_ PublishInitialRequest,
+) (Publication, error) {
+	s.lastPrincipal = principal
+	s.lastWorkspaceID = workspaceID
+	return s.publication, s.err
+}
+
+func (s *stubAgentControlHTTPService) GetWorkspaceDefinition(
+	_ context.Context,
+	principal Principal,
+	workspaceID uuid.UUID,
+	_ uuid.UUID,
+	_ string,
+) (Definition, error) {
+	s.lastPrincipal = principal
+	s.lastWorkspaceID = workspaceID
+	return s.definition, s.err
+}
+
+func (s *stubAgentControlHTTPService) ListWorkspaceVersions(
+	_ context.Context,
+	principal Principal,
+	workspaceID uuid.UUID,
+	_ uuid.UUID,
+	_ string,
+) ([]Version, error) {
+	s.lastPrincipal = principal
+	s.lastWorkspaceID = workspaceID
+	return s.versions, s.err
+}
+
+func (s *stubAgentControlHTTPService) PublishWorkspaceNext(
+	_ context.Context,
+	principal Principal,
+	workspaceID uuid.UUID,
+	_ PublishNextRequest,
+) (Publication, error) {
+	s.lastPrincipal = principal
+	s.lastWorkspaceID = workspaceID
+	return s.publication, s.err
 }
 
 func (s *stubAgentControlHTTPService) ActivateInstallation(_ context.Context, principal Principal, _ ActivateInstallationRequest) (Installation, error) {
