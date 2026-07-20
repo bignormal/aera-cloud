@@ -62,6 +62,20 @@ const (
 	envWorkspaceInviteRateWindow       = "AGENTERA_CLOUD_WORKSPACE_INVITE_RATE_WINDOW"
 	envWorkspaceAcceptRateLimit        = "AGENTERA_CLOUD_WORKSPACE_ACCEPT_RATE_LIMIT"
 	envWorkspaceAcceptRateWindow       = "AGENTERA_CLOUD_WORKSPACE_ACCEPT_RATE_WINDOW"
+	envOrganizationOwnedLimit          = "AGENTERA_CLOUD_ORGANIZATION_OWNED_LIMIT"
+	envOrganizationMemberLimit         = "AGENTERA_CLOUD_ORGANIZATION_MEMBER_LIMIT"
+	envOrganizationDepartmentLimit     = "AGENTERA_CLOUD_ORGANIZATION_DEPARTMENT_LIMIT"
+	envOrganizationPendingInviteLimit  = "AGENTERA_CLOUD_ORGANIZATION_PENDING_INVITE_LIMIT"
+	envOrganizationCreateRateLimit     = "AGENTERA_CLOUD_ORGANIZATION_CREATE_RATE_LIMIT"
+	envOrganizationCreateRateWindow    = "AGENTERA_CLOUD_ORGANIZATION_CREATE_RATE_WINDOW"
+	envOrganizationInviteRateLimit     = "AGENTERA_CLOUD_ORGANIZATION_INVITE_RATE_LIMIT"
+	envOrganizationInviteRateWindow    = "AGENTERA_CLOUD_ORGANIZATION_INVITE_RATE_WINDOW"
+	envOrganizationAcceptRateLimit     = "AGENTERA_CLOUD_ORGANIZATION_ACCEPT_RATE_LIMIT"
+	envOrganizationAcceptRateWindow    = "AGENTERA_CLOUD_ORGANIZATION_ACCEPT_RATE_WINDOW"
+	envOrganizationMutationRateLimit   = "AGENTERA_CLOUD_ORGANIZATION_MUTATION_RATE_LIMIT"
+	envOrganizationMutationRateWindow  = "AGENTERA_CLOUD_ORGANIZATION_MUTATION_RATE_WINDOW"
+	envOrganizationHighRiskRateLimit   = "AGENTERA_CLOUD_ORGANIZATION_HIGH_RISK_RATE_LIMIT"
+	envOrganizationHighRiskRateWindow  = "AGENTERA_CLOUD_ORGANIZATION_HIGH_RISK_RATE_WINDOW"
 	envTermsVersion                    = "AGENTERA_CLOUD_TERMS_VERSION"
 	envPrivacyVersion                  = "AGENTERA_CLOUD_PRIVACY_VERSION"
 	envSMTPHost                        = "AGENTERA_CLOUD_SMTP_HOST"
@@ -85,56 +99,70 @@ type KeyRing struct {
 }
 
 type Config struct {
-	Environment                 string
-	ListenAddr                  string
-	PublicURL                   string
-	DatabaseURL                 string
-	RedisAddr                   string
-	RedisUsername               string
-	RedisPassword               string
-	RedisDB                     int
-	IdentityEncryptionKeyRing   KeyRing
-	IdentityLookupKeyRing       KeyRing
-	VerificationCodeKeyRing     KeyRing
-	VerificationReceiptKeyRing  KeyRing
-	VerificationRequestHMACKey  []byte
-	BrowserSessionHMACKey       []byte
-	LoginRateHMACKey            []byte
-	OAuthStateEncryptionKeyRing KeyRing
-	OAuthStateHMACKey           []byte
-	RefreshTokenHMACKey         []byte
-	AccessSigningKeyRing        KeyRing
-	OfflineSigningKeyRing       KeyRing
-	AgentControlSigningKeyRing  KeyRing
-	OfflinePolicyVersion        int
-	ActiveDeviceLimit           int
-	BrowserCookieName           string
-	BrowserSessionTTLSeconds    int
-	LoginIdentityLimit          int64
-	LoginIPLimit                int64
-	LoginWindowSeconds          int
-	WorkspaceActiveOwnedLimit   int
-	WorkspaceMemberLimit        int
-	WorkspacePendingInviteLimit int
-	WorkspaceCreateRateLimit    int64
-	WorkspaceCreateRateWindow   time.Duration
-	WorkspaceInviteRateLimit    int64
-	WorkspaceInviteRateWindow   time.Duration
-	WorkspaceAcceptRateLimit    int64
-	WorkspaceAcceptRateWindow   time.Duration
-	TermsVersion                string
-	PrivacyVersion              string
-	SMTPHost                    string
-	SMTPPort                    int
-	SMTPUsername                string
-	SMTPPassword                string
-	SMTPFromAddress             string
-	SMTPFromName                string
-	SMSEndpoint                 string
-	SMSAPIKey                   string
-	SMSSenderID                 string
-	CaptchaEndpoint             string
-	CaptchaSecret               string
+	Environment                    string
+	ListenAddr                     string
+	PublicURL                      string
+	DatabaseURL                    string
+	RedisAddr                      string
+	RedisUsername                  string
+	RedisPassword                  string
+	RedisDB                        int
+	IdentityEncryptionKeyRing      KeyRing
+	IdentityLookupKeyRing          KeyRing
+	VerificationCodeKeyRing        KeyRing
+	VerificationReceiptKeyRing     KeyRing
+	VerificationRequestHMACKey     []byte
+	BrowserSessionHMACKey          []byte
+	LoginRateHMACKey               []byte
+	OAuthStateEncryptionKeyRing    KeyRing
+	OAuthStateHMACKey              []byte
+	RefreshTokenHMACKey            []byte
+	AccessSigningKeyRing           KeyRing
+	OfflineSigningKeyRing          KeyRing
+	AgentControlSigningKeyRing     KeyRing
+	OfflinePolicyVersion           int
+	ActiveDeviceLimit              int
+	BrowserCookieName              string
+	BrowserSessionTTLSeconds       int
+	LoginIdentityLimit             int64
+	LoginIPLimit                   int64
+	LoginWindowSeconds             int
+	WorkspaceActiveOwnedLimit      int
+	WorkspaceMemberLimit           int
+	WorkspacePendingInviteLimit    int
+	WorkspaceCreateRateLimit       int64
+	WorkspaceCreateRateWindow      time.Duration
+	WorkspaceInviteRateLimit       int64
+	WorkspaceInviteRateWindow      time.Duration
+	WorkspaceAcceptRateLimit       int64
+	WorkspaceAcceptRateWindow      time.Duration
+	OrganizationOwnedLimit         int
+	OrganizationMemberLimit        int
+	OrganizationDepartmentLimit    int
+	OrganizationPendingInviteLimit int
+	OrganizationCreateRateLimit    int64
+	OrganizationCreateRateWindow   time.Duration
+	OrganizationInviteRateLimit    int64
+	OrganizationInviteRateWindow   time.Duration
+	OrganizationAcceptRateLimit    int64
+	OrganizationAcceptRateWindow   time.Duration
+	OrganizationMutationRateLimit  int64
+	OrganizationMutationRateWindow time.Duration
+	OrganizationHighRiskRateLimit  int64
+	OrganizationHighRiskRateWindow time.Duration
+	TermsVersion                   string
+	PrivacyVersion                 string
+	SMTPHost                       string
+	SMTPPort                       int
+	SMTPUsername                   string
+	SMTPPassword                   string
+	SMTPFromAddress                string
+	SMTPFromName                   string
+	SMSEndpoint                    string
+	SMSAPIKey                      string
+	SMSSenderID                    string
+	CaptchaEndpoint                string
+	CaptchaSecret                  string
 }
 
 func Load(lookup LookupEnv) (Config, error) {
@@ -356,6 +384,62 @@ func Load(lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	organizationOwnedLimit, err := requiredInteger(lookup, envOrganizationOwnedLimit, 1, 1_000_000)
+	if err != nil {
+		return Config{}, err
+	}
+	organizationMemberLimit, err := requiredInteger(lookup, envOrganizationMemberLimit, 1, 1_000_000)
+	if err != nil {
+		return Config{}, err
+	}
+	organizationDepartmentLimit, err := requiredInteger(lookup, envOrganizationDepartmentLimit, 1, 1_000_000)
+	if err != nil {
+		return Config{}, err
+	}
+	organizationPendingInviteLimit, err := requiredInteger(lookup, envOrganizationPendingInviteLimit, 1, 1_000_000)
+	if err != nil {
+		return Config{}, err
+	}
+	organizationCreateRateLimit, err := requiredInteger(lookup, envOrganizationCreateRateLimit, 1, 1_000_000)
+	if err != nil {
+		return Config{}, err
+	}
+	organizationCreateRateWindow, err := requiredPositiveDuration(lookup, envOrganizationCreateRateWindow)
+	if err != nil {
+		return Config{}, err
+	}
+	organizationInviteRateLimit, err := requiredInteger(lookup, envOrganizationInviteRateLimit, 1, 1_000_000)
+	if err != nil {
+		return Config{}, err
+	}
+	organizationInviteRateWindow, err := requiredPositiveDuration(lookup, envOrganizationInviteRateWindow)
+	if err != nil {
+		return Config{}, err
+	}
+	organizationAcceptRateLimit, err := requiredInteger(lookup, envOrganizationAcceptRateLimit, 1, 1_000_000)
+	if err != nil {
+		return Config{}, err
+	}
+	organizationAcceptRateWindow, err := requiredPositiveDuration(lookup, envOrganizationAcceptRateWindow)
+	if err != nil {
+		return Config{}, err
+	}
+	organizationMutationRateLimit, err := requiredInteger(lookup, envOrganizationMutationRateLimit, 1, 1_000_000)
+	if err != nil {
+		return Config{}, err
+	}
+	organizationMutationRateWindow, err := requiredPositiveDuration(lookup, envOrganizationMutationRateWindow)
+	if err != nil {
+		return Config{}, err
+	}
+	organizationHighRiskRateLimit, err := requiredInteger(lookup, envOrganizationHighRiskRateLimit, 1, 1_000_000)
+	if err != nil {
+		return Config{}, err
+	}
+	organizationHighRiskRateWindow, err := requiredPositiveDuration(lookup, envOrganizationHighRiskRateWindow)
+	if err != nil {
+		return Config{}, err
+	}
 	termsVersion, err := requiredVersion(lookup, envTermsVersion)
 	if err != nil {
 		return Config{}, err
@@ -423,56 +507,70 @@ func Load(lookup LookupEnv) (Config, error) {
 	}
 
 	return Config{
-		Environment:                 environment,
-		ListenAddr:                  listenAddr,
-		PublicURL:                   publicURL,
-		DatabaseURL:                 databaseURL,
-		RedisAddr:                   redisAddr,
-		RedisUsername:               redisUsername,
-		RedisPassword:               redisPassword,
-		RedisDB:                     redisDB,
-		IdentityEncryptionKeyRing:   identityEncryptionKeyRing,
-		IdentityLookupKeyRing:       identityLookupKeyRing,
-		VerificationCodeKeyRing:     verificationCodeKeyRing,
-		VerificationReceiptKeyRing:  verificationReceiptKeyRing,
-		VerificationRequestHMACKey:  verificationRequestHMACKey,
-		BrowserSessionHMACKey:       browserSessionHMACKey,
-		LoginRateHMACKey:            loginRateHMACKey,
-		OAuthStateEncryptionKeyRing: oauthStateEncryptionKeyRing,
-		OAuthStateHMACKey:           oauthStateHMACKey,
-		RefreshTokenHMACKey:         refreshTokenHMACKey,
-		AccessSigningKeyRing:        accessSigningKeyRing,
-		OfflineSigningKeyRing:       offlineSigningKeyRing,
-		AgentControlSigningKeyRing:  agentControlSigningKeyRing,
-		OfflinePolicyVersion:        offlinePolicyVersion,
-		ActiveDeviceLimit:           activeDeviceLimit,
-		BrowserCookieName:           browserCookieName,
-		BrowserSessionTTLSeconds:    browserSessionTTLSeconds,
-		LoginIdentityLimit:          int64(loginIdentityLimit),
-		LoginIPLimit:                int64(loginIPLimit),
-		LoginWindowSeconds:          loginWindowSeconds,
-		WorkspaceActiveOwnedLimit:   workspaceActiveOwnedLimit,
-		WorkspaceMemberLimit:        workspaceMemberLimit,
-		WorkspacePendingInviteLimit: workspacePendingInviteLimit,
-		WorkspaceCreateRateLimit:    int64(workspaceCreateRateLimit),
-		WorkspaceCreateRateWindow:   workspaceCreateRateWindow,
-		WorkspaceInviteRateLimit:    int64(workspaceInviteRateLimit),
-		WorkspaceInviteRateWindow:   workspaceInviteRateWindow,
-		WorkspaceAcceptRateLimit:    int64(workspaceAcceptRateLimit),
-		WorkspaceAcceptRateWindow:   workspaceAcceptRateWindow,
-		TermsVersion:                termsVersion,
-		PrivacyVersion:              privacyVersion,
-		SMTPHost:                    smtpHost,
-		SMTPPort:                    smtpPort,
-		SMTPUsername:                smtpUsername,
-		SMTPPassword:                smtpPassword,
-		SMTPFromAddress:             smtpFromAddress,
-		SMTPFromName:                smtpFromName,
-		SMSEndpoint:                 smsEndpoint,
-		SMSAPIKey:                   smsAPIKey,
-		SMSSenderID:                 smsSenderID,
-		CaptchaEndpoint:             captchaEndpoint,
-		CaptchaSecret:               captchaSecret,
+		Environment:                    environment,
+		ListenAddr:                     listenAddr,
+		PublicURL:                      publicURL,
+		DatabaseURL:                    databaseURL,
+		RedisAddr:                      redisAddr,
+		RedisUsername:                  redisUsername,
+		RedisPassword:                  redisPassword,
+		RedisDB:                        redisDB,
+		IdentityEncryptionKeyRing:      identityEncryptionKeyRing,
+		IdentityLookupKeyRing:          identityLookupKeyRing,
+		VerificationCodeKeyRing:        verificationCodeKeyRing,
+		VerificationReceiptKeyRing:     verificationReceiptKeyRing,
+		VerificationRequestHMACKey:     verificationRequestHMACKey,
+		BrowserSessionHMACKey:          browserSessionHMACKey,
+		LoginRateHMACKey:               loginRateHMACKey,
+		OAuthStateEncryptionKeyRing:    oauthStateEncryptionKeyRing,
+		OAuthStateHMACKey:              oauthStateHMACKey,
+		RefreshTokenHMACKey:            refreshTokenHMACKey,
+		AccessSigningKeyRing:           accessSigningKeyRing,
+		OfflineSigningKeyRing:          offlineSigningKeyRing,
+		AgentControlSigningKeyRing:     agentControlSigningKeyRing,
+		OfflinePolicyVersion:           offlinePolicyVersion,
+		ActiveDeviceLimit:              activeDeviceLimit,
+		BrowserCookieName:              browserCookieName,
+		BrowserSessionTTLSeconds:       browserSessionTTLSeconds,
+		LoginIdentityLimit:             int64(loginIdentityLimit),
+		LoginIPLimit:                   int64(loginIPLimit),
+		LoginWindowSeconds:             loginWindowSeconds,
+		WorkspaceActiveOwnedLimit:      workspaceActiveOwnedLimit,
+		WorkspaceMemberLimit:           workspaceMemberLimit,
+		WorkspacePendingInviteLimit:    workspacePendingInviteLimit,
+		WorkspaceCreateRateLimit:       int64(workspaceCreateRateLimit),
+		WorkspaceCreateRateWindow:      workspaceCreateRateWindow,
+		WorkspaceInviteRateLimit:       int64(workspaceInviteRateLimit),
+		WorkspaceInviteRateWindow:      workspaceInviteRateWindow,
+		WorkspaceAcceptRateLimit:       int64(workspaceAcceptRateLimit),
+		WorkspaceAcceptRateWindow:      workspaceAcceptRateWindow,
+		OrganizationOwnedLimit:         organizationOwnedLimit,
+		OrganizationMemberLimit:        organizationMemberLimit,
+		OrganizationDepartmentLimit:    organizationDepartmentLimit,
+		OrganizationPendingInviteLimit: organizationPendingInviteLimit,
+		OrganizationCreateRateLimit:    int64(organizationCreateRateLimit),
+		OrganizationCreateRateWindow:   organizationCreateRateWindow,
+		OrganizationInviteRateLimit:    int64(organizationInviteRateLimit),
+		OrganizationInviteRateWindow:   organizationInviteRateWindow,
+		OrganizationAcceptRateLimit:    int64(organizationAcceptRateLimit),
+		OrganizationAcceptRateWindow:   organizationAcceptRateWindow,
+		OrganizationMutationRateLimit:  int64(organizationMutationRateLimit),
+		OrganizationMutationRateWindow: organizationMutationRateWindow,
+		OrganizationHighRiskRateLimit:  int64(organizationHighRiskRateLimit),
+		OrganizationHighRiskRateWindow: organizationHighRiskRateWindow,
+		TermsVersion:                   termsVersion,
+		PrivacyVersion:                 privacyVersion,
+		SMTPHost:                       smtpHost,
+		SMTPPort:                       smtpPort,
+		SMTPUsername:                   smtpUsername,
+		SMTPPassword:                   smtpPassword,
+		SMTPFromAddress:                smtpFromAddress,
+		SMTPFromName:                   smtpFromName,
+		SMSEndpoint:                    smsEndpoint,
+		SMSAPIKey:                      smsAPIKey,
+		SMSSenderID:                    smsSenderID,
+		CaptchaEndpoint:                captchaEndpoint,
+		CaptchaSecret:                  captchaSecret,
 	}, nil
 }
 

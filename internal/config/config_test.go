@@ -93,6 +93,20 @@ func TestLoadAcceptsLoopbackHTTPInDevelopment(t *testing.T) {
 	assertConfigField(t, cfg, "WorkspaceInviteRateWindow", time.Hour)
 	assertConfigField(t, cfg, "WorkspaceAcceptRateLimit", int64(30))
 	assertConfigField(t, cfg, "WorkspaceAcceptRateWindow", 10*time.Minute)
+	assertConfigField(t, cfg, "OrganizationOwnedLimit", 3)
+	assertConfigField(t, cfg, "OrganizationMemberLimit", 500)
+	assertConfigField(t, cfg, "OrganizationDepartmentLimit", 50)
+	assertConfigField(t, cfg, "OrganizationPendingInviteLimit", 100)
+	assertConfigField(t, cfg, "OrganizationCreateRateLimit", int64(6))
+	assertConfigField(t, cfg, "OrganizationCreateRateWindow", time.Hour)
+	assertConfigField(t, cfg, "OrganizationInviteRateLimit", int64(30))
+	assertConfigField(t, cfg, "OrganizationInviteRateWindow", time.Hour)
+	assertConfigField(t, cfg, "OrganizationAcceptRateLimit", int64(30))
+	assertConfigField(t, cfg, "OrganizationAcceptRateWindow", 10*time.Minute)
+	assertConfigField(t, cfg, "OrganizationMutationRateLimit", int64(120))
+	assertConfigField(t, cfg, "OrganizationMutationRateWindow", time.Hour)
+	assertConfigField(t, cfg, "OrganizationHighRiskRateLimit", int64(20))
+	assertConfigField(t, cfg, "OrganizationHighRiskRateWindow", time.Hour)
 	if cfg.TermsVersion != "terms-2026-07" || cfg.PrivacyVersion != "privacy-2026-07" {
 		t.Fatalf("legal versions = %q / %q", cfg.TermsVersion, cfg.PrivacyVersion)
 	}
@@ -403,6 +417,68 @@ func TestLoadRejectsInvalidWorkspaceConfiguration(t *testing.T) {
 	}
 }
 
+func TestLoadRequiresOrganizationConfiguration(t *testing.T) {
+	keys := []string{
+		"AGENTERA_CLOUD_ORGANIZATION_OWNED_LIMIT",
+		"AGENTERA_CLOUD_ORGANIZATION_MEMBER_LIMIT",
+		"AGENTERA_CLOUD_ORGANIZATION_DEPARTMENT_LIMIT",
+		"AGENTERA_CLOUD_ORGANIZATION_PENDING_INVITE_LIMIT",
+		"AGENTERA_CLOUD_ORGANIZATION_CREATE_RATE_LIMIT",
+		"AGENTERA_CLOUD_ORGANIZATION_CREATE_RATE_WINDOW",
+		"AGENTERA_CLOUD_ORGANIZATION_INVITE_RATE_LIMIT",
+		"AGENTERA_CLOUD_ORGANIZATION_INVITE_RATE_WINDOW",
+		"AGENTERA_CLOUD_ORGANIZATION_ACCEPT_RATE_LIMIT",
+		"AGENTERA_CLOUD_ORGANIZATION_ACCEPT_RATE_WINDOW",
+		"AGENTERA_CLOUD_ORGANIZATION_MUTATION_RATE_LIMIT",
+		"AGENTERA_CLOUD_ORGANIZATION_MUTATION_RATE_WINDOW",
+		"AGENTERA_CLOUD_ORGANIZATION_HIGH_RISK_RATE_LIMIT",
+		"AGENTERA_CLOUD_ORGANIZATION_HIGH_RISK_RATE_WINDOW",
+	}
+	for _, key := range keys {
+		t.Run(key, func(t *testing.T) {
+			env := validEnvironment("production")
+			delete(env, key)
+			_, err := Load(mapLookup(env))
+			if err == nil || !strings.Contains(err.Error(), key) || !strings.Contains(err.Error(), "required") {
+				t.Fatalf("Load() error = %v, want required %s", err, key)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsInvalidOrganizationConfiguration(t *testing.T) {
+	tests := []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{name: "zero owned limit", key: "AGENTERA_CLOUD_ORGANIZATION_OWNED_LIMIT", value: "0"},
+		{name: "negative member limit", key: "AGENTERA_CLOUD_ORGANIZATION_MEMBER_LIMIT", value: "-1"},
+		{name: "zero department limit", key: "AGENTERA_CLOUD_ORGANIZATION_DEPARTMENT_LIMIT", value: "0"},
+		{name: "negative pending invitation limit", key: "AGENTERA_CLOUD_ORGANIZATION_PENDING_INVITE_LIMIT", value: "-1"},
+		{name: "zero creation rate", key: "AGENTERA_CLOUD_ORGANIZATION_CREATE_RATE_LIMIT", value: "0"},
+		{name: "zero creation window", key: "AGENTERA_CLOUD_ORGANIZATION_CREATE_RATE_WINDOW", value: "0s"},
+		{name: "negative invite rate", key: "AGENTERA_CLOUD_ORGANIZATION_INVITE_RATE_LIMIT", value: "-1"},
+		{name: "invalid invite window", key: "AGENTERA_CLOUD_ORGANIZATION_INVITE_RATE_WINDOW", value: "one-hour"},
+		{name: "zero acceptance rate", key: "AGENTERA_CLOUD_ORGANIZATION_ACCEPT_RATE_LIMIT", value: "0"},
+		{name: "negative acceptance window", key: "AGENTERA_CLOUD_ORGANIZATION_ACCEPT_RATE_WINDOW", value: "-1s"},
+		{name: "zero mutation rate", key: "AGENTERA_CLOUD_ORGANIZATION_MUTATION_RATE_LIMIT", value: "0"},
+		{name: "invalid mutation window", key: "AGENTERA_CLOUD_ORGANIZATION_MUTATION_RATE_WINDOW", value: "hour"},
+		{name: "negative high-risk rate", key: "AGENTERA_CLOUD_ORGANIZATION_HIGH_RISK_RATE_LIMIT", value: "-1"},
+		{name: "zero high-risk window", key: "AGENTERA_CLOUD_ORGANIZATION_HIGH_RISK_RATE_WINDOW", value: "0s"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			env := validEnvironment("production")
+			env[test.key] = test.value
+			_, err := Load(mapLookup(env))
+			if err == nil || !strings.Contains(err.Error(), test.key) {
+				t.Fatalf("Load() error = %v, want validation for %s", err, test.key)
+			}
+		})
+	}
+}
+
 func TestEnvironmentExamplePreservesKeyRingJSONWhenSourced(t *testing.T) {
 	environmentFile, err := filepath.Abs(filepath.Join("..", "..", ".env.example"))
 	if err != nil {
@@ -521,6 +597,20 @@ func validEnvironment(environment string) map[string]string {
 		"AGENTERA_CLOUD_WORKSPACE_INVITE_RATE_WINDOW":         "1h",
 		"AGENTERA_CLOUD_WORKSPACE_ACCEPT_RATE_LIMIT":          "30",
 		"AGENTERA_CLOUD_WORKSPACE_ACCEPT_RATE_WINDOW":         "10m",
+		"AGENTERA_CLOUD_ORGANIZATION_OWNED_LIMIT":             "3",
+		"AGENTERA_CLOUD_ORGANIZATION_MEMBER_LIMIT":            "500",
+		"AGENTERA_CLOUD_ORGANIZATION_DEPARTMENT_LIMIT":        "50",
+		"AGENTERA_CLOUD_ORGANIZATION_PENDING_INVITE_LIMIT":    "100",
+		"AGENTERA_CLOUD_ORGANIZATION_CREATE_RATE_LIMIT":       "6",
+		"AGENTERA_CLOUD_ORGANIZATION_CREATE_RATE_WINDOW":      "1h",
+		"AGENTERA_CLOUD_ORGANIZATION_INVITE_RATE_LIMIT":       "30",
+		"AGENTERA_CLOUD_ORGANIZATION_INVITE_RATE_WINDOW":      "1h",
+		"AGENTERA_CLOUD_ORGANIZATION_ACCEPT_RATE_LIMIT":       "30",
+		"AGENTERA_CLOUD_ORGANIZATION_ACCEPT_RATE_WINDOW":      "10m",
+		"AGENTERA_CLOUD_ORGANIZATION_MUTATION_RATE_LIMIT":     "120",
+		"AGENTERA_CLOUD_ORGANIZATION_MUTATION_RATE_WINDOW":    "1h",
+		"AGENTERA_CLOUD_ORGANIZATION_HIGH_RISK_RATE_LIMIT":    "20",
+		"AGENTERA_CLOUD_ORGANIZATION_HIGH_RISK_RATE_WINDOW":   "1h",
 		"AGENTERA_CLOUD_TERMS_VERSION":                        "terms-2026-07",
 		"AGENTERA_CLOUD_PRIVACY_VERSION":                      "privacy-2026-07",
 		"AGENTERA_CLOUD_SMTP_HOST":                            "smtp.example.com",
