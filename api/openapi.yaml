@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: AgentEra App Cloud API
-  version: 0.2.0
-  description: Account, device authorization, and USER-owned Agent control-plane contract for AgentEra Studio.
+  version: 0.3.0
+  description: Account, device authorization, USER-owned Agent, and Workspace control-plane contract for AgentEra Studio.
 servers:
   - url: https://accounts.agentera.example
 paths:
@@ -548,6 +548,411 @@ paths:
           $ref: '#/components/responses/SessionRevoked'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/workspaces:
+    get:
+      operationId: listWorkspaces
+      description: Lists active and archived Workspace memberships without local Hermes state.
+      security:
+        - desktopAccessToken: []
+      responses:
+        '200':
+          description: Workspaces visible to the authenticated member.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceListResponse'
+        '401':
+          $ref: '#/components/responses/WorkspaceSessionRevoked'
+        '503':
+          $ref: '#/components/responses/WorkspaceServiceUnavailable'
+    post:
+      operationId: createWorkspace
+      description: Creates a Workspace and fixed Owner membership. The maximum request body is 16384 bytes.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWorkspaceRequest'
+      responses:
+        '200':
+          description: Safe current representation returned for an exact idempotent replay.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceSummary'
+        '201':
+          description: Workspace and fixed Owner membership created atomically.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceSummary'
+        '400':
+          $ref: '#/components/responses/WorkspaceInvalidRequest'
+        '401':
+          $ref: '#/components/responses/WorkspaceSessionRevoked'
+        '409':
+          $ref: '#/components/responses/WorkspaceConflict'
+        '413':
+          $ref: '#/components/responses/WorkspaceInvalidRequest'
+        '429':
+          $ref: '#/components/responses/WorkspaceRateLimited'
+        '503':
+          $ref: '#/components/responses/WorkspaceServiceUnavailable'
+  /api/v1/workspaces/{workspace_id}:
+    patch:
+      operationId: renameWorkspace
+      description: Renames one writable Workspace. The maximum request body is 16384 bytes.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenameWorkspaceRequest'
+      responses:
+        '200':
+          description: Updated Workspace summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceSummary'
+        '400':
+          $ref: '#/components/responses/WorkspaceInvalidRequest'
+        '401':
+          $ref: '#/components/responses/WorkspaceSessionRevoked'
+        '403':
+          $ref: '#/components/responses/WorkspaceForbidden'
+        '404':
+          $ref: '#/components/responses/WorkspaceNotFound'
+        '409':
+          $ref: '#/components/responses/WorkspaceConflict'
+        '413':
+          $ref: '#/components/responses/WorkspaceInvalidRequest'
+        '503':
+          $ref: '#/components/responses/WorkspaceServiceUnavailable'
+  /api/v1/workspaces/{workspace_id}/archive:
+    post:
+      operationId: archiveWorkspace
+      description: Archives one Workspace and revokes its pending invitations. The maximum request body is 16384 bytes.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkspaceRevisionRequest'
+      responses:
+        '200':
+          description: Archived Workspace summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceSummary'
+        '400':
+          $ref: '#/components/responses/WorkspaceInvalidRequest'
+        '401':
+          $ref: '#/components/responses/WorkspaceSessionRevoked'
+        '403':
+          $ref: '#/components/responses/WorkspaceForbidden'
+        '404':
+          $ref: '#/components/responses/WorkspaceNotFound'
+        '409':
+          $ref: '#/components/responses/WorkspaceConflict'
+        '413':
+          $ref: '#/components/responses/WorkspaceInvalidRequest'
+        '503':
+          $ref: '#/components/responses/WorkspaceServiceUnavailable'
+  /api/v1/workspaces/{workspace_id}/restore:
+    post:
+      operationId: restoreWorkspace
+      description: Restores one archived Workspace after rechecking Owner quota. The maximum request body is 16384 bytes.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkspaceRevisionRequest'
+      responses:
+        '200':
+          description: Restored Workspace summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceSummary'
+        '400':
+          $ref: '#/components/responses/WorkspaceInvalidRequest'
+        '401':
+          $ref: '#/components/responses/WorkspaceSessionRevoked'
+        '403':
+          $ref: '#/components/responses/WorkspaceForbidden'
+        '404':
+          $ref: '#/components/responses/WorkspaceNotFound'
+        '409':
+          $ref: '#/components/responses/WorkspaceConflict'
+        '413':
+          $ref: '#/components/responses/WorkspaceInvalidRequest'
+        '503':
+          $ref: '#/components/responses/WorkspaceServiceUnavailable'
+  /api/v1/workspaces/{workspace_id}/members:
+    get:
+      operationId: listWorkspaceMembers
+      description: Lists safe member metadata without login identities.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceID'
+      responses:
+        '200':
+          description: Members visible to the authenticated Workspace member.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceMemberListResponse'
+        '400':
+          $ref: '#/components/responses/WorkspaceInvalidRequest'
+        '401':
+          $ref: '#/components/responses/WorkspaceSessionRevoked'
+        '404':
+          $ref: '#/components/responses/WorkspaceNotFound'
+        '503':
+          $ref: '#/components/responses/WorkspaceServiceUnavailable'
+  /api/v1/workspaces/{workspace_id}/members/{user_id}:
+    patch:
+      operationId: changeWorkspaceMemberRole
+      description: Promotes a Member to Admin or demotes an Admin to Member. The maximum request body is 16384 bytes.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceID'
+        - $ref: '#/components/parameters/WorkspaceUserID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangeWorkspaceMemberRoleRequest'
+      responses:
+        '200':
+          description: Updated member summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceMember'
+        '400':
+          $ref: '#/components/responses/WorkspaceInvalidRequest'
+        '401':
+          $ref: '#/components/responses/WorkspaceSessionRevoked'
+        '403':
+          $ref: '#/components/responses/WorkspaceForbidden'
+        '404':
+          $ref: '#/components/responses/WorkspaceNotFound'
+        '409':
+          $ref: '#/components/responses/WorkspaceConflict'
+        '413':
+          $ref: '#/components/responses/WorkspaceInvalidRequest'
+        '503':
+          $ref: '#/components/responses/WorkspaceServiceUnavailable'
+    delete:
+      operationId: removeWorkspaceMember
+      description: Removes an authorized non-Owner target at the expected member revision.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceID'
+        - $ref: '#/components/parameters/WorkspaceUserID'
+        - $ref: '#/components/parameters/ExpectedWorkspaceRevision'
+      responses:
+        '204':
+          description: Member removed.
+        '400':
+          $ref: '#/components/responses/WorkspaceInvalidRequest'
+        '401':
+          $ref: '#/components/responses/WorkspaceSessionRevoked'
+        '403':
+          $ref: '#/components/responses/WorkspaceForbidden'
+        '404':
+          $ref: '#/components/responses/WorkspaceNotFound'
+        '409':
+          $ref: '#/components/responses/WorkspaceConflict'
+        '503':
+          $ref: '#/components/responses/WorkspaceServiceUnavailable'
+  /api/v1/workspaces/{workspace_id}/leave:
+    post:
+      operationId: leaveWorkspace
+      description: Lets an Admin or Member leave. The fixed Owner cannot leave. The maximum request body is 16384 bytes.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              maxProperties: 0
+      responses:
+        '204':
+          description: Actor membership removed.
+        '400':
+          $ref: '#/components/responses/WorkspaceInvalidRequest'
+        '401':
+          $ref: '#/components/responses/WorkspaceSessionRevoked'
+        '403':
+          $ref: '#/components/responses/WorkspaceForbidden'
+        '404':
+          $ref: '#/components/responses/WorkspaceNotFound'
+        '409':
+          $ref: '#/components/responses/WorkspaceConflict'
+        '413':
+          $ref: '#/components/responses/WorkspaceInvalidRequest'
+        '503':
+          $ref: '#/components/responses/WorkspaceServiceUnavailable'
+  /api/v1/workspaces/{workspace_id}/invitations:
+    get:
+      operationId: listWorkspaceInvitations
+      description: Lists invitation metadata without raw invitation tokens.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceID'
+      responses:
+        '200':
+          description: Sanitized invitations visible to Owner or Admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceInvitationListResponse'
+        '400':
+          $ref: '#/components/responses/WorkspaceInvalidRequest'
+        '401':
+          $ref: '#/components/responses/WorkspaceSessionRevoked'
+        '403':
+          $ref: '#/components/responses/WorkspaceForbidden'
+        '404':
+          $ref: '#/components/responses/WorkspaceNotFound'
+        '503':
+          $ref: '#/components/responses/WorkspaceServiceUnavailable'
+    post:
+      operationId: createWorkspaceInvitation
+      description: Creates a seven-day Member invitation. The maximum request body is 16384 bytes; the secret appears only on the first 201 response.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceID'
+        - $ref: '#/components/parameters/WorkspaceIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              maxProperties: 0
+      responses:
+        '200':
+          description: Safe invitation summary for an exact replay; token and invite_url are omitted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceInvitationCreation'
+        '201':
+          description: Invitation created; token and fragment-only invite_url are returned once.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceInvitationCreation'
+        '400':
+          $ref: '#/components/responses/WorkspaceInvalidRequest'
+        '401':
+          $ref: '#/components/responses/WorkspaceSessionRevoked'
+        '403':
+          $ref: '#/components/responses/WorkspaceForbidden'
+        '404':
+          $ref: '#/components/responses/WorkspaceNotFound'
+        '409':
+          $ref: '#/components/responses/WorkspaceConflict'
+        '413':
+          $ref: '#/components/responses/WorkspaceInvalidRequest'
+        '429':
+          $ref: '#/components/responses/WorkspaceRateLimited'
+        '503':
+          $ref: '#/components/responses/WorkspaceServiceUnavailable'
+  /api/v1/workspaces/{workspace_id}/invitations/{invitation_id}:
+    delete:
+      operationId: revokeWorkspaceInvitation
+      description: Revokes one pending invitation without returning its token.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceID'
+        - $ref: '#/components/parameters/WorkspaceInvitationID'
+      responses:
+        '204':
+          description: Invitation revoked.
+        '400':
+          $ref: '#/components/responses/WorkspaceInvalidRequest'
+        '401':
+          $ref: '#/components/responses/WorkspaceSessionRevoked'
+        '403':
+          $ref: '#/components/responses/WorkspaceForbidden'
+        '404':
+          $ref: '#/components/responses/WorkspaceNotFound'
+        '409':
+          $ref: '#/components/responses/WorkspaceConflict'
+        '503':
+          $ref: '#/components/responses/WorkspaceServiceUnavailable'
+  /api/v1/workspace-invitations/accept:
+    post:
+      operationId: acceptWorkspaceInvitation
+      description: Accepts a single-use invitation for the authenticated user. The maximum request body is 16384 bytes.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AcceptWorkspaceInvitationRequest'
+      responses:
+        '200':
+          description: Workspace and accepting member summaries without the raw token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceInvitationAcceptance'
+        '400':
+          $ref: '#/components/responses/WorkspaceInvalidRequest'
+        '401':
+          $ref: '#/components/responses/WorkspaceSessionRevoked'
+        '404':
+          $ref: '#/components/responses/WorkspaceNotFound'
+        '409':
+          $ref: '#/components/responses/WorkspaceConflict'
+        '413':
+          $ref: '#/components/responses/WorkspaceInvalidRequest'
+        '429':
+          $ref: '#/components/responses/WorkspaceRateLimited'
+        '503':
+          $ref: '#/components/responses/WorkspaceServiceUnavailable'
   /api/v1/agent-definitions:
     get:
       operationId: listUserAgentDefinitions
@@ -968,6 +1373,48 @@ components:
         minLength: 1
         maxLength: 256
         pattern: '^[^\\s\\x00]+$'
+    WorkspaceIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Opaque Workspace operation key, bounded to 128 UTF-8 bytes. Only its SHA-256 digest is persisted.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+    WorkspaceID:
+      name: workspace_id
+      in: path
+      required: true
+      description: Canonical lowercase UUID for a Workspace visible to the actor.
+      schema:
+        type: string
+        format: uuid
+    WorkspaceUserID:
+      name: user_id
+      in: path
+      required: true
+      description: Canonical lowercase UUID for a Workspace member.
+      schema:
+        type: string
+        format: uuid
+    WorkspaceInvitationID:
+      name: invitation_id
+      in: path
+      required: true
+      description: Canonical lowercase UUID for a Workspace invitation.
+      schema:
+        type: string
+        format: uuid
+    ExpectedWorkspaceRevision:
+      name: expected_revision
+      in: query
+      required: true
+      description: Positive member revision used for optimistic concurrency.
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
     AgentDefinitionID:
       name: definition_id
       in: path
@@ -1125,7 +1572,7 @@ components:
     AccountProfile:
       type: object
       additionalProperties: false
-      required: [user_id, personal_space_id, status, identity_kinds]
+      required: [user_id, personal_space_id, status, identity_kinds, owned_workspace_count]
       properties:
         user_id:
           type: string
@@ -1145,6 +1592,10 @@ components:
           uniqueItems: true
           items:
             $ref: '#/components/schemas/IdentityKind'
+        owned_workspace_count:
+          type: integer
+          minimum: 0
+          description: Exact number of active and archived Workspaces owned by this account; membership alone is not counted.
     CurrentPasswordRequest:
       type: object
       additionalProperties: false
@@ -1263,6 +1714,263 @@ components:
           type: string
           description: Ed25519 signature of the AgentEra self-revocation digest, encoded as canonical unpadded base64url.
           pattern: '^[A-Za-z0-9_-]{86}$'
+    WorkspaceRole:
+      type: string
+      enum: [owner, admin, member]
+    WorkspaceStatus:
+      type: string
+      enum: [active, archived]
+    WorkspaceMutationState:
+      type: string
+      enum: [writable, archived, owner_unavailable]
+    WorkspaceInvitationStatus:
+      type: string
+      enum: [pending, accepted, revoked, expired]
+    WorkspaceSummary:
+      type: object
+      additionalProperties: false
+      required: [id, display_name, status, revision, mutation_state, role, member_count, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        status:
+          $ref: '#/components/schemas/WorkspaceStatus'
+        revision:
+          type: integer
+          format: int64
+          minimum: 1
+        mutation_state:
+          $ref: '#/components/schemas/WorkspaceMutationState'
+        role:
+          $ref: '#/components/schemas/WorkspaceRole'
+        member_count:
+          type: integer
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        archived_at:
+          type: string
+          format: date-time
+    WorkspaceMember:
+      type: object
+      additionalProperties: false
+      required: [user_id, role, revision, joined_at]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        nickname:
+          type: string
+          maxLength: 80
+        role:
+          $ref: '#/components/schemas/WorkspaceRole'
+        revision:
+          type: integer
+          format: int64
+          minimum: 1
+        joined_at:
+          type: string
+          format: date-time
+    WorkspaceInvitation:
+      type: object
+      additionalProperties: false
+      required: [id, status, created_at, expires_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/WorkspaceInvitationStatus'
+        created_by_user_id:
+          type: string
+          format: uuid
+        accepted_by_user_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        accepted_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          format: date-time
+    WorkspaceInvitationCreation:
+      type: object
+      additionalProperties: false
+      required: [id, status, created_at, expires_at, secret_replayable]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/WorkspaceInvitationStatus'
+        created_by_user_id:
+          type: string
+          format: uuid
+        accepted_by_user_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        accepted_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          format: date-time
+        token:
+          type: string
+          description: Present only on the first successful 201 creation response and never on replay or list responses.
+          minLength: 43
+          maxLength: 43
+          pattern: '^[A-Za-z0-9_-]{43}$'
+        invite_url:
+          type: string
+          description: Present only with token on the first 201; the secret is carried in a URI fragment.
+          pattern: '^agentera://workspace-invitation#[A-Za-z0-9_-]{43}$'
+        secret_replayable:
+          const: false
+    WorkspaceInvitationAcceptance:
+      type: object
+      additionalProperties: false
+      required: [workspace, member]
+      properties:
+        workspace:
+          $ref: '#/components/schemas/WorkspaceSummary'
+        member:
+          $ref: '#/components/schemas/WorkspaceMember'
+    WorkspaceListResponse:
+      type: object
+      additionalProperties: false
+      required: [workspaces]
+      properties:
+        workspaces:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkspaceSummary'
+    WorkspaceMemberListResponse:
+      type: object
+      additionalProperties: false
+      required: [members]
+      properties:
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkspaceMember'
+    WorkspaceInvitationListResponse:
+      type: object
+      additionalProperties: false
+      required: [invitations]
+      properties:
+        invitations:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkspaceInvitation'
+    CreateWorkspaceRequest:
+      type: object
+      additionalProperties: false
+      required: [display_name]
+      properties:
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 80
+    RenameWorkspaceRequest:
+      type: object
+      additionalProperties: false
+      required: [display_name, expected_revision]
+      properties:
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        expected_revision:
+          type: integer
+          format: int64
+          minimum: 1
+    WorkspaceRevisionRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_revision]
+      properties:
+        expected_revision:
+          type: integer
+          format: int64
+          minimum: 1
+    ChangeWorkspaceMemberRoleRequest:
+      type: object
+      additionalProperties: false
+      required: [role, expected_revision]
+      properties:
+        role:
+          type: string
+          enum: [admin, member]
+        expected_revision:
+          type: integer
+          format: int64
+          minimum: 1
+    AcceptWorkspaceInvitationRequest:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token:
+          type: string
+          minLength: 43
+          maxLength: 43
+          pattern: '^[A-Za-z0-9_-]{43}$'
+    WorkspaceErrorCode:
+      type: string
+      enum:
+        - invalid_request
+        - session_revoked
+        - workspace_forbidden
+        - workspace_not_found
+        - invitation_unavailable
+        - workspace_conflict
+        - workspace_archived
+        - workspace_owner_unavailable
+        - membership_conflict
+        - workspace_limit_reached
+        - member_limit_reached
+        - invitation_limit_reached
+        - idempotency_conflict
+        - rate_limited
+        - service_unavailable
+    WorkspaceErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, request_id]
+          properties:
+            code:
+              $ref: '#/components/schemas/WorkspaceErrorCode'
+            request_id:
+              type: string
+              minLength: 1
+              maxLength: 128
     AgentDefinitionList:
       type: object
       additionalProperties: false
@@ -1987,6 +2695,17 @@ components:
         - version_revoked
         - activation_conflict
         - installation_archived
+        - workspace_forbidden
+        - workspace_not_found
+        - invitation_unavailable
+        - workspace_conflict
+        - workspace_archived
+        - workspace_owner_unavailable
+        - membership_conflict
+        - workspace_limit_reached
+        - member_limit_reached
+        - invitation_limit_reached
+        - rate_limited
         - service_unavailable
     ErrorEnvelope:
       type: object
@@ -2048,6 +2767,55 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorEnvelope'
+    WorkspaceInvalidRequest:
+      description: The Workspace request, identifier, revision, content type, or bounded body is invalid.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WorkspaceErrorEnvelope'
+    WorkspaceSessionRevoked:
+      description: The desktop access token is absent, expired, malformed, or revoked.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WorkspaceErrorEnvelope'
+    WorkspaceForbidden:
+      description: A known Workspace member lacks the role required for this operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WorkspaceErrorEnvelope'
+    WorkspaceNotFound:
+      description: The Workspace is absent or hidden from this actor, or an invitation is unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WorkspaceErrorEnvelope'
+    WorkspaceConflict:
+      description: Workspace lifecycle, revision, membership, quota, or idempotency state conflicts with the request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WorkspaceErrorEnvelope'
+    WorkspaceRateLimited:
+      description: A bounded Workspace creation, invitation creation, or invitation acceptance limit was exceeded.
+      headers:
+        Retry-After:
+          required: true
+          description: Positive whole seconds before retrying.
+          schema:
+            type: integer
+            minimum: 1
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WorkspaceErrorEnvelope'
+    WorkspaceServiceUnavailable:
+      description: A required Workspace control-plane dependency is temporarily unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WorkspaceErrorEnvelope'
     ServiceUnavailable:
       description: A required account service is temporarily unavailable.
       content:

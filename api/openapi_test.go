@@ -121,8 +121,8 @@ func TestOpenAPIContainsStrictUserAgentControlPlaneContract(t *testing.T) {
 		t.Fatalf("read openapi.yaml: %v", err)
 	}
 	document := string(contents)
-	if !strings.Contains(document, "version: 0.2.0") {
-		t.Fatal("OpenAPI version was not advanced for the Agent control plane")
+	if !strings.Contains(document, "version: 0.3.0") {
+		t.Fatal("OpenAPI version was not advanced for the Workspace control plane")
 	}
 	for _, path := range []string{
 		"/api/v1/agent-definitions:",
@@ -172,6 +172,68 @@ func TestOpenAPIContainsStrictUserAgentControlPlaneContract(t *testing.T) {
 	} {
 		if strings.Contains(document, forbidden) {
 			t.Fatalf("OpenAPI exposed local-only Agent state %q", forbidden)
+		}
+	}
+}
+
+func TestOpenAPIContainsStrictWorkspaceControlPlaneContract(t *testing.T) {
+	contents, err := os.ReadFile("openapi.yaml")
+	if err != nil {
+		t.Fatalf("read openapi.yaml: %v", err)
+	}
+	document := string(contents)
+	for _, path := range []string{
+		"/api/v1/workspaces:",
+		"/api/v1/workspaces/{workspace_id}:",
+		"/api/v1/workspaces/{workspace_id}/archive:",
+		"/api/v1/workspaces/{workspace_id}/restore:",
+		"/api/v1/workspaces/{workspace_id}/members:",
+		"/api/v1/workspaces/{workspace_id}/members/{user_id}:",
+		"/api/v1/workspaces/{workspace_id}/leave:",
+		"/api/v1/workspaces/{workspace_id}/invitations:",
+		"/api/v1/workspaces/{workspace_id}/invitations/{invitation_id}:",
+		"/api/v1/workspace-invitations/accept:",
+	} {
+		if !strings.Contains(document, path) {
+			t.Fatalf("OpenAPI is missing %s", path)
+		}
+	}
+	for _, schema := range []string{
+		"WorkspaceSummary", "WorkspaceMember", "WorkspaceInvitation", "WorkspaceInvitationCreation",
+		"WorkspaceInvitationAcceptance", "WorkspaceListResponse", "WorkspaceMemberListResponse",
+		"WorkspaceInvitationListResponse", "CreateWorkspaceRequest", "RenameWorkspaceRequest",
+		"WorkspaceRevisionRequest", "ChangeWorkspaceMemberRoleRequest", "AcceptWorkspaceInvitationRequest",
+	} {
+		strictObject := "    " + schema + ":\n      type: object\n      additionalProperties: false"
+		if !strings.Contains(document, strictObject) {
+			t.Fatalf("OpenAPI is missing strict Workspace schema %q", schema)
+		}
+	}
+	for _, contract := range []string{
+		"WorkspaceIdempotencyKey:", "name: Idempotency-Key", "maxLength: 128",
+		"owned_workspace_count:", "enum: [owner, admin, member]", "enum: [active, archived]",
+		"enum: [writable, archived, owner_unavailable]", "enum: [pending, accepted, revoked, expired]",
+		"pattern: '^[A-Za-z0-9_-]{43}$'",
+		"pattern: '^agentera://workspace-invitation#[A-Za-z0-9_-]{43}$'",
+	} {
+		if !strings.Contains(document, contract) {
+			t.Fatalf("OpenAPI is missing Workspace contract %q", contract)
+		}
+	}
+	for _, code := range []string{
+		"workspace_forbidden", "workspace_not_found", "invitation_unavailable", "workspace_conflict",
+		"workspace_archived", "workspace_owner_unavailable", "membership_conflict",
+		"workspace_limit_reached", "member_limit_reached", "invitation_limit_reached", "rate_limited",
+	} {
+		if !strings.Contains(document, "- "+code) {
+			t.Fatalf("OpenAPI is missing Workspace error code %q", code)
+		}
+	}
+	for _, forbidden := range []string{
+		"owner_scope:", "MEMORY", "USER:", "profile_path:", "session:", "credential:", "api_key:", "raw_token:",
+	} {
+		if strings.Contains(document, forbidden) {
+			t.Fatalf("OpenAPI exposed forbidden Workspace persistence field %q", forbidden)
 		}
 	}
 }
