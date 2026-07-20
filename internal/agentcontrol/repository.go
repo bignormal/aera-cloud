@@ -21,15 +21,18 @@ import (
 )
 
 var (
-	ErrInvalidRepositoryCommand = errors.New("Agent control repository command is invalid")
-	ErrNotFound                 = errors.New("Agent control object was not found")
-	ErrServiceUnavailable       = errors.New("Agent control repository is unavailable")
-	ErrIdempotencyConflict      = errors.New("Agent control idempotency key conflicts with the request")
-	ErrVersionConflict          = errors.New("Agent version base is stale")
-	ErrDefinitionArchived       = errors.New("Agent definition is archived")
-	ErrVersionRevoked           = errors.New("Agent version is revoked")
-	ErrActivationConflict       = errors.New("Agent installation activation conflicts with existing state")
-	ErrInstallationArchived     = errors.New("Agent installation is archived")
+	ErrInvalidRepositoryCommand  = errors.New("Agent control repository command is invalid")
+	ErrNotFound                  = errors.New("Agent control object was not found")
+	ErrServiceUnavailable        = errors.New("Agent control repository is unavailable")
+	ErrIdempotencyConflict       = errors.New("Agent control idempotency key conflicts with the request")
+	ErrVersionConflict           = errors.New("Agent version base is stale")
+	ErrDefinitionArchived        = errors.New("Agent definition is archived")
+	ErrVersionRevoked            = errors.New("Agent version is revoked")
+	ErrActivationConflict        = errors.New("Agent installation activation conflicts with existing state")
+	ErrInstallationArchived      = errors.New("Agent installation is archived")
+	ErrWorkspaceForbidden        = errors.New("Workspace Agent operation is forbidden")
+	ErrWorkspaceArchived         = errors.New("Workspace is archived")
+	ErrWorkspaceOwnerUnavailable = errors.New("Workspace Owner is unavailable")
 )
 
 const (
@@ -43,6 +46,14 @@ const (
 	InstallationStatusActive    = "active"
 	InstallationStatusArchived  = "archived"
 	installationUpdatePolicy    = "manual"
+)
+
+type workspaceAgentAccessMode uint8
+
+const (
+	workspaceAgentRead workspaceAgentAccessMode = iota
+	workspaceAgentPublish
+	workspaceAgentInstall
 )
 
 type Principal struct {
@@ -173,13 +184,14 @@ type Installation struct {
 }
 
 type CreateInstallationCommand struct {
-	InstallationID uuid.UUID
-	DefinitionID   uuid.UUID
-	VersionID      uuid.UUID
-	BuildPolicy    func(Version) (PolicyMaterial, error)
-	Idempotency    IdempotencyEvidence
-	Audit          AuditEvidence
-	CreatedAt      time.Time
+	InstallationID    uuid.UUID
+	DefinitionID      uuid.UUID
+	VersionID         uuid.UUID
+	SourceWorkspaceID *uuid.UUID
+	BuildPolicy       func(Version) (PolicyMaterial, error)
+	Idempotency       IdempotencyEvidence
+	Audit             AuditEvidence
+	CreatedAt         time.Time
 }
 
 type InstallationCreation struct {
@@ -449,6 +461,201 @@ func (r *PostgresRepository) PublishNext(
 	return publication, commitTransaction(ctx, tx)
 }
 
+func (r *PostgresRepository) PublishWorkspaceInitial(
+	ctx context.Context,
+	principal Principal,
+	workspaceID uuid.UUID,
+	command InitialPublicationCommand,
+) (Publication, error) {
+	if r == nil || r.postgres == nil || !validPrincipal(principal) || workspaceID == uuid.Nil ||
+		!validInitialPublication(command) {
+		return Publication{}, ErrInvalidRepositoryCommand
+	}
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return Publication{}, ErrServiceUnavailable
+	}
+	defer rollback(tx)
+	if _, err := requireWorkspaceAgentAccess(
+		ctx, tx, principal, workspaceID, workspaceAgentPublish, true,
+	); err != nil {
+		return Publication{}, err
+	}
+	response, found, err := lockAndReadWorkspaceIdempotency(
+		ctx, tx, workspaceID, operationPublishInitial, command.Idempotency,
+	)
+	if err != nil {
+		return Publication{}, err
+	}
+	if found {
+		publication, err := loadWorkspacePublication(
+			ctx, tx, workspaceID, response.DefinitionID, response.VersionID,
+		)
+		if err != nil {
+			return Publication{}, err
+		}
+		publication.Replayed = true
+		return publication, commitTransaction(ctx, tx)
+	}
+	material, err := command.BuildVersion()
+	if err != nil {
+		return Publication{}, err
+	}
+	if !validVersionMaterial(material, 1) {
+		return Publication{}, ErrInvalidRepositoryCommand
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO agent_definitions (
+			id, tenant_id, owner_scope, owner_id, workspace_id, display_name, icon_media_type, icon_data,
+			status, latest_version_id, created_by, created_at, updated_at
+		) VALUES ($1, NULL, 'WORKSPACE', NULL, $2, $3, NULLIF($4, ''), $5, 'active', NULL, $6, $7, $7)
+	`, command.DefinitionID, workspaceID, command.DisplayName, command.IconMediaType,
+		nilIfEmptyBytes(command.IconData), principal.UserID, command.PublishedAt.UTC()); err != nil {
+		return Publication{}, ErrServiceUnavailable
+	}
+	if err := insertWorkspaceVersion(
+		ctx, tx, principal, workspaceID, command.DefinitionID, material, command.PublishedAt,
+	); err != nil {
+		return Publication{}, err
+	}
+	result, err := tx.Exec(ctx, `
+		UPDATE agent_definitions SET latest_version_id = $3, updated_at = $4
+		WHERE id = $2 AND owner_scope = 'WORKSPACE' AND workspace_id = $1
+	`, workspaceID, command.DefinitionID, material.ID, command.PublishedAt.UTC())
+	if err != nil || result.RowsAffected() != 1 {
+		return Publication{}, ErrServiceUnavailable
+	}
+	response = idempotencyResponse{DefinitionID: command.DefinitionID, VersionID: material.ID}
+	if err := insertWorkspaceIdempotency(
+		ctx, tx, workspaceID, operationPublishInitial, command.Idempotency,
+		"agent_definition", command.DefinitionID, response, command.PublishedAt,
+	); err != nil {
+		return Publication{}, err
+	}
+	if err := recordWorkspaceAgentAudit(
+		ctx, tx, principal, workspaceID, command.Audit, "agent_definition_published", "agent_definition",
+		command.DefinitionID, command.PublishedAt, map[string]string{
+			"agent_definition_id": command.DefinitionID.String(),
+			"agent_version_id":    material.ID.String(),
+			"content_digest":      hex.EncodeToString(material.ContentDigest[:]),
+		},
+	); err != nil {
+		return Publication{}, err
+	}
+	publication, err := loadWorkspacePublication(
+		ctx, tx, workspaceID, command.DefinitionID, material.ID,
+	)
+	if err != nil {
+		return Publication{}, err
+	}
+	return publication, commitTransaction(ctx, tx)
+}
+
+func (r *PostgresRepository) PublishWorkspaceNext(
+	ctx context.Context,
+	principal Principal,
+	workspaceID uuid.UUID,
+	command NextPublicationCommand,
+) (Publication, error) {
+	if r == nil || r.postgres == nil || !validPrincipal(principal) || workspaceID == uuid.Nil ||
+		!validNextPublication(command) {
+		return Publication{}, ErrInvalidRepositoryCommand
+	}
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return Publication{}, ErrServiceUnavailable
+	}
+	defer rollback(tx)
+	if _, err := requireWorkspaceAgentAccess(
+		ctx, tx, principal, workspaceID, workspaceAgentPublish, true,
+	); err != nil {
+		return Publication{}, err
+	}
+	response, found, err := lockAndReadWorkspaceIdempotency(
+		ctx, tx, workspaceID, operationPublishNext, command.Idempotency,
+	)
+	if err != nil {
+		return Publication{}, err
+	}
+	if found {
+		publication, err := loadWorkspacePublication(
+			ctx, tx, workspaceID, response.DefinitionID, response.VersionID,
+		)
+		if err != nil {
+			return Publication{}, err
+		}
+		publication.Replayed = true
+		return publication, commitTransaction(ctx, tx)
+	}
+
+	var status string
+	var latestVersionID uuid.UUID
+	var latestNumber int64
+	err = tx.QueryRow(ctx, `
+		SELECT d.status, d.latest_version_id, v.version_number
+		FROM agent_definitions d
+		JOIN agent_versions v ON v.id = d.latest_version_id
+		WHERE d.id = $2 AND d.owner_scope = 'WORKSPACE' AND d.workspace_id = $1
+		  AND v.owner_scope = 'WORKSPACE' AND v.workspace_id = $1
+		FOR UPDATE OF d
+	`, workspaceID, command.DefinitionID).Scan(&status, &latestVersionID, &latestNumber)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Publication{}, ErrNotFound
+	}
+	if err != nil {
+		return Publication{}, ErrServiceUnavailable
+	}
+	if status == definitionStatusArchived {
+		return Publication{}, ErrDefinitionArchived
+	}
+	if latestVersionID != command.BaseVersionID {
+		return Publication{}, ErrVersionConflict
+	}
+	material, err := command.BuildVersion(latestNumber + 1)
+	if err != nil {
+		return Publication{}, err
+	}
+	if !validVersionMaterial(material, latestNumber+1) {
+		return Publication{}, ErrInvalidRepositoryCommand
+	}
+	if err := insertWorkspaceVersion(
+		ctx, tx, principal, workspaceID, command.DefinitionID, material, command.PublishedAt,
+	); err != nil {
+		return Publication{}, err
+	}
+	result, err := tx.Exec(ctx, `
+		UPDATE agent_definitions SET latest_version_id = $3, updated_at = $4
+		WHERE id = $2 AND owner_scope = 'WORKSPACE' AND workspace_id = $1
+	`, workspaceID, command.DefinitionID, material.ID, command.PublishedAt.UTC())
+	if err != nil || result.RowsAffected() != 1 {
+		return Publication{}, ErrServiceUnavailable
+	}
+	response = idempotencyResponse{DefinitionID: command.DefinitionID, VersionID: material.ID}
+	if err := insertWorkspaceIdempotency(
+		ctx, tx, workspaceID, operationPublishNext, command.Idempotency,
+		"agent_version", material.ID, response, command.PublishedAt,
+	); err != nil {
+		return Publication{}, err
+	}
+	if err := recordWorkspaceAgentAudit(
+		ctx, tx, principal, workspaceID, command.Audit, "agent_version_published", "agent_version",
+		material.ID, command.PublishedAt, map[string]string{
+			"agent_definition_id": command.DefinitionID.String(),
+			"agent_version_id":    material.ID.String(),
+			"content_digest":      hex.EncodeToString(material.ContentDigest[:]),
+		},
+	); err != nil {
+		return Publication{}, err
+	}
+	publication, err := loadWorkspacePublication(
+		ctx, tx, workspaceID, command.DefinitionID, material.ID,
+	)
+	if err != nil {
+		return Publication{}, err
+	}
+	return publication, commitTransaction(ctx, tx)
+}
+
 func (r *PostgresRepository) FindDefinition(
 	ctx context.Context,
 	principal Principal,
@@ -465,6 +672,39 @@ func (r *PostgresRepository) FindDefinition(
 		return Definition{}, false, ErrServiceUnavailable
 	}
 	return definition, true, nil
+}
+
+func (r *PostgresRepository) FindWorkspaceDefinition(
+	ctx context.Context,
+	principal Principal,
+	workspaceID uuid.UUID,
+	definitionID uuid.UUID,
+) (Definition, bool, error) {
+	if r == nil || r.postgres == nil || !validPrincipal(principal) || workspaceID == uuid.Nil ||
+		definitionID == uuid.Nil {
+		return Definition{}, false, ErrInvalidRepositoryCommand
+	}
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return Definition{}, false, ErrServiceUnavailable
+	}
+	defer rollback(tx)
+	if _, err := requireWorkspaceAgentAccess(
+		ctx, tx, principal, workspaceID, workspaceAgentRead, true,
+	); err != nil {
+		return Definition{}, false, err
+	}
+	definition, err := loadWorkspaceDefinition(ctx, tx, workspaceID, definitionID)
+	if errors.Is(err, ErrNotFound) {
+		if commitErr := commitTransaction(ctx, tx); commitErr != nil {
+			return Definition{}, false, commitErr
+		}
+		return Definition{}, false, nil
+	}
+	if err != nil {
+		return Definition{}, false, err
+	}
+	return definition, true, commitTransaction(ctx, tx)
 }
 
 func (r *PostgresRepository) FindVersion(
@@ -531,6 +771,54 @@ func (r *PostgresRepository) ListDefinitions(ctx context.Context, principal Prin
 	return definitions, nil
 }
 
+func (r *PostgresRepository) ListWorkspaceDefinitions(
+	ctx context.Context,
+	principal Principal,
+	workspaceID uuid.UUID,
+) ([]Definition, error) {
+	if r == nil || r.postgres == nil || !validPrincipal(principal) || workspaceID == uuid.Nil {
+		return nil, ErrInvalidRepositoryCommand
+	}
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, ErrServiceUnavailable
+	}
+	defer rollback(tx)
+	if _, err := requireWorkspaceAgentAccess(
+		ctx, tx, principal, workspaceID, workspaceAgentRead, true,
+	); err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT id, display_name, COALESCE(icon_media_type, ''), icon_data, status,
+			latest_version_id, created_at, updated_at
+		FROM agent_definitions
+		WHERE owner_scope = 'WORKSPACE' AND workspace_id = $1
+		ORDER BY updated_at DESC, id
+	`, workspaceID)
+	if err != nil {
+		return nil, ErrServiceUnavailable
+	}
+	definitions := make([]Definition, 0)
+	for rows.Next() {
+		definition, scanErr := scanDefinition(rows)
+		if scanErr != nil {
+			rows.Close()
+			return nil, ErrServiceUnavailable
+		}
+		definitions = append(definitions, definition)
+	}
+	rowsErr := rows.Err()
+	rows.Close()
+	if rowsErr != nil {
+		return nil, ErrServiceUnavailable
+	}
+	if err := commitTransaction(ctx, tx); err != nil {
+		return nil, err
+	}
+	return definitions, nil
+}
+
 func (r *PostgresRepository) ListVersions(
 	ctx context.Context,
 	principal Principal,
@@ -573,6 +861,70 @@ func (r *PostgresRepository) ListVersions(
 	}
 	if rows.Err() != nil {
 		return nil, ErrServiceUnavailable
+	}
+	return versions, nil
+}
+
+func (r *PostgresRepository) ListWorkspaceVersions(
+	ctx context.Context,
+	principal Principal,
+	workspaceID uuid.UUID,
+	definitionID uuid.UUID,
+) ([]Version, error) {
+	if r == nil || r.postgres == nil || !validPrincipal(principal) || workspaceID == uuid.Nil ||
+		definitionID == uuid.Nil {
+		return nil, ErrInvalidRepositoryCommand
+	}
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, ErrServiceUnavailable
+	}
+	defer rollback(tx)
+	if _, err := requireWorkspaceAgentAccess(
+		ctx, tx, principal, workspaceID, workspaceAgentRead, true,
+	); err != nil {
+		return nil, err
+	}
+	var exists bool
+	err = tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM agent_definitions
+			WHERE owner_scope = 'WORKSPACE' AND workspace_id = $1 AND id = $2
+		)
+	`, workspaceID, definitionID).Scan(&exists)
+	if err != nil {
+		return nil, ErrServiceUnavailable
+	}
+	if !exists {
+		return nil, ErrNotFound
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT id, definition_id, version_number, canonical_manifest::text, bundle::text, content_digest,
+			signing_key_id, signature, runtime_minimum_version,
+			COALESCE(runtime_maximum_version_exclusive, ''), published_at
+		FROM agent_versions
+		WHERE owner_scope = 'WORKSPACE' AND workspace_id = $1 AND definition_id = $2
+		ORDER BY version_number DESC
+	`, workspaceID, definitionID)
+	if err != nil {
+		return nil, ErrServiceUnavailable
+	}
+	versions := make([]Version, 0)
+	for rows.Next() {
+		version, scanErr := scanVersion(rows)
+		if scanErr != nil {
+			rows.Close()
+			return nil, ErrServiceUnavailable
+		}
+		versions = append(versions, version)
+	}
+	rowsErr := rows.Err()
+	rows.Close()
+	if rowsErr != nil {
+		return nil, ErrServiceUnavailable
+	}
+	if err := commitTransaction(ctx, tx); err != nil {
+		return nil, err
 	}
 	return versions, nil
 }
@@ -635,6 +987,13 @@ func (r *PostgresRepository) CreatePendingInstallation(
 		return InstallationCreation{}, ErrServiceUnavailable
 	}
 	defer rollback(tx)
+	if command.SourceWorkspaceID != nil {
+		if _, err := requireWorkspaceAgentAccess(
+			ctx, tx, principal, *command.SourceWorkspaceID, workspaceAgentInstall, true,
+		); err != nil {
+			return InstallationCreation{}, err
+		}
+	}
 	response, found, err := lockAndReadIdempotency(ctx, tx, principal, operationCreateInstallation, command.Idempotency)
 	if err != nil {
 		return InstallationCreation{}, err
@@ -665,13 +1024,24 @@ func (r *PostgresRepository) CreatePendingInstallation(
 		return InstallationCreation{}, ErrServiceUnavailable
 	}
 	var definitionStatus string
-	err = tx.QueryRow(ctx, `
-		SELECT d.status
-		FROM agent_definitions d
-		JOIN agent_versions v ON v.definition_id = d.id AND v.id = $4
-		WHERE d.id = $3 AND d.tenant_id = $1 AND d.owner_scope = 'USER' AND d.owner_id = $2
-		  AND v.tenant_id = $1 AND v.owner_scope = 'USER' AND v.owner_id = $2
-	`, owner.TenantID, owner.OwnerID, command.DefinitionID, command.VersionID).Scan(&definitionStatus)
+	var version Version
+	if command.SourceWorkspaceID == nil {
+		err = tx.QueryRow(ctx, `
+			SELECT d.status
+			FROM agent_definitions d
+			JOIN agent_versions v ON v.definition_id = d.id AND v.id = $4
+			WHERE d.id = $3 AND d.tenant_id = $1 AND d.owner_scope = 'USER' AND d.owner_id = $2
+			  AND v.tenant_id = $1 AND v.owner_scope = 'USER' AND v.owner_id = $2
+		`, owner.TenantID, owner.OwnerID, command.DefinitionID, command.VersionID).Scan(&definitionStatus)
+	} else {
+		err = tx.QueryRow(ctx, `
+			SELECT d.status
+			FROM agent_definitions d
+			JOIN agent_versions v ON v.definition_id = d.id AND v.id = $3
+			WHERE d.id = $2 AND d.owner_scope = 'WORKSPACE' AND d.workspace_id = $1
+			  AND v.owner_scope = 'WORKSPACE' AND v.workspace_id = $1
+		`, *command.SourceWorkspaceID, command.DefinitionID, command.VersionID).Scan(&definitionStatus)
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return InstallationCreation{}, ErrNotFound
 	}
@@ -681,12 +1051,16 @@ func (r *PostgresRepository) CreatePendingInstallation(
 	if definitionStatus == definitionStatusArchived {
 		return InstallationCreation{}, ErrDefinitionArchived
 	}
-	if revoked, err := versionIsRevoked(ctx, tx, principal, command.VersionID); err != nil {
-		return InstallationCreation{}, err
-	} else if revoked {
-		return InstallationCreation{}, ErrVersionRevoked
+	if command.SourceWorkspaceID == nil {
+		if revoked, err := versionIsRevoked(ctx, tx, principal, command.VersionID); err != nil {
+			return InstallationCreation{}, err
+		} else if revoked {
+			return InstallationCreation{}, ErrVersionRevoked
+		}
+		version, err = loadVersion(ctx, tx, principal, command.VersionID)
+	} else {
+		version, err = loadWorkspaceVersion(ctx, tx, *command.SourceWorkspaceID, command.VersionID)
 	}
-	version, err := loadVersion(ctx, tx, principal, command.VersionID)
 	if err != nil || version.DefinitionID != command.DefinitionID {
 		if err != nil {
 			return InstallationCreation{}, err
@@ -725,11 +1099,19 @@ func (r *PostgresRepository) CreatePendingInstallation(
 		"agent_installation", command.InstallationID, response, command.CreatedAt); err != nil {
 		return InstallationCreation{}, err
 	}
+	auditMetadata := map[string]string{
+		"agent_definition_id":   command.DefinitionID.String(),
+		"agent_version_id":      command.VersionID.String(),
+		"agent_installation_id": command.InstallationID.String(),
+		"policy_snapshot_id":    policy.ID.String(),
+		"source_owner_scope":    string(OwnerScopeUser),
+	}
+	if command.SourceWorkspaceID != nil {
+		auditMetadata["source_owner_scope"] = string(OwnerScopeWorkspace)
+		auditMetadata["source_workspace_id"] = command.SourceWorkspaceID.String()
+	}
 	if err := recordAudit(ctx, tx, principal, command.Audit, "agent_installation_created", "agent_installation",
-		command.InstallationID, command.CreatedAt, map[string]string{
-			"agent_definition_id": command.DefinitionID.String(), "agent_version_id": command.VersionID.String(),
-			"agent_installation_id": command.InstallationID.String(), "policy_snapshot_id": policy.ID.String(),
-		}); err != nil {
+		command.InstallationID, command.CreatedAt, auditMetadata); err != nil {
 		return InstallationCreation{}, err
 	}
 	installation, err := loadInstallation(ctx, tx, principal, command.InstallationID, false)
@@ -906,14 +1288,18 @@ func (r *PostgresRepository) SelectInstallationVersion(
 	}
 	owner := principal.Owner()
 	var definitionStatus string
+	var definitionOwnerScope string
+	var workspaceValue pgtype.UUID
 	err = tx.QueryRow(ctx, `
-		SELECT d.status
-		FROM agent_versions v
-		JOIN agent_definitions d ON d.id = v.definition_id
-		WHERE v.id = $4 AND v.definition_id = $3
-		  AND v.tenant_id = $1 AND v.owner_scope = 'USER' AND v.owner_id = $2
-		  AND d.tenant_id = $1 AND d.owner_scope = 'USER' AND d.owner_id = $2
-	`, owner.TenantID, owner.OwnerID, installation.DefinitionID, command.VersionID).Scan(&definitionStatus)
+		SELECT d.status, d.owner_scope, d.workspace_id
+		FROM agent_definitions d
+		WHERE d.id = $3 AND (
+			(d.tenant_id = $1 AND d.owner_scope = 'USER' AND d.owner_id = $2)
+			OR (d.owner_scope = 'WORKSPACE' AND d.workspace_id IS NOT NULL)
+		)
+	`, owner.TenantID, owner.OwnerID, installation.DefinitionID).Scan(
+		&definitionStatus, &definitionOwnerScope, &workspaceValue,
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Installation{}, ErrNotFound
 	}
@@ -923,10 +1309,37 @@ func (r *PostgresRepository) SelectInstallationVersion(
 	if definitionStatus == definitionStatusArchived {
 		return Installation{}, ErrDefinitionArchived
 	}
-	if revoked, err := versionIsRevoked(ctx, tx, principal, command.VersionID); err != nil {
-		return Installation{}, err
-	} else if revoked {
-		return Installation{}, ErrVersionRevoked
+	var version Version
+	switch OwnerScope(definitionOwnerScope) {
+	case OwnerScopeUser:
+		if workspaceValue.Valid {
+			return Installation{}, ErrServiceUnavailable
+		}
+		if revoked, err := versionIsRevoked(ctx, tx, principal, command.VersionID); err != nil {
+			return Installation{}, err
+		} else if revoked {
+			return Installation{}, ErrVersionRevoked
+		}
+		version, err = loadVersion(ctx, tx, principal, command.VersionID)
+	case OwnerScopeWorkspace:
+		if !workspaceValue.Valid {
+			return Installation{}, ErrServiceUnavailable
+		}
+		workspaceID := uuid.UUID(workspaceValue.Bytes)
+		if _, err := requireWorkspaceAgentAccess(
+			ctx, tx, principal, workspaceID, workspaceAgentInstall, true,
+		); err != nil {
+			return Installation{}, err
+		}
+		version, err = loadWorkspaceVersion(ctx, tx, workspaceID, command.VersionID)
+	default:
+		return Installation{}, ErrServiceUnavailable
+	}
+	if err != nil || version.DefinitionID != installation.DefinitionID {
+		if err != nil {
+			return Installation{}, err
+		}
+		return Installation{}, ErrNotFound
 	}
 	var currentPolicyVersion int64
 	if installation.PolicySnapshotID == nil {
@@ -938,10 +1351,6 @@ func (r *PostgresRepository) SelectInstallationVersion(
 	`, owner.TenantID, owner.OwnerID, *installation.PolicySnapshotID).Scan(&currentPolicyVersion)
 	if err != nil {
 		return Installation{}, ErrServiceUnavailable
-	}
-	version, err := loadVersion(ctx, tx, principal, command.VersionID)
-	if err != nil {
-		return Installation{}, err
 	}
 	policy, err := command.BuildPolicy(currentPolicyVersion+1, version)
 	if err != nil {
@@ -1158,10 +1567,31 @@ const definitionQuery = `
 `
 
 const versionQuery = `
+	SELECT v.id, v.definition_id, v.version_number, v.canonical_manifest::text, v.bundle::text, v.content_digest,
+		v.signing_key_id, v.signature, v.runtime_minimum_version,
+		COALESCE(v.runtime_maximum_version_exclusive, ''), v.published_at
+	FROM agent_versions v
+	LEFT JOIN workspace_memberships membership
+		ON membership.workspace_id = v.workspace_id AND membership.user_id = $2
+	WHERE v.id = $3 AND (
+		(v.tenant_id = $1 AND v.owner_scope = 'USER' AND v.owner_id = $2)
+		OR (v.owner_scope = 'WORKSPACE' AND membership.user_id IS NOT NULL)
+	)
+`
+
+const workspaceDefinitionQuery = `
+	SELECT id, display_name, COALESCE(icon_media_type, ''), icon_data, status,
+		latest_version_id, created_at, updated_at
+	FROM agent_definitions
+	WHERE owner_scope = 'WORKSPACE' AND workspace_id = $1 AND id = $2
+`
+
+const workspaceVersionQuery = `
 	SELECT id, definition_id, version_number, canonical_manifest::text, bundle::text, content_digest,
-		signing_key_id, signature, runtime_minimum_version, COALESCE(runtime_maximum_version_exclusive, ''), published_at
+		signing_key_id, signature, runtime_minimum_version,
+		COALESCE(runtime_maximum_version_exclusive, ''), published_at
 	FROM agent_versions
-	WHERE tenant_id = $1 AND owner_scope = 'USER' AND owner_id = $2 AND id = $3
+	WHERE owner_scope = 'WORKSPACE' AND workspace_id = $1 AND id = $2
 `
 
 const installationQuery = `
@@ -1177,6 +1607,76 @@ type rowScanner interface {
 
 type queryRower interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+func requireWorkspaceAgentAccess(
+	ctx context.Context,
+	queryer queryRower,
+	principal Principal,
+	workspaceID uuid.UUID,
+	mode workspaceAgentAccessMode,
+	forUpdate bool,
+) (string, error) {
+	query := `
+		SELECT w.status, owner.status, membership.role, actor.status,
+			EXISTS (
+				SELECT 1 FROM devices device
+				WHERE device.id = $3 AND device.user_id = $2 AND device.status = 'active'
+			),
+			EXISTS (
+				SELECT 1 FROM workspace_memberships fixed_owner
+				WHERE fixed_owner.workspace_id = w.id AND fixed_owner.user_id = w.owner_user_id
+				  AND fixed_owner.role = 'owner'
+			)
+		FROM workspaces w
+		JOIN workspace_memberships membership
+			ON membership.workspace_id = w.id AND membership.user_id = $2
+		JOIN users owner ON owner.id = w.owner_user_id
+		JOIN users actor ON actor.id = membership.user_id
+		WHERE w.id = $1
+	`
+	if forUpdate {
+		query += ` FOR UPDATE OF w, membership`
+	}
+	var workspaceStatus string
+	var ownerStatus string
+	var role string
+	var actorStatus string
+	var deviceActive bool
+	var fixedOwner bool
+	err := queryer.QueryRow(ctx, query, workspaceID, principal.UserID, principal.DeviceID).Scan(
+		&workspaceStatus, &ownerStatus, &role, &actorStatus, &deviceActive, &fixedOwner,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil || !fixedOwner {
+		return "", ErrServiceUnavailable
+	}
+	if actorStatus != "active" || !deviceActive {
+		if ownerStatus != "active" && role == "owner" && mode != workspaceAgentRead {
+			return "", ErrWorkspaceOwnerUnavailable
+		}
+		return "", ErrNotFound
+	}
+	if mode != workspaceAgentRead {
+		if workspaceStatus == "archived" {
+			return "", ErrWorkspaceArchived
+		}
+		if workspaceStatus != "active" {
+			return "", ErrServiceUnavailable
+		}
+		if ownerStatus != "active" {
+			return "", ErrWorkspaceOwnerUnavailable
+		}
+	}
+	if mode == workspaceAgentPublish && role != "owner" && role != "admin" {
+		return "", ErrWorkspaceForbidden
+	}
+	if role != "owner" && role != "admin" && role != "member" {
+		return "", ErrServiceUnavailable
+	}
+	return role, nil
 }
 
 func scanDefinition(row rowScanner) (Definition, error) {
@@ -1239,9 +1739,64 @@ func loadPublication(
 	return Publication{Definition: definition, Version: version}, nil
 }
 
+func loadWorkspacePublication(
+	ctx context.Context,
+	queryer queryRower,
+	workspaceID uuid.UUID,
+	definitionID uuid.UUID,
+	versionID uuid.UUID,
+) (Publication, error) {
+	definition, err := loadWorkspaceDefinition(ctx, queryer, workspaceID, definitionID)
+	if err != nil {
+		return Publication{}, err
+	}
+	version, err := loadWorkspaceVersion(ctx, queryer, workspaceID, versionID)
+	if err != nil {
+		return Publication{}, err
+	}
+	if version.DefinitionID != definition.ID {
+		return Publication{}, ErrNotFound
+	}
+	return Publication{Definition: definition, Version: version}, nil
+}
+
+func loadWorkspaceDefinition(
+	ctx context.Context,
+	queryer queryRower,
+	workspaceID uuid.UUID,
+	definitionID uuid.UUID,
+) (Definition, error) {
+	definition, err := scanDefinition(queryer.QueryRow(
+		ctx, workspaceDefinitionQuery, workspaceID, definitionID,
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Definition{}, ErrNotFound
+	}
+	if err != nil {
+		return Definition{}, ErrServiceUnavailable
+	}
+	return definition, nil
+}
+
 func loadVersion(ctx context.Context, queryer queryRower, principal Principal, versionID uuid.UUID) (Version, error) {
 	version, err := scanVersion(queryer.QueryRow(ctx, versionQuery,
 		principal.PersonalSpaceID, principal.UserID, versionID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Version{}, ErrNotFound
+	}
+	if err != nil {
+		return Version{}, ErrServiceUnavailable
+	}
+	return version, nil
+}
+
+func loadWorkspaceVersion(
+	ctx context.Context,
+	queryer queryRower,
+	workspaceID uuid.UUID,
+	versionID uuid.UUID,
+) (Version, error) {
+	version, err := scanVersion(queryer.QueryRow(ctx, workspaceVersionQuery, workspaceID, versionID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Version{}, ErrNotFound
 	}
@@ -1346,6 +1901,33 @@ func insertVersion(
 	return nil
 }
 
+func insertWorkspaceVersion(
+	ctx context.Context,
+	tx pgx.Tx,
+	principal Principal,
+	workspaceID uuid.UUID,
+	definitionID uuid.UUID,
+	material VersionMaterial,
+	publishedAt time.Time,
+) error {
+	if workspaceID == uuid.Nil || !validVersionMaterial(material, material.VersionNumber) {
+		return ErrInvalidRepositoryCommand
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO agent_versions (
+			id, definition_id, tenant_id, owner_scope, owner_id, workspace_id, version_number,
+			canonical_manifest, bundle, content_digest, signing_key_id, signature,
+			runtime_minimum_version, runtime_maximum_version_exclusive, published_by, published_at
+		) VALUES ($1, $2, NULL, 'WORKSPACE', NULL, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, NULLIF($11, ''), $12, $13)
+	`, material.ID, definitionID, workspaceID, material.VersionNumber,
+		string(material.CanonicalManifest), string(material.Bundle), material.ContentDigest[:], material.SigningKeyID,
+		material.Signature, material.RuntimeMinimumVersion, material.RuntimeMaximumVersionExclusive,
+		principal.UserID, publishedAt.UTC()); err != nil {
+		return ErrServiceUnavailable
+	}
+	return nil
+}
+
 func insertPolicy(ctx context.Context, tx pgx.Tx, principal Principal, policy PolicyMaterial) error {
 	if !validPolicyMaterial(policy, policy.InstallationID, policy.AgentVersionID) {
 		return ErrInvalidRepositoryCommand
@@ -1407,6 +1989,41 @@ func lockAndReadIdempotency(
 	return response, true, nil
 }
 
+func lockAndReadWorkspaceIdempotency(
+	ctx context.Context,
+	tx pgx.Tx,
+	workspaceID uuid.UUID,
+	operation string,
+	evidence IdempotencyEvidence,
+) (idempotencyResponse, bool, error) {
+	lockID := workspaceAgentIdempotencyLockID(workspaceID, operation, evidence.KeyHash)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, lockID); err != nil {
+		return idempotencyResponse{}, false, ErrServiceUnavailable
+	}
+	var requestHash []byte
+	var encoded []byte
+	err := tx.QueryRow(ctx, `
+		SELECT request_hash, response_document
+		FROM agent_control_idempotency_keys
+		WHERE owner_scope = 'WORKSPACE' AND workspace_id = $1
+		  AND operation = $2 AND key_hash = $3
+	`, workspaceID, operation, evidence.KeyHash[:]).Scan(&requestHash, &encoded)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return idempotencyResponse{}, false, nil
+	}
+	if err != nil {
+		return idempotencyResponse{}, false, ErrServiceUnavailable
+	}
+	if len(requestHash) != sha256.Size || subtle.ConstantTimeCompare(requestHash, evidence.RequestHash[:]) != 1 {
+		return idempotencyResponse{}, false, ErrIdempotencyConflict
+	}
+	var response idempotencyResponse
+	if err := json.Unmarshal(encoded, &response); err != nil {
+		return idempotencyResponse{}, false, ErrServiceUnavailable
+	}
+	return response, true, nil
+}
+
 func insertIdempotency(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -1435,8 +2052,45 @@ func insertIdempotency(
 	return nil
 }
 
+func insertWorkspaceIdempotency(
+	ctx context.Context,
+	tx pgx.Tx,
+	workspaceID uuid.UUID,
+	operation string,
+	evidence IdempotencyEvidence,
+	resourceType string,
+	resourceID uuid.UUID,
+	response idempotencyResponse,
+	createdAt time.Time,
+) error {
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		return ErrServiceUnavailable
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO agent_control_idempotency_keys (
+			id, tenant_id, owner_scope, owner_id, workspace_id, operation, key_hash, request_hash,
+			resource_type, resource_id, response_document, created_at, expires_at
+		) VALUES ($1, NULL, 'WORKSPACE', NULL, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
+	`, evidence.ID, workspaceID, operation, evidence.KeyHash[:], evidence.RequestHash[:],
+		resourceType, resourceID, string(encoded), createdAt.UTC(), evidence.ExpiresAt.UTC()); err != nil {
+		return ErrServiceUnavailable
+	}
+	return nil
+}
+
 func idempotencyLockID(principal Principal, operation string, keyHash [sha256.Size]byte) int64 {
 	payload := append([]byte(principal.PersonalSpaceID.String()+"\x00"+principal.UserID.String()+"\x00"+operation+"\x00"), keyHash[:]...)
+	digest := sha256.Sum256(payload)
+	return int64(binary.BigEndian.Uint64(digest[:8]))
+}
+
+func workspaceAgentIdempotencyLockID(
+	workspaceID uuid.UUID,
+	operation string,
+	keyHash [sha256.Size]byte,
+) int64 {
+	payload := append([]byte("WORKSPACE\x00"+workspaceID.String()+"\x00"+operation+"\x00"), keyHash[:]...)
 	digest := sha256.Sum256(payload)
 	return int64(binary.BigEndian.Uint64(digest[:8]))
 }
@@ -1460,6 +2114,41 @@ func recordAudit(
 		"tenant_id":   principal.PersonalSpaceID.String(),
 		"owner_scope": string(OwnerScopeUser),
 		"owner_id":    principal.UserID.String(),
+	}
+	for key, value := range metadata {
+		bounded[key] = value
+	}
+	actor := principal.UserID
+	device := principal.DeviceID
+	if err := recorder.Record(ctx, audit.Event{
+		ID: evidence.EventID, EventType: eventType, ActorUserID: &actor, DeviceID: &device,
+		ObjectType: objectType, ObjectID: &objectID, Outcome: audit.OutcomeSuccess,
+		RequestID: evidence.RequestID, Metadata: bounded, OccurredAt: occurredAt.UTC(),
+	}); err != nil {
+		return ErrServiceUnavailable
+	}
+	return nil
+}
+
+func recordWorkspaceAgentAudit(
+	ctx context.Context,
+	tx pgx.Tx,
+	principal Principal,
+	workspaceID uuid.UUID,
+	evidence AuditEvidence,
+	eventType string,
+	objectType string,
+	objectID uuid.UUID,
+	occurredAt time.Time,
+	metadata map[string]string,
+) error {
+	recorder, err := audit.NewRecorder(tx)
+	if err != nil {
+		return ErrServiceUnavailable
+	}
+	bounded := map[string]string{
+		"owner_scope":  string(OwnerScopeWorkspace),
+		"workspace_id": workspaceID.String(),
 	}
 	for key, value := range metadata {
 		bounded[key] = value
@@ -1582,7 +2271,7 @@ func validVersionMaterial(material VersionMaterial, expectedNumber int64) bool {
 
 func validCreateInstallation(command CreateInstallationCommand) bool {
 	return command.InstallationID != uuid.Nil && command.DefinitionID != uuid.Nil && command.VersionID != uuid.Nil &&
-		command.BuildPolicy != nil &&
+		(command.SourceWorkspaceID == nil || *command.SourceWorkspaceID != uuid.Nil) && command.BuildPolicy != nil &&
 		validIdempotency(command.Idempotency, command.CreatedAt) && validAuditEvidence(command.Audit) && !command.CreatedAt.IsZero()
 }
 

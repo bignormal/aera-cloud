@@ -20,11 +20,16 @@ const idempotencyLifetime = 24 * time.Hour
 type ServiceRepository interface {
 	PublishInitial(context.Context, Principal, InitialPublicationCommand) (Publication, error)
 	PublishNext(context.Context, Principal, NextPublicationCommand) (Publication, error)
+	PublishWorkspaceInitial(context.Context, Principal, uuid.UUID, InitialPublicationCommand) (Publication, error)
+	PublishWorkspaceNext(context.Context, Principal, uuid.UUID, NextPublicationCommand) (Publication, error)
 	FindDefinition(context.Context, Principal, uuid.UUID) (Definition, bool, error)
+	FindWorkspaceDefinition(context.Context, Principal, uuid.UUID, uuid.UUID) (Definition, bool, error)
 	FindVersion(context.Context, Principal, uuid.UUID) (Version, bool, error)
 	FindPolicySnapshot(context.Context, Principal, uuid.UUID) (PolicySnapshot, bool, error)
 	ListDefinitions(context.Context, Principal) ([]Definition, error)
 	ListVersions(context.Context, Principal, uuid.UUID) ([]Version, error)
+	ListWorkspaceDefinitions(context.Context, Principal, uuid.UUID) ([]Definition, error)
+	ListWorkspaceVersions(context.Context, Principal, uuid.UUID, uuid.UUID) ([]Version, error)
 	AppendVersionRevocation(context.Context, Principal, VersionRevocationCommand) (VersionRevocation, error)
 	RecordDenied(context.Context, Principal, DeniedAuditCommand) error
 	CreatePendingInstallation(context.Context, Principal, CreateInstallationCommand) (InstallationCreation, error)
@@ -79,10 +84,11 @@ type RevokeVersionRequest struct {
 }
 
 type CreateInstallationRequest struct {
-	DefinitionID   uuid.UUID
-	VersionID      uuid.UUID
-	IdempotencyKey string
-	RequestID      string
+	DefinitionID      uuid.UUID
+	VersionID         uuid.UUID
+	SourceWorkspaceID *uuid.UUID
+	IdempotencyKey    string
+	RequestID         string
 }
 
 type ActivateInstallationRequest struct {
@@ -134,8 +140,38 @@ func (s *Service) PublishInitial(
 	principal Principal,
 	request PublishInitialRequest,
 ) (Publication, error) {
+	return s.publishInitial(ctx, principal, nil, request, s.repository.PublishInitial)
+}
+
+func (s *Service) PublishWorkspaceInitial(
+	ctx context.Context,
+	principal Principal,
+	workspaceID uuid.UUID,
+	request PublishInitialRequest,
+) (Publication, error) {
+	if workspaceID == uuid.Nil {
+		return Publication{}, ErrInvalidRequest
+	}
+	return s.publishInitial(
+		ctx,
+		principal,
+		&workspaceID,
+		request,
+		func(ctx context.Context, principal Principal, command InitialPublicationCommand) (Publication, error) {
+			return s.repository.PublishWorkspaceInitial(ctx, principal, workspaceID, command)
+		},
+	)
+}
+
+func (s *Service) publishInitial(
+	ctx context.Context,
+	principal Principal,
+	workspaceID *uuid.UUID,
+	request PublishInitialRequest,
+	publish func(context.Context, Principal, InitialPublicationCommand) (Publication, error),
+) (Publication, error) {
 	if s == nil || !validPrincipal(principal) ||
-		!validPublicationEnvelope(request.DisplayName, request.IdempotencyKey, request.RequestID) {
+		publish == nil || !validPublicationEnvelope(request.DisplayName, request.IdempotencyKey, request.RequestID) {
 		return Publication{}, ErrInvalidRequest
 	}
 	if (request.IconMediaType == "") != (len(request.IconData) == 0) ||
@@ -153,9 +189,11 @@ func (s *Service) PublishInitial(
 		IconDigest    string          `json:"icon_digest"`
 		Manifest      json.RawMessage `json:"manifest"`
 		Bundle        json.RawMessage `json:"bundle"`
+		WorkspaceID   *string         `json:"workspace_id,omitempty"`
 	}{
 		Operation: operationPublishInitial, DisplayName: request.DisplayName, IconMediaType: request.IconMediaType,
 		IconDigest: digestHex(request.IconData), Manifest: canonical.ManifestJSON, Bundle: canonical.BundleJSON,
+		WorkspaceID: uuidStringPointer(workspaceID),
 	})
 	if err != nil {
 		return Publication{}, ErrInvalidAgentContent
@@ -165,7 +203,7 @@ func (s *Service) PublishInitial(
 	if definitionID == uuid.Nil || versionID == uuid.Nil || idempotencyID == uuid.Nil || auditID == uuid.Nil {
 		return Publication{}, ErrServiceUnavailable
 	}
-	publication, err := s.repository.PublishInitial(ctx, principal, InitialPublicationCommand{
+	publication, err := publish(ctx, principal, InitialPublicationCommand{
 		DefinitionID: definitionID, DisplayName: request.DisplayName,
 		IconMediaType: request.IconMediaType, IconData: append([]byte(nil), request.IconData...),
 		BuildVersion: func() (VersionMaterial, error) {
@@ -201,8 +239,38 @@ func (s *Service) PublishNext(
 	principal Principal,
 	request PublishNextRequest,
 ) (Publication, error) {
+	return s.publishNext(ctx, principal, nil, request, s.repository.PublishNext)
+}
+
+func (s *Service) PublishWorkspaceNext(
+	ctx context.Context,
+	principal Principal,
+	workspaceID uuid.UUID,
+	request PublishNextRequest,
+) (Publication, error) {
+	if workspaceID == uuid.Nil {
+		return Publication{}, ErrInvalidRequest
+	}
+	return s.publishNext(
+		ctx,
+		principal,
+		&workspaceID,
+		request,
+		func(ctx context.Context, principal Principal, command NextPublicationCommand) (Publication, error) {
+			return s.repository.PublishWorkspaceNext(ctx, principal, workspaceID, command)
+		},
+	)
+}
+
+func (s *Service) publishNext(
+	ctx context.Context,
+	principal Principal,
+	workspaceID *uuid.UUID,
+	request PublishNextRequest,
+	publish func(context.Context, Principal, NextPublicationCommand) (Publication, error),
+) (Publication, error) {
 	if s == nil || !validPrincipal(principal) || request.DefinitionID == uuid.Nil || request.BaseVersionID == uuid.Nil ||
-		!validIdempotencyKey(request.IdempotencyKey) || !validRequestID(request.RequestID) {
+		publish == nil || !validIdempotencyKey(request.IdempotencyKey) || !validRequestID(request.RequestID) {
 		return Publication{}, ErrInvalidRequest
 	}
 	canonical, minimum, maximum, err := canonicalizePublication(request.Manifest, request.Bundle)
@@ -215,9 +283,11 @@ func (s *Service) PublishNext(
 		BaseVersionID string          `json:"base_version_id"`
 		Manifest      json.RawMessage `json:"manifest"`
 		Bundle        json.RawMessage `json:"bundle"`
+		WorkspaceID   *string         `json:"workspace_id,omitempty"`
 	}{
 		Operation: operationPublishNext, DefinitionID: request.DefinitionID.String(),
 		BaseVersionID: request.BaseVersionID.String(), Manifest: canonical.ManifestJSON, Bundle: canonical.BundleJSON,
+		WorkspaceID: uuidStringPointer(workspaceID),
 	})
 	if err != nil {
 		return Publication{}, ErrInvalidAgentContent
@@ -227,7 +297,7 @@ func (s *Service) PublishNext(
 	if versionID == uuid.Nil || idempotencyID == uuid.Nil || auditID == uuid.Nil {
 		return Publication{}, ErrServiceUnavailable
 	}
-	publication, err := s.repository.PublishNext(ctx, principal, NextPublicationCommand{
+	publication, err := publish(ctx, principal, NextPublicationCommand{
 		DefinitionID: request.DefinitionID, BaseVersionID: request.BaseVersionID,
 		BuildVersion: func(versionNumber int64) (VersionMaterial, error) {
 			attestation, signErr := s.signer.SignVersion(VersionSignatureInput{
@@ -273,6 +343,21 @@ func (s *Service) ListDefinitions(ctx context.Context, principal Principal) ([]D
 	return cloneDefinitions(definitions), nil
 }
 
+func (s *Service) ListWorkspaceDefinitions(
+	ctx context.Context,
+	principal Principal,
+	workspaceID uuid.UUID,
+) ([]Definition, error) {
+	if s == nil || !validPrincipal(principal) || workspaceID == uuid.Nil {
+		return nil, ErrInvalidRequest
+	}
+	definitions, err := s.repository.ListWorkspaceDefinitions(ctx, principal, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return cloneDefinitions(definitions), nil
+}
+
 func (s *Service) GetDefinition(
 	ctx context.Context,
 	principal Principal,
@@ -295,6 +380,30 @@ func (s *Service) GetDefinition(
 	return cloneDefinition(definition), nil
 }
 
+func (s *Service) GetWorkspaceDefinition(
+	ctx context.Context,
+	principal Principal,
+	workspaceID uuid.UUID,
+	definitionID uuid.UUID,
+	requestID string,
+) (Definition, error) {
+	if s == nil || !validPrincipal(principal) || workspaceID == uuid.Nil || definitionID == uuid.Nil ||
+		!validRequestID(requestID) {
+		return Definition{}, ErrInvalidRequest
+	}
+	definition, found, err := s.repository.FindWorkspaceDefinition(ctx, principal, workspaceID, definitionID)
+	if err != nil {
+		return Definition{}, err
+	}
+	if !found {
+		if err := s.recordDenied(ctx, principal, "agent_definition", definitionID, requestID); err != nil {
+			return Definition{}, err
+		}
+		return Definition{}, ErrNotFound
+	}
+	return cloneDefinition(definition), nil
+}
+
 func (s *Service) ListVersions(
 	ctx context.Context,
 	principal Principal,
@@ -305,6 +414,29 @@ func (s *Service) ListVersions(
 		return nil, ErrInvalidRequest
 	}
 	versions, err := s.repository.ListVersions(ctx, principal, definitionID)
+	if errors.Is(err, ErrNotFound) {
+		if auditErr := s.recordDenied(ctx, principal, "agent_definition", definitionID, requestID); auditErr != nil {
+			return nil, auditErr
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return cloneVersions(versions), nil
+}
+
+func (s *Service) ListWorkspaceVersions(
+	ctx context.Context,
+	principal Principal,
+	workspaceID uuid.UUID,
+	definitionID uuid.UUID,
+	requestID string,
+) ([]Version, error) {
+	if s == nil || !validPrincipal(principal) || workspaceID == uuid.Nil || definitionID == uuid.Nil ||
+		!validRequestID(requestID) {
+		return nil, ErrInvalidRequest
+	}
+	versions, err := s.repository.ListWorkspaceVersions(ctx, principal, workspaceID, definitionID)
 	if errors.Is(err, ErrNotFound) {
 		if auditErr := s.recordDenied(ctx, principal, "agent_definition", definitionID, requestID); auditErr != nil {
 			return nil, auditErr
@@ -415,15 +547,18 @@ func (s *Service) CreateInstallation(
 	request CreateInstallationRequest,
 ) (InstallationCreation, error) {
 	if s == nil || !validPrincipal(principal) || request.DefinitionID == uuid.Nil || request.VersionID == uuid.Nil ||
+		(request.SourceWorkspaceID != nil && *request.SourceWorkspaceID == uuid.Nil) ||
 		!validIdempotencyKey(request.IdempotencyKey) || !validRequestID(request.RequestID) {
 		return InstallationCreation{}, ErrInvalidRequest
 	}
 	requestHash, err := hashRequest(struct {
-		Operation    string `json:"operation"`
-		DefinitionID string `json:"definition_id"`
-		VersionID    string `json:"version_id"`
+		Operation    string  `json:"operation"`
+		DefinitionID string  `json:"definition_id"`
+		VersionID    string  `json:"version_id"`
+		WorkspaceID  *string `json:"workspace_id,omitempty"`
 	}{
 		Operation: operationCreateInstallation, DefinitionID: request.DefinitionID.String(), VersionID: request.VersionID.String(),
+		WorkspaceID: uuidStringPointer(request.SourceWorkspaceID),
 	})
 	if err != nil {
 		return InstallationCreation{}, ErrInvalidRequest
@@ -435,6 +570,7 @@ func (s *Service) CreateInstallation(
 	}
 	created, err := s.repository.CreatePendingInstallation(ctx, principal, CreateInstallationCommand{
 		InstallationID: installationID, DefinitionID: request.DefinitionID, VersionID: request.VersionID,
+		SourceWorkspaceID: cloneUUIDPointer(request.SourceWorkspaceID),
 		BuildPolicy: func(version Version) (PolicyMaterial, error) {
 			return s.buildPolicy(installationID, policyID, version, 1, now)
 		},

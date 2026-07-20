@@ -664,11 +664,16 @@ func newAgentControlServiceFixture(t *testing.T) *agentControlServiceFixture {
 type stubServiceRepository struct {
 	publishInitial            func(context.Context, Principal, InitialPublicationCommand) (Publication, error)
 	publishNext               func(context.Context, Principal, NextPublicationCommand) (Publication, error)
+	publishWorkspaceInitial   func(context.Context, Principal, uuid.UUID, InitialPublicationCommand) (Publication, error)
+	publishWorkspaceNext      func(context.Context, Principal, uuid.UUID, NextPublicationCommand) (Publication, error)
 	findDefinition            func(context.Context, Principal, uuid.UUID) (Definition, bool, error)
+	findWorkspaceDefinition   func(context.Context, Principal, uuid.UUID, uuid.UUID) (Definition, bool, error)
 	findVersion               func(context.Context, Principal, uuid.UUID) (Version, bool, error)
 	findPolicySnapshot        func(context.Context, Principal, uuid.UUID) (PolicySnapshot, bool, error)
 	listDefinitions           func(context.Context, Principal) ([]Definition, error)
 	listVersions              func(context.Context, Principal, uuid.UUID) ([]Version, error)
+	listWorkspaceDefinitions  func(context.Context, Principal, uuid.UUID) ([]Definition, error)
+	listWorkspaceVersions     func(context.Context, Principal, uuid.UUID, uuid.UUID) ([]Version, error)
 	appendRevocation          func(context.Context, Principal, VersionRevocationCommand) (VersionRevocation, error)
 	recordDenied              func(context.Context, Principal, DeniedAuditCommand) error
 	createPendingInstallation func(context.Context, Principal, CreateInstallationCommand) (InstallationCreation, error)
@@ -694,11 +699,47 @@ func (s *stubServiceRepository) PublishNext(ctx context.Context, principal Princ
 	return s.publishNext(ctx, principal, command)
 }
 
+func (s *stubServiceRepository) PublishWorkspaceInitial(
+	ctx context.Context,
+	principal Principal,
+	workspaceID uuid.UUID,
+	command InitialPublicationCommand,
+) (Publication, error) {
+	if s.publishWorkspaceInitial == nil {
+		return Publication{}, errors.New("unexpected PublishWorkspaceInitial call")
+	}
+	return s.publishWorkspaceInitial(ctx, principal, workspaceID, command)
+}
+
+func (s *stubServiceRepository) PublishWorkspaceNext(
+	ctx context.Context,
+	principal Principal,
+	workspaceID uuid.UUID,
+	command NextPublicationCommand,
+) (Publication, error) {
+	if s.publishWorkspaceNext == nil {
+		return Publication{}, errors.New("unexpected PublishWorkspaceNext call")
+	}
+	return s.publishWorkspaceNext(ctx, principal, workspaceID, command)
+}
+
 func (s *stubServiceRepository) FindDefinition(ctx context.Context, principal Principal, id uuid.UUID) (Definition, bool, error) {
 	if s.findDefinition == nil {
 		return Definition{}, false, errors.New("unexpected FindDefinition call")
 	}
 	return s.findDefinition(ctx, principal, id)
+}
+
+func (s *stubServiceRepository) FindWorkspaceDefinition(
+	ctx context.Context,
+	principal Principal,
+	workspaceID uuid.UUID,
+	id uuid.UUID,
+) (Definition, bool, error) {
+	if s.findWorkspaceDefinition == nil {
+		return Definition{}, false, errors.New("unexpected FindWorkspaceDefinition call")
+	}
+	return s.findWorkspaceDefinition(ctx, principal, workspaceID, id)
 }
 
 func (s *stubServiceRepository) FindVersion(ctx context.Context, principal Principal, id uuid.UUID) (Version, bool, error) {
@@ -727,6 +768,29 @@ func (s *stubServiceRepository) ListVersions(ctx context.Context, principal Prin
 		return nil, errors.New("unexpected ListVersions call")
 	}
 	return s.listVersions(ctx, principal, id)
+}
+
+func (s *stubServiceRepository) ListWorkspaceDefinitions(
+	ctx context.Context,
+	principal Principal,
+	workspaceID uuid.UUID,
+) ([]Definition, error) {
+	if s.listWorkspaceDefinitions == nil {
+		return nil, errors.New("unexpected ListWorkspaceDefinitions call")
+	}
+	return s.listWorkspaceDefinitions(ctx, principal, workspaceID)
+}
+
+func (s *stubServiceRepository) ListWorkspaceVersions(
+	ctx context.Context,
+	principal Principal,
+	workspaceID uuid.UUID,
+	definitionID uuid.UUID,
+) ([]Version, error) {
+	if s.listWorkspaceVersions == nil {
+		return nil, errors.New("unexpected ListWorkspaceVersions call")
+	}
+	return s.listWorkspaceVersions(ctx, principal, workspaceID, definitionID)
 }
 
 func (s *stubServiceRepository) AppendVersionRevocation(ctx context.Context, principal Principal, command VersionRevocationCommand) (VersionRevocation, error) {
