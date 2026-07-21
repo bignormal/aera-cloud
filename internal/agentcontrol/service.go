@@ -6,16 +6,114 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/bignormal/aera-cloud/internal/organization"
 	"github.com/google/uuid"
 )
 
 var ErrInvalidRequest = errors.New("Agent control request is invalid")
 
 const idempotencyLifetime = 24 * time.Hour
+
+type AgentPolicyConstraints struct {
+	AllowedProviders []string
+	AllowedModels    []string
+	AllowedTools     []string
+}
+
+type EffectiveOrganizationAgentPolicy struct {
+	AgentPolicyConstraints
+	AllowedModelPairs []organization.ModelIdentifier
+}
+
+func IntersectOrganizationAgentPolicy(
+	platformPolicy organization.PolicyDocument,
+	organizationPolicy organization.PolicyDocument,
+	versionConstraints AgentPolicyConstraints,
+) (EffectiveOrganizationAgentPolicy, error) {
+	platform, err := organization.CanonicalizePolicy(platformPolicy)
+	if err != nil {
+		return EffectiveOrganizationAgentPolicy{}, ErrOrganizationPublicationPolicyBlocked
+	}
+	currentOrganization, err := organization.CanonicalizePolicy(organizationPolicy)
+	if err != nil {
+		return EffectiveOrganizationAgentPolicy{}, ErrOrganizationPublicationPolicyBlocked
+	}
+	providers, err := canonicalStringSet(versionConstraints.AllowedProviders, true)
+	if err != nil || len(providers) == 0 {
+		return EffectiveOrganizationAgentPolicy{}, ErrOrganizationPublicationPolicyBlocked
+	}
+	models, err := canonicalStringSet(versionConstraints.AllowedModels, true)
+	if err != nil || len(models) == 0 {
+		return EffectiveOrganizationAgentPolicy{}, ErrOrganizationPublicationPolicyBlocked
+	}
+	tools, err := canonicalStringSet(versionConstraints.AllowedTools, true)
+	if err != nil {
+		return EffectiveOrganizationAgentPolicy{}, ErrOrganizationPublicationPolicyBlocked
+	}
+
+	pairs := make([]organization.ModelIdentifier, 0, len(providers)*len(models))
+	providerSet := make(map[string]struct{}, len(providers))
+	modelSet := make(map[string]struct{}, len(models))
+	for _, provider := range providers {
+		for _, model := range models {
+			pair := organization.ModelIdentifier{Provider: provider, Model: model}
+			if !modelPairAllowed(pair, platform.Document.Models.Allowlist) ||
+				!modelPairAllowed(pair, currentOrganization.Document.Models.Allowlist) {
+				continue
+			}
+			pairs = append(pairs, pair)
+			providerSet[provider] = struct{}{}
+			modelSet[model] = struct{}{}
+		}
+	}
+	if len(pairs) == 0 {
+		return EffectiveOrganizationAgentPolicy{}, ErrOrganizationPublicationPolicyBlocked
+	}
+
+	effectiveTools := organization.IntersectStringAllowlists(
+		tools,
+		platform.Document.Tools.Allowlist,
+		currentOrganization.Document.Tools.Allowlist,
+	)
+	if len(tools) > 0 && len(effectiveTools) == 0 {
+		return EffectiveOrganizationAgentPolicy{}, ErrOrganizationPublicationPolicyBlocked
+	}
+
+	return EffectiveOrganizationAgentPolicy{
+		AgentPolicyConstraints: AgentPolicyConstraints{
+			AllowedProviders: sortedPolicyKeys(providerSet),
+			AllowedModels:    sortedPolicyKeys(modelSet),
+			AllowedTools:     append([]string(nil), effectiveTools...),
+		},
+		AllowedModelPairs: append([]organization.ModelIdentifier(nil), pairs...),
+	}, nil
+}
+
+func modelPairAllowed(pair organization.ModelIdentifier, allowlist []organization.ModelIdentifier) bool {
+	if allowlist == nil {
+		return true
+	}
+	for _, allowed := range allowlist {
+		if allowed == pair {
+			return true
+		}
+	}
+	return false
+}
+
+func sortedPolicyKeys(values map[string]struct{}) []string {
+	result := make([]string, 0, len(values))
+	for value := range values {
+		result = append(result, value)
+	}
+	slices.Sort(result)
+	return result
+}
 
 type ServiceRepository interface {
 	PublishInitial(context.Context, Principal, InitialPublicationCommand) (Publication, error)
