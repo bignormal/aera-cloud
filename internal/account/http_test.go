@@ -249,6 +249,35 @@ func TestHTTPHandlerDeletionEndsBrowserSessionAndRecoveryIsPublic(t *testing.T) 
 	}
 }
 
+func TestHTTPHandlerDeletionOwnershipConflictReturnsOnlySafeCount(t *testing.T) {
+	userID := uuid.New()
+	service := &stubAccountService{deleteErr: &OrganizationOwnerTransferRequiredError{OwnedOrganizationCount: 2}}
+	sessions := &stubBrowserSessions{readSession: browser.Session{Principal: browser.Principal{UserID: userID, PersonalSpaceID: uuid.New()}}}
+	handler := NewHandler(HTTPConfig{Accounts: service, BrowserSessions: sessions, Legal: currentLegal(t)})
+	request := accountJSONRequest(http.MethodPost, "/api/v1/accounts/deletion", `{"current_password":"current","verification_receipt":"delete-receipt"}`)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusConflict || sessions.endCalls != 0 {
+		t.Fatalf("deletion response=%d %q end=%d", response.Code, response.Body.String(), sessions.endCalls)
+	}
+	var payload struct {
+		Error map[string]any `json:"error"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Error["code"] != "organization_owner_transfer_required" || payload.Error["owned_organization_count"] != float64(2) {
+		t.Fatalf("error payload = %+v", payload.Error)
+	}
+	for _, forbidden := range []string{"organization_id", "organization_name", "members", "owner_id", "owner@example.com"} {
+		if strings.Contains(response.Body.String(), forbidden) {
+			t.Fatalf("ownership response leaked %q: %s", forbidden, response.Body.String())
+		}
+	}
+}
+
 type stubAccountService struct {
 	registration    Registration
 	registerErr     error
@@ -271,6 +300,7 @@ type stubAccountService struct {
 	changeUserID    uuid.UUID
 	changeSessionID uuid.UUID
 	deleteUserID    uuid.UUID
+	deleteErr       error
 	recoverIdentity string
 	recoverReceipt  string
 }
@@ -315,7 +345,7 @@ func (s *stubAccountService) ChangePassword(_ context.Context, userID, sessionID
 
 func (s *stubAccountService) RequestDeletion(_ context.Context, userID uuid.UUID, _, _ string) error {
 	s.deleteUserID = userID
-	return nil
+	return s.deleteErr
 }
 
 func (s *stubAccountService) RecoverDeletion(_ context.Context, identity, _ string, receipt string) error {

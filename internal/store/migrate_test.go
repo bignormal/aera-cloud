@@ -3,15 +3,32 @@ package store
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/bignormal/aera-cloud/internal/testkit"
+	"github.com/bignormal/aera-cloud/migrations"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+func TestEmbeddedMigrationsIncludeOrganizationFoundation(t *testing.T) {
+	loaded, err := loadMigrations(migrations.FS)
+	if err != nil {
+		t.Fatalf("loadMigrations() error = %v", err)
+	}
+	if len(loaded) != 13 {
+		t.Fatalf("embedded migration count = %d, want 13", len(loaded))
+	}
+	last := loaded[len(loaded)-1]
+	if last.version != 13 || last.name != "000013_organization_account_lifecycle.sql" {
+		t.Fatalf("last embedded migration = %d/%s", last.version, last.name)
+	}
+}
 
 func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	services := testkit.IntegrationServices(t)
@@ -57,6 +74,12 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 		"workspace_idempotency_records",
 		"experience_candidates",
 		"experience_candidate_reviews",
+		"organizations",
+		"organization_memberships",
+		"organization_departments",
+		"organization_invitations",
+		"organization_policy_snapshots",
+		"organization_idempotency_records",
 	}
 	for _, table := range tables {
 		var exists bool
@@ -76,6 +99,9 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	assertUniqueConstraint(t, ctx, postgres, "policy_snapshots", "policy_snapshots_installation_version_key", []string{"installation_id", "policy_version"})
 	assertUniqueConstraint(t, ctx, postgres, "experience_candidates", "experience_candidates_id_workspace_key", []string{"id", "workspace_id"})
 	assertUniqueConstraint(t, ctx, postgres, "experience_candidate_reviews", "experience_candidate_reviews_candidate_id_key", []string{"candidate_id"})
+	assertUniqueConstraint(t, ctx, postgres, "organization_invitations", "organization_invitations_token_digest_key", []string{"token_digest"})
+	assertUniqueConstraint(t, ctx, postgres, "organization_policy_snapshots", "organization_policy_snapshots_organization_version_key", []string{"organization_id", "policy_version"})
+	assertUniqueConstraint(t, ctx, postgres, "organization_policy_snapshots", "organization_policy_snapshots_organization_id_id_key", []string{"organization_id", "id"})
 	assertCheckConstraintContains(t, ctx, postgres, "agent_versions", "agent_versions_content_digest_length_check", "octet_length(content_digest) = 32")
 	assertCheckConstraintContains(t, ctx, postgres, "agent_versions", "agent_versions_signature_length_check", "octet_length(signature) = 64")
 	assertCheckConstraintContains(t, ctx, postgres, "policy_snapshots", "policy_snapshots_content_digest_length_check", "octet_length(content_digest) = 32")
@@ -110,6 +136,23 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	assertCheckConstraintContains(t, ctx, postgres, "experience_candidate_reviews", "experience_candidate_reviews_decision_check", "REJECTED")
 	assertCheckConstraintContains(t, ctx, postgres, "experience_candidate_reviews", "experience_candidate_reviews_rejection_check", "reason_code")
 	assertCheckConstraintContains(t, ctx, postgres, "experience_candidate_reviews", "experience_candidate_reviews_rejection_check", "safe_note")
+	assertCheckConstraintContains(t, ctx, postgres, "organizations", "organizations_display_name_check", "char_length(display_name)")
+	assertCheckConstraintContains(t, ctx, postgres, "organizations", "organizations_status_check", "dissolved")
+	assertCheckConstraintContains(t, ctx, postgres, "organizations", "organizations_policy_required_check", "current_policy_snapshot_id")
+	assertCheckConstraintContains(t, ctx, postgres, "organizations", "organizations_lifecycle_check", "dissolved_at")
+	assertCheckConstraintContains(t, ctx, postgres, "organization_memberships", "organization_memberships_role_check", "auditor")
+	assertCheckConstraintContains(t, ctx, postgres, "organization_departments", "organization_departments_display_name_check", "char_length(display_name)")
+	assertCheckConstraintContains(t, ctx, postgres, "organization_departments", "organization_departments_lifecycle_check", "archived_at")
+	assertCheckConstraintContains(t, ctx, postgres, "organization_invitations", "organization_invitations_token_digest_length_check", "octet_length(token_digest) = 32")
+	assertCheckConstraintContains(t, ctx, postgres, "organization_invitations", "organization_invitations_expiry_check", "7 days")
+	assertCheckConstraintContains(t, ctx, postgres, "organization_invitations", "organization_invitations_lifecycle_check", "accepted_at IS NOT NULL")
+	assertCheckConstraintExcludes(t, ctx, postgres, "organization_invitations", "organization_invitations_lifecycle_check", "accepted_by_user_id IS NOT NULL")
+	assertCheckConstraintContains(t, ctx, postgres, "organization_policy_snapshots", "organization_policy_snapshots_schema_version_check", "schema_version = 1")
+	assertCheckConstraintContains(t, ctx, postgres, "organization_policy_snapshots", "organization_policy_snapshots_content_digest_length_check", "octet_length(content_digest) = 32")
+	assertCheckConstraintContains(t, ctx, postgres, "organization_policy_snapshots", "organization_policy_snapshots_signature_length_check", "octet_length(signature) = 64")
+	assertCheckConstraintContains(t, ctx, postgres, "organization_idempotency_records", "organization_idempotency_key_digest_length_check", "octet_length(key_digest) = 32")
+	assertCheckConstraintContains(t, ctx, postgres, "organization_idempotency_records", "organization_idempotency_request_digest_length_check", "octet_length(request_digest) = 32")
+	assertCheckConstraintContains(t, ctx, postgres, "organization_idempotency_records", "organization_idempotency_expiry_check", "24:00:00")
 
 	assertForeignKeyConstraintContains(t, ctx, postgres, "workspaces", "workspaces_owner_user_fk", "ON DELETE RESTRICT")
 	assertForeignKeyConstraintContains(t, ctx, postgres, "workspace_memberships", "workspace_memberships_workspace_fk", "ON DELETE CASCADE")
@@ -127,6 +170,14 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	assertForeignKeyConstraintContains(t, ctx, postgres, "experience_candidate_reviews", "experience_candidate_reviews_workspace_fk", "ON DELETE RESTRICT")
 	assertForeignKeyConstraintContains(t, ctx, postgres, "experience_candidate_reviews", "experience_candidate_reviews_candidate_workspace_fk", "ON DELETE RESTRICT")
 	assertForeignKeyConstraintContains(t, ctx, postgres, "experience_candidate_reviews", "experience_candidate_reviews_reviewed_by_user_fk", "ON DELETE SET NULL")
+	assertForeignKeyConstraintContains(t, ctx, postgres, "organization_memberships", "organization_memberships_organization_fk", "ON DELETE RESTRICT")
+	assertForeignKeyConstraintContains(t, ctx, postgres, "organization_memberships", "organization_memberships_user_fk", "ON DELETE RESTRICT")
+	assertForeignKeyConstraintContains(t, ctx, postgres, "organization_memberships", "organization_memberships_department_fk", "FOREIGN KEY (organization_id, department_id)")
+	assertForeignKeyConstraintContains(t, ctx, postgres, "organization_invitations", "organization_invitations_created_by_user_fk", "ON DELETE SET NULL")
+	assertForeignKeyConstraintContains(t, ctx, postgres, "organization_invitations", "organization_invitations_accepted_by_user_fk", "ON DELETE SET NULL")
+	assertForeignKeyConstraintContains(t, ctx, postgres, "organization_policy_snapshots", "organization_policy_snapshots_issued_by_user_fk", "ON DELETE SET NULL")
+	assertForeignKeyConstraintContains(t, ctx, postgres, "organizations", "organizations_current_policy_fk", "DEFERRABLE INITIALLY DEFERRED")
+	assertForeignKeyConstraintContains(t, ctx, postgres, "audit_events", "audit_events_organization_fk", "ON DELETE RESTRICT")
 
 	assertIndexDefinitionContains(t, ctx, postgres, "workspace_memberships_one_owner_idx", "UNIQUE", "workspace_id", "WHERE", "owner")
 	assertIndexDefinitionContains(t, ctx, postgres, "workspaces_owner_active_idx", "owner_user_id", "WHERE", "active")
@@ -139,6 +190,13 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	assertIndexDefinitionContains(t, ctx, postgres, "experience_candidates_submitter_created_idx", "submitted_by_user_id", "created_at")
 	assertIndexDefinitionContains(t, ctx, postgres, "experience_candidates_definition_created_idx", "agent_definition_id", "created_at")
 	assertIndexDefinitionContains(t, ctx, postgres, "experience_candidate_reviews_workspace_reviewed_idx", "workspace_id", "reviewed_at", "candidate_id")
+	assertIndexDefinitionContains(t, ctx, postgres, "organization_memberships_one_owner_idx", "UNIQUE", "organization_id", "WHERE", "owner")
+	assertIndexDefinitionContains(t, ctx, postgres, "organization_memberships_user_list_idx", "user_id", "organization_id")
+	assertIndexDefinitionContains(t, ctx, postgres, "organization_departments_active_name_idx", "UNIQUE", "organization_id", "name_key", "WHERE", "active")
+	assertIndexDefinitionContains(t, ctx, postgres, "organization_invitations_pending_idx", "organization_id", "expires_at", "pending")
+	assertIndexDefinitionContains(t, ctx, postgres, "organization_policy_snapshots_history_idx", "organization_id", "policy_version")
+	assertIndexDefinitionContains(t, ctx, postgres, "organization_idempotency_expiry_idx", "expires_at")
+	assertIndexDefinitionContains(t, ctx, postgres, "audit_events_organization_created_idx", "organization_id", "created_at", "id")
 
 	assertColumns(t, ctx, postgres, "agent_definitions", []string{
 		"id", "tenant_id", "owner_scope", "owner_id", "display_name", "icon_media_type", "icon_data",
@@ -183,6 +241,30 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 		"id", "candidate_id", "workspace_id", "decision", "reviewed_by_user_id", "reason_code",
 		"safe_note", "reviewed_at",
 	})
+	assertColumns(t, ctx, postgres, "organizations", []string{
+		"id", "display_name", "status", "revision", "current_policy_snapshot_id", "created_at",
+		"updated_at", "archived_at", "dissolved_at",
+	})
+	assertColumns(t, ctx, postgres, "organization_memberships", []string{
+		"organization_id", "user_id", "role", "department_id", "revision", "joined_at", "updated_at",
+	})
+	assertColumns(t, ctx, postgres, "organization_departments", []string{
+		"organization_id", "id", "display_name", "name_key", "status", "revision", "created_at",
+		"updated_at", "archived_at",
+	})
+	assertColumns(t, ctx, postgres, "organization_invitations", []string{
+		"id", "organization_id", "token_digest", "created_by_user_id", "status", "accepted_by_user_id",
+		"created_at", "expires_at", "accepted_at", "revoked_at",
+	})
+	assertColumns(t, ctx, postgres, "organization_policy_snapshots", []string{
+		"id", "organization_id", "policy_version", "schema_version", "policy_document", "content_digest",
+		"issuer", "signing_key_id", "signature", "issued_by_user_id", "created_at",
+	})
+	assertColumns(t, ctx, postgres, "organization_idempotency_records", []string{
+		"actor_user_id", "organization_id", "operation", "key_digest", "request_digest", "resource_type",
+		"resource_id", "created_at", "expires_at",
+	})
+	assertColumns(t, ctx, postgres, "audit_events", []string{"organization_id"})
 	assertColumnNullable(t, ctx, postgres, "experience_candidates", "submitted_by_user_id", true)
 	assertColumnNullable(t, ctx, postgres, "experience_candidates", "submitted_from_device_id", true)
 	assertColumnNullable(t, ctx, postgres, "experience_candidate_reviews", "reviewed_by_user_id", true)
@@ -199,15 +281,22 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	assertTriggerExists(t, ctx, postgres, "workspace_invitations", "workspace_invitations_lifecycle_trigger")
 	assertTriggerExists(t, ctx, postgres, "experience_candidates", "experience_candidates_immutable_trigger")
 	assertTriggerExists(t, ctx, postgres, "experience_candidate_reviews", "experience_candidate_reviews_immutable_trigger")
+	assertTriggerExists(t, ctx, postgres, "organizations", "organizations_lifecycle_trigger")
+	assertTriggerExists(t, ctx, postgres, "organization_memberships", "organization_memberships_department_active_trigger")
+	assertTriggerExists(t, ctx, postgres, "organization_departments", "organization_departments_lifecycle_trigger")
+	assertTriggerExists(t, ctx, postgres, "organization_invitations", "organization_invitations_lifecycle_trigger")
+	assertTriggerExists(t, ctx, postgres, "organization_policy_snapshots", "organization_policy_snapshots_immutable_trigger")
 	assertDeferredConstraintTrigger(t, ctx, postgres, "workspaces", "workspaces_owner_membership_constraint_trigger")
 	assertDeferredConstraintTrigger(t, ctx, postgres, "workspace_memberships", "workspace_memberships_owner_constraint_trigger")
+	assertDeferredConstraintTrigger(t, ctx, postgres, "organizations", "organizations_owner_membership_constraint_trigger")
+	assertDeferredConstraintTrigger(t, ctx, postgres, "organization_memberships", "organization_memberships_owner_constraint_trigger")
 
 	var applied int
 	if err := postgres.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if applied != 11 {
-		t.Fatalf("applied migration count = %d, want 11", applied)
+	if applied != 13 {
+		t.Fatalf("applied migration count = %d, want 13", applied)
 	}
 	var receiptConsumedColumn bool
 	if err := postgres.QueryRow(ctx, `
@@ -378,6 +467,251 @@ func TestWorkspaceOwnerInvariantRejectsMissingOrMismatchedOwnerAtCommit(t *testi
 	}
 	if err := mismatchedOwner.Commit(ctx); err == nil {
 		t.Fatal("workspace with mismatched Owner membership committed")
+	}
+}
+
+func TestOrganizationFoundationDatabaseInvariants(t *testing.T) {
+	services := testkit.IntegrationServices(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	postgres, err := OpenPostgres(ctx, services.DatabaseURL)
+	if err != nil {
+		t.Fatalf("OpenPostgres() error = %v", err)
+	}
+	defer postgres.Close()
+	if err := ApplyMigrations(ctx, postgres); err != nil {
+		t.Fatalf("ApplyMigrations() error = %v", err)
+	}
+
+	now := time.Date(2026, 7, 21, 2, 0, 0, 0, time.UTC)
+	users := []uuid.UUID{uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()}
+	for _, userID := range users {
+		if _, err := postgres.Exec(ctx, `
+			INSERT INTO users (id, status, created_at, updated_at)
+			VALUES ($1, 'active', $2, $2)
+		`, userID, now); err != nil {
+			t.Fatalf("insert user: %v", err)
+		}
+	}
+
+	t.Run("active organization requires exactly one Owner at commit", func(t *testing.T) {
+		tx, err := postgres.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer func() { _ = tx.Rollback(context.Background()) }()
+		insertOrganizationWithoutMembership(t, ctx, tx, uuid.New(), users[0], uuid.New(), "No owner", "active", now)
+		if err := tx.Commit(ctx); err == nil {
+			t.Fatal("organization without Owner committed")
+		}
+	})
+
+	t.Run("partial index rejects two Owners", func(t *testing.T) {
+		tx, err := postgres.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer func() { _ = tx.Rollback(context.Background()) }()
+		organizationID := uuid.New()
+		insertOrganizationFixture(t, ctx, tx, organizationID, users[0], uuid.New(), "Two owners", "active", now)
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO organization_memberships (
+				organization_id, user_id, role, revision, joined_at, updated_at
+			) VALUES ($1, $2, 'owner', 1, $3, $3)
+		`, organizationID, users[1], now); err == nil {
+			t.Fatal("second Owner membership was accepted")
+		}
+	})
+
+	organizationA := uuid.New()
+	policyA := uuid.New()
+	createOrganizationFixture(t, ctx, postgres, organizationA, users[0], policyA, "Organization A", "active", now)
+	organizationB := uuid.New()
+	createOrganizationFixture(t, ctx, postgres, organizationB, users[1], uuid.New(), "Organization B", "active", now)
+
+	t.Run("current policy must belong to the same Organization", func(t *testing.T) {
+		tx, err := postgres.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer func() { _ = tx.Rollback(context.Background()) }()
+		organizationID := uuid.New()
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO organizations (
+				id, display_name, status, revision, current_policy_snapshot_id,
+				created_at, updated_at
+			) VALUES ($1, 'Cross policy', 'active', 1, $2, $3, $3)
+		`, organizationID, policyA, now); err != nil {
+			t.Fatalf("insert Organization with deferred cross-policy pointer: %v", err)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO organization_memberships (
+				organization_id, user_id, role, revision, joined_at, updated_at
+			) VALUES ($1, $2, 'owner', 1, $3, $3)
+		`, organizationID, users[2], now); err != nil {
+			t.Fatalf("insert Owner membership: %v", err)
+		}
+		if err := tx.Commit(ctx); err == nil {
+			t.Fatal("cross-Organization current policy committed")
+		}
+	})
+
+	t.Run("membership cannot reference another Organization Department", func(t *testing.T) {
+		departmentID := uuid.New()
+		if _, err := postgres.Exec(ctx, `
+			INSERT INTO organization_departments (
+				organization_id, id, display_name, name_key, status, revision, created_at, updated_at
+			) VALUES ($1, $2, 'Research', 'research', 'active', 1, $3, $3)
+		`, organizationA, departmentID, now); err != nil {
+			t.Fatalf("insert Department: %v", err)
+		}
+		if _, err := postgres.Exec(ctx, `
+			INSERT INTO organization_memberships (
+				organization_id, user_id, role, department_id, revision, joined_at, updated_at
+			) VALUES ($1, $2, 'member', $3, 1, $4, $4)
+		`, organizationB, users[2], departmentID, now); err == nil {
+			t.Fatal("cross-Organization Department assignment was accepted")
+		}
+	})
+
+	t.Run("dissolved Organization cannot retain memberships", func(t *testing.T) {
+		organizationID := uuid.New()
+		createOrganizationFixture(t, ctx, postgres, organizationID, users[3], uuid.New(), "Archived", "archived", now)
+		tx, err := postgres.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer func() { _ = tx.Rollback(context.Background()) }()
+		if _, err := tx.Exec(ctx, `
+			UPDATE organizations
+			SET status = 'dissolved', dissolved_at = $2, revision = revision + 1, updated_at = $2
+			WHERE id = $1
+		`, organizationID, now.Add(time.Hour)); err != nil {
+			t.Fatalf("update Organization to dissolved: %v", err)
+		}
+		if err := tx.Commit(ctx); err == nil {
+			t.Fatal("dissolved Organization with membership committed")
+		}
+	})
+
+	t.Run("invitation terminal state cannot transition", func(t *testing.T) {
+		invitationID := uuid.New()
+		tokenDigest := sha256.Sum256(invitationID[:])
+		if _, err := postgres.Exec(ctx, `
+			INSERT INTO organization_invitations (
+				id, organization_id, token_digest, created_by_user_id, status,
+				created_at, expires_at
+			) VALUES ($1, $2, $3, $4, 'pending', $5::timestamptz, $5::timestamptz + INTERVAL '7 days')
+		`, invitationID, organizationA, tokenDigest[:], users[0], now); err != nil {
+			t.Fatalf("insert invitation: %v", err)
+		}
+		if _, err := postgres.Exec(ctx, `
+			UPDATE organization_invitations
+			SET status = 'revoked', revoked_at = $2
+			WHERE id = $1
+		`, invitationID, now.Add(time.Minute)); err != nil {
+			t.Fatalf("revoke invitation: %v", err)
+		}
+		if _, err := postgres.Exec(ctx, `
+			UPDATE organization_invitations
+			SET status = 'pending', revoked_at = NULL
+			WHERE id = $1
+		`, invitationID); err == nil {
+			t.Fatal("terminal invitation returned to pending")
+		}
+	})
+
+	t.Run("policy snapshots reject update and delete", func(t *testing.T) {
+		if _, err := postgres.Exec(ctx, `
+			UPDATE organization_policy_snapshots SET policy_version = 2 WHERE id = $1
+		`, policyA); err == nil {
+			t.Fatal("immutable policy snapshot was updated")
+		}
+		if _, err := postgres.Exec(ctx, `
+			DELETE FROM organization_policy_snapshots WHERE id = $1
+		`, policyA); err == nil {
+			t.Fatal("immutable policy snapshot was deleted")
+		}
+	})
+}
+
+func createOrganizationFixture(
+	t *testing.T,
+	ctx context.Context,
+	postgres *pgxpool.Pool,
+	organizationID uuid.UUID,
+	ownerID uuid.UUID,
+	policyID uuid.UUID,
+	displayName string,
+	status string,
+	now time.Time,
+) {
+	t.Helper()
+	tx, err := postgres.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin Organization fixture: %v", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	insertOrganizationFixture(t, ctx, tx, organizationID, ownerID, policyID, displayName, status, now)
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit Organization fixture: %v", err)
+	}
+}
+
+func insertOrganizationFixture(
+	t *testing.T,
+	ctx context.Context,
+	tx pgx.Tx,
+	organizationID uuid.UUID,
+	ownerID uuid.UUID,
+	policyID uuid.UUID,
+	displayName string,
+	status string,
+	now time.Time,
+) {
+	t.Helper()
+	insertOrganizationWithoutMembership(t, ctx, tx, organizationID, ownerID, policyID, displayName, status, now)
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO organization_memberships (
+			organization_id, user_id, role, revision, joined_at, updated_at
+		) VALUES ($1, $2, 'owner', 1, $3, $3)
+	`, organizationID, ownerID, now); err != nil {
+		t.Fatalf("insert Owner membership: %v", err)
+	}
+}
+
+func insertOrganizationWithoutMembership(
+	t *testing.T,
+	ctx context.Context,
+	tx pgx.Tx,
+	organizationID uuid.UUID,
+	ownerID uuid.UUID,
+	policyID uuid.UUID,
+	displayName string,
+	status string,
+	now time.Time,
+) {
+	t.Helper()
+	archivedAt := any(nil)
+	if status == "archived" {
+		archivedAt = now
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO organizations (
+			id, display_name, status, revision, current_policy_snapshot_id,
+			created_at, updated_at, archived_at
+		) VALUES ($1, $2, $3, 1, $4, $5, $5, $6)
+	`, organizationID, displayName, status, policyID, now, archivedAt); err != nil {
+		t.Fatalf("insert Organization: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO organization_policy_snapshots (
+			id, organization_id, policy_version, schema_version, policy_document,
+			content_digest, issuer, signing_key_id, signature, issued_by_user_id, created_at
+		) VALUES ($1, $2, 1, 1, '{"schema_version":1}'::jsonb, $3,
+			'https://accounts.example.com', 'organization-test-v1', $4, $5, $6)
+	`, policyID, organizationID, bytes.Repeat([]byte{22}, 32), bytes.Repeat([]byte{23}, 64), ownerID, now); err != nil {
+		t.Fatalf("insert policy snapshot: %v", err)
 	}
 }
 

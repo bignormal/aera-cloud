@@ -26,6 +26,7 @@ import (
 	"github.com/bignormal/aera-cloud/internal/legal"
 	"github.com/bignormal/aera-cloud/internal/notification"
 	"github.com/bignormal/aera-cloud/internal/oauth"
+	"github.com/bignormal/aera-cloud/internal/organization"
 	"github.com/bignormal/aera-cloud/internal/secure"
 	"github.com/bignormal/aera-cloud/internal/session"
 	"github.com/bignormal/aera-cloud/internal/store"
@@ -108,6 +109,10 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 	if err != nil {
 		return err
 	}
+	organizationHandler, err := buildOrganizationHandler(cfg, postgres, redisStore.Client())
+	if err != nil {
+		return err
+	}
 	maintenanceRunner, err := buildMaintenanceRunner(cfg, postgres, redisStore.Client())
 	if err != nil {
 		return err
@@ -130,6 +135,7 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 		Devices:      deviceHandler,
 		AgentControl: agentControlHandler,
 		Workspace:    workspaceHandler,
+		Organization: organizationHandler,
 		Web:          webui.New(),
 	}))
 }
@@ -305,6 +311,13 @@ func buildOAuthHandler(
 	if err != nil {
 		return nil, err
 	}
+	organizationSigner, err := organization.NewSigner(organization.SigningConfig{
+		Issuer: cfg.PublicURL, ActiveKeyID: cfg.AgentControlSigningKeyRing.ActiveKeyID,
+		SigningKeys: privateSigningKeys(cfg.AgentControlSigningKeyRing),
+	})
+	if err != nil {
+		return nil, err
+	}
 	sessions, err := session.NewService(session.ServiceConfig{
 		Repository: session.NewPostgresRepository(postgres), AccessTokens: accessSigner,
 		OfflineEntitlements: offlineEntitlements, RefreshHMACKey: cfg.RefreshTokenHMACKey,
@@ -337,7 +350,7 @@ func buildOAuthHandler(
 			published := make(
 				[]oauth.PublishedKey,
 				0,
-				len(accessSigner.PublicKeys())+len(offlineEntitlements.PublicKeys())+2*len(agentControlSigner.PublicKeys()),
+				len(accessSigner.PublicKeys())+len(offlineEntitlements.PublicKeys())+2*len(agentControlSigner.PublicKeys())+len(organizationSigner.PublicKeys()),
 			)
 			for _, key := range accessSigner.PublicKeys() {
 				published = append(published, oauth.PublishedKey{
@@ -359,6 +372,12 @@ func buildOAuthHandler(
 				published = append(published, oauth.PublishedKey{
 					KeyID: key.KeyID, KeyType: key.KeyType, Curve: key.Curve,
 					Algorithm: key.Algorithm, Use: key.Use, Purpose: string(agentcontrol.PurposeAgentPolicy), X: key.X,
+				})
+			}
+			for _, key := range organizationSigner.PublicKeys() {
+				published = append(published, oauth.PublishedKey{
+					KeyID: key.KeyID, KeyType: key.KeyType, Curve: key.Curve,
+					Algorithm: key.Algorithm, Use: key.Use, Purpose: string(organization.PurposeOrganizationPolicy), X: key.X,
 				})
 			}
 			return published
@@ -455,6 +474,57 @@ func buildWorkspaceHandler(
 		return nil, err
 	}
 	return workspace.NewHandler(workspace.HTTPConfig{Service: service, AccessTokens: accessAuthenticator}), nil
+}
+
+func buildOrganizationHandler(
+	cfg config.Config,
+	postgres *pgxpool.Pool,
+	redisClient redis.UniversalClient,
+) (http.Handler, error) {
+	if postgres == nil || redisClient == nil {
+		return nil, errors.New("organization dependencies are unavailable")
+	}
+	accessAuthenticator, err := buildAccessAuthenticator(cfg, postgres, redisClient)
+	if err != nil {
+		return nil, err
+	}
+	limiter, err := organization.NewRedisOrganizationLimiter(redisClient, organization.LimitPolicies{
+		OrganizationCreate: organization.LimitPolicy{
+			Limit: cfg.OrganizationCreateRateLimit, Window: cfg.OrganizationCreateRateWindow,
+		},
+		InvitationCreate: organization.LimitPolicy{
+			Limit: cfg.OrganizationInviteRateLimit, Window: cfg.OrganizationInviteRateWindow,
+		},
+		InvitationAccept: organization.LimitPolicy{
+			Limit: cfg.OrganizationAcceptRateLimit, Window: cfg.OrganizationAcceptRateWindow,
+		},
+		Mutation: organization.LimitPolicy{
+			Limit: cfg.OrganizationMutationRateLimit, Window: cfg.OrganizationMutationRateWindow,
+		},
+		HighRisk: organization.LimitPolicy{
+			Limit: cfg.OrganizationHighRiskRateLimit, Window: cfg.OrganizationHighRiskRateWindow,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	signer, err := organization.NewSigner(organization.SigningConfig{
+		Issuer: cfg.PublicURL, ActiveKeyID: cfg.AgentControlSigningKeyRing.ActiveKeyID,
+		SigningKeys: privateSigningKeys(cfg.AgentControlSigningKeyRing),
+	})
+	if err != nil {
+		return nil, err
+	}
+	repository := organization.NewPostgresRepository(postgres, signer, organization.NewFoundationAssetGuard())
+	service, err := organization.NewService(organization.ServiceConfig{
+		Repository: repository, Limiter: limiter,
+		OwnedLimit: cfg.OrganizationOwnedLimit, MemberLimit: cfg.OrganizationMemberLimit,
+		DepartmentLimit: cfg.OrganizationDepartmentLimit, PendingInvitationLimit: cfg.OrganizationPendingInviteLimit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return organization.NewHandler(organization.HTTPConfig{Service: service, AccessTokens: accessAuthenticator}), nil
 }
 
 func buildAccessAuthenticator(

@@ -64,7 +64,7 @@ func TestOpenAPIContainsDesktopOAuthAndTokenContract(t *testing.T) {
 		}
 	}
 	for _, protocolConstraint := range []string{
-		"enum: [agentera-studio]", "const: S256", "device_proof", "authorization_code",
+		"enum: [agentera-studio]", "enum: [S256]", "device_proof", "authorization_code",
 		"offline_entitlement", "purpose", "Ed25519",
 	} {
 		if !strings.Contains(document, protocolConstraint) {
@@ -121,8 +121,8 @@ func TestOpenAPIContainsStrictUserAgentControlPlaneContract(t *testing.T) {
 		t.Fatalf("read openapi.yaml: %v", err)
 	}
 	document := string(contents)
-	if !strings.Contains(document, "version: 0.5.0") {
-		t.Fatal("OpenAPI version was not advanced for ExperienceCandidate V1")
+	if !strings.Contains(document, "version: 0.6.0") {
+		t.Fatal("OpenAPI version was not advanced for Organization Foundation V1")
 	}
 	for _, path := range []string{
 		"/api/v1/agent-definitions:",
@@ -155,7 +155,7 @@ func TestOpenAPIContainsStrictUserAgentControlPlaneContract(t *testing.T) {
 	for _, contract := range []string{
 		"Idempotency-Key", "maximum agent publication request body is 2621440 bytes",
 		"maximum Agent metadata request body is 65536 bytes", "agent_version", "agent_policy",
-		"type: [string, 'null']",
+		"nullable: true",
 	} {
 		if !strings.Contains(document, contract) {
 			t.Fatalf("OpenAPI is missing Agent contract %q", contract)
@@ -324,6 +324,96 @@ func TestOpenAPIContainsStrictWorkspaceControlPlaneContract(t *testing.T) {
 	} {
 		if strings.Contains(document, forbidden) {
 			t.Fatalf("OpenAPI exposed forbidden Workspace persistence field %q", forbidden)
+		}
+	}
+}
+
+func TestOpenAPIContainsStrictOrganizationFoundationContract(t *testing.T) {
+	contents, err := os.ReadFile("openapi.yaml")
+	if err != nil {
+		t.Fatalf("read openapi.yaml: %v", err)
+	}
+	document := string(contents)
+	if !strings.HasPrefix(document, "openapi: 3.0.3\n") || !strings.Contains(document, "version: 0.6.0") {
+		t.Fatal("OpenAPI was not advanced to the Organization Foundation 0.6.0 contract on OpenAPI 3.0.3")
+	}
+	for _, path := range []string{
+		"/api/v1/organizations:",
+		"/api/v1/organizations/{organization_id}:",
+		"/api/v1/organizations/{organization_id}/archive:",
+		"/api/v1/organizations/{organization_id}/restore:",
+		"/api/v1/organizations/{organization_id}/owner-transfer:",
+		"/api/v1/organizations/{organization_id}/dissolve:",
+		"/api/v1/organizations/{organization_id}/members:",
+		"/api/v1/organizations/{organization_id}/members/{user_id}:",
+		"/api/v1/organizations/{organization_id}/leave:",
+		"/api/v1/organizations/{organization_id}/departments:",
+		"/api/v1/organizations/{organization_id}/departments/{department_id}:",
+		"/api/v1/organizations/{organization_id}/departments/{department_id}/archive:",
+		"/api/v1/organizations/{organization_id}/departments/{department_id}/restore:",
+		"/api/v1/organizations/{organization_id}/invitations:",
+		"/api/v1/organizations/{organization_id}/invitations/{invitation_id}:",
+		"/api/v1/organization-invitations/accept:",
+		"/api/v1/organizations/{organization_id}/policy:",
+		"/api/v1/organizations/{organization_id}/policy-snapshots:",
+		"/api/v1/organization-policy-snapshots/{policy_snapshot_id}:",
+		"/api/v1/organizations/{organization_id}/audit-events:",
+	} {
+		if !strings.Contains(document, path) {
+			t.Fatalf("OpenAPI is missing %s", path)
+		}
+	}
+	for _, schema := range []string{
+		"OrganizationSummary", "OrganizationMember", "OrganizationDepartment", "OrganizationInvitation",
+		"OrganizationInvitationCreation", "OrganizationInvitationAcceptance", "OrganizationPolicySummary",
+		"OrganizationPolicySnapshot", "OrganizationAuditEvent", "OrganizationListResponse",
+		"OrganizationMemberListResponse", "OrganizationDepartmentListResponse", "OrganizationInvitationListResponse",
+		"OrganizationPolicyListResponse", "OrganizationAuditListResponse", "CreateOrganizationRequest",
+		"RenameOrganizationRequest", "OrganizationRevisionRequest", "TransferOrganizationOwnerRequest",
+		"DissolveOrganizationRequest", "PatchOrganizationMemberRequest", "CreateOrganizationDepartmentRequest",
+		"RenameOrganizationDepartmentRequest", "OrganizationDepartmentRevisionRequest",
+		"AcceptOrganizationInvitationRequest", "PublishOrganizationPolicyRequest", "OrganizationPolicyDocument",
+		"OrganizationErrorEnvelope", "AccountDeletionOwnershipErrorEnvelope",
+	} {
+		strictObject := "    " + schema + ":\n      type: object\n      additionalProperties: false"
+		if !strings.Contains(document, strictObject) {
+			t.Fatalf("OpenAPI is missing strict Organization schema %q", schema)
+		}
+	}
+	for _, contract := range []string{
+		"OrganizationIdempotencyKey:", "OrganizationPageLimit:", "maximum: 100", "default: 50",
+		"OrganizationCursor:", "maxLength: 684", "enum: [owner, admin, auditor, member]",
+		"enum: [active, archived, dissolved]", "enum: [writable, archived, dissolved]",
+		"pattern: '^agentera://organization-invitation#[A-Za-z0-9_-]{43}$'",
+		"pattern: '^[0-9a-f]{64}$'", "pattern: '^[A-Za-z0-9_-]{86}$'",
+		"organization_policy", "owned_organization_count:",
+	} {
+		if !strings.Contains(document, contract) {
+			t.Fatalf("OpenAPI is missing Organization contract %q", contract)
+		}
+	}
+	for _, code := range []string{
+		"authentication_required", "organization_forbidden", "organization_not_found", "organization_conflict",
+		"organization_archived", "organization_limit_reached", "organization_owner_transfer_required",
+		"owner_transfer_target_invalid", "membership_conflict", "member_limit_reached", "department_not_empty",
+		"department_limit_reached", "invitation_limit_reached", "policy_version_conflict", "dissolution_blocked",
+	} {
+		if !strings.Contains(document, "- "+code) {
+			t.Fatalf("OpenAPI is missing Organization error code %q", code)
+		}
+	}
+	start := strings.Index(document, "    OrganizationRole:\n")
+	end := strings.Index(document, "    SigningKeySet:\n")
+	if start < 0 || end <= start {
+		t.Fatal("OpenAPI Organization schema section has no deterministic boundary")
+	}
+	organizationSchemas := strings.ToLower(document[start:end])
+	for _, forbidden := range []string{
+		"owner_scope", "runtimebinding", "runtime_binding", "profile", "memory", "session", "credential",
+		"api_key", "private_skill", "curator", "token_digest", "email", "phone",
+	} {
+		if strings.Contains(organizationSchemas, forbidden) {
+			t.Fatalf("OpenAPI exposed private/runtime Organization field %q", forbidden)
 		}
 	}
 }

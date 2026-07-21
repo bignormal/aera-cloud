@@ -112,6 +112,23 @@ func TestDeletionRequestRequiresPasswordAndVerifiedBoundIdentity(t *testing.T) {
 	}
 }
 
+func TestDeletionRequestPreservesOrganizationOwnershipConflict(t *testing.T) {
+	fixture := newAccountFixture(t)
+	userID := uuid.New()
+	fixture.repository.credential = Credential{UserID: userID, Status: "active", PasswordHash: "current-hash"}
+	fixture.repository.found = true
+	fixture.repository.requestDeletionErr = &OrganizationOwnerTransferRequiredError{OwnedOrganizationCount: 2}
+	fixture.passwords.verify = func(_, _ string) (bool, bool, error) { return true, false, nil }
+	receipt := fixture.receipt(t, secure.IdentityEmail, "owner@example.com", verification.PurposeAccountDeletion)
+
+	err := fixture.service.RequestDeletion(context.Background(), userID, "current-password", receipt)
+	var ownership *OrganizationOwnerTransferRequiredError
+	if !errors.As(err, &ownership) || ownership.OwnedOrganizationCount != 2 ||
+		!errors.Is(err, ErrOrganizationOwnerTransferRequired) {
+		t.Fatalf("RequestDeletion() error = %#v", err)
+	}
+}
+
 func TestDeletionRecoveryRequiresPendingAccountPasswordAndFreshReceipt(t *testing.T) {
 	fixture := newAccountFixture(t)
 	userID := uuid.New()

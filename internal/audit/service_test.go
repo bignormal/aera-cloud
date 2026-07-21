@@ -41,7 +41,7 @@ func TestPostgresRecorderPersistsOnlyStructuredRedactedFields(t *testing.T) {
 	if executor.calls != 1 {
 		t.Fatalf("Exec() calls = %d", executor.calls)
 	}
-	if len(executor.arguments) != 12 {
+	if len(executor.arguments) != 13 {
 		t.Fatalf("Exec() arguments = %d", len(executor.arguments))
 	}
 	if got := executor.arguments[10]; got != "{}" {
@@ -49,6 +49,80 @@ func TestPostgresRecorderPersistsOnlyStructuredRedactedFields(t *testing.T) {
 	}
 	if got := executor.arguments[11]; got != now {
 		t.Fatalf("created_at argument = %#v", got)
+	}
+}
+
+func TestPostgresRecorderPersistsOrganizationScopeAndBoundedMetadataDeterministically(t *testing.T) {
+	executor := &fakeExecutor{}
+	recorder, err := NewRecorder(executor)
+	if err != nil {
+		t.Fatalf("NewRecorder() error = %v", err)
+	}
+	organizationID := uuid.New()
+	policyID := uuid.New()
+	metadata := map[string]string{
+		"organization_id":    organizationID.String(),
+		"policy_snapshot_id": policyID.String(),
+		"policy_version":     "2",
+		"content_digest":     strings.Repeat("d", 64),
+	}
+	if err := recorder.Record(context.Background(), Event{
+		EventType: "organization_policy_published", OrganizationID: &organizationID,
+		ObjectType: "organization_policy_snapshot", ObjectID: &policyID,
+		Outcome: OutcomeSuccess, Metadata: metadata,
+	}); err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+	if len(executor.arguments) != 13 || executor.arguments[12] != &organizationID {
+		t.Fatalf("organization audit arguments = %#v", executor.arguments)
+	}
+	encoded, ok := executor.arguments[10].(string)
+	if !ok {
+		t.Fatalf("metadata argument type = %T", executor.arguments[10])
+	}
+	want := `{"content_digest":"` + strings.Repeat("d", 64) + `","organization_id":"` + organizationID.String() + `","policy_snapshot_id":"` + policyID.String() + `","policy_version":"2"}`
+	if encoded != want {
+		t.Fatalf("Organization metadata JSON = %s, want %s", encoded, want)
+	}
+	metadata["policy_version"] = "999"
+	if strings.Contains(encoded, "999") {
+		t.Fatal("recorded Organization metadata aliases the caller map")
+	}
+}
+
+func TestPostgresRecorderRejectsOrganizationSecretsAndPrivateRuntimeMetadata(t *testing.T) {
+	organizationID := uuid.New()
+	otherOrganizationID := uuid.New()
+	tests := []struct {
+		name           string
+		eventType      string
+		organizationID *uuid.UUID
+		metadata       map[string]string
+	}{
+		{name: "missing scope", eventType: "organization_created"},
+		{name: "scope on unrelated event", eventType: "browser_login", organizationID: &organizationID},
+		{name: "mismatched metadata scope", eventType: "organization_created", organizationID: &organizationID, metadata: map[string]string{"organization_id": otherOrganizationID.String()}},
+		{name: "raw invitation", eventType: "organization_invitation_created", organizationID: &organizationID, metadata: map[string]string{"invitation_token": "raw-secret"}},
+		{name: "invitation digest", eventType: "organization_invitation_created", organizationID: &organizationID, metadata: map[string]string{"invitation_token_digest": strings.Repeat("a", 64)}},
+		{name: "policy document", eventType: "organization_policy_published", organizationID: &organizationID, metadata: map[string]string{"policy_document": `{"schema_version":1}`}},
+		{name: "local path", eventType: "organization_created", organizationID: &organizationID, metadata: map[string]string{"profile_path": "/Users/alice/.hermes/profile"}},
+		{name: "Memory", eventType: "organization_created", organizationID: &organizationID, metadata: map[string]string{"memory": "private"}},
+		{name: "session", eventType: "organization_created", organizationID: &organizationID, metadata: map[string]string{"session_id": uuid.NewString()}},
+		{name: "Skill", eventType: "organization_created", organizationID: &organizationID, metadata: map[string]string{"skill": "private"}},
+		{name: "nested JSON", eventType: "organization_created", organizationID: &organizationID, metadata: map[string]string{"organization_id": organizationID.String(), "reason": `{"nested":true}`}},
+		{name: "invalid role", eventType: "organization_member_role_changed", organizationID: &organizationID, metadata: map[string]string{"role": "superadmin"}},
+		{name: "zero policy version", eventType: "organization_policy_published", organizationID: &organizationID, metadata: map[string]string{"policy_version": "0"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := &PostgresRecorder{executor: &fakeExecutor{}}
+			if err := recorder.Record(context.Background(), Event{
+				EventType: test.eventType, OrganizationID: test.organizationID,
+				Outcome: OutcomeDenied, Metadata: test.metadata,
+			}); !errors.Is(err, ErrInvalidEvent) {
+				t.Fatalf("Record() error = %v, want ErrInvalidEvent", err)
+			}
+		})
 	}
 }
 
@@ -369,6 +443,32 @@ func TestPostgresRecorderPersistsActorAgainstRealSchema(t *testing.T) {
 	}
 	if storedActor != actorID || metadata != "{}" {
 		t.Fatalf("stored audit actor=%s metadata=%q", storedActor, metadata)
+	}
+}
+
+func TestOrganizationAuditQueryIndexAvailableAgainstRealSchema(t *testing.T) {
+	services := testkit.IntegrationServices(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	postgres, err := store.OpenPostgres(ctx, services.DatabaseURL)
+	if err != nil {
+		t.Fatalf("OpenPostgres() error = %v", err)
+	}
+	defer postgres.Close()
+	if err := store.ApplyMigrations(ctx, postgres); err != nil {
+		t.Fatalf("ApplyMigrations() error = %v", err)
+	}
+	var definition string
+	if err := postgres.QueryRow(ctx, `
+		SELECT indexdef FROM pg_indexes
+		WHERE schemaname = current_schema() AND indexname = 'audit_events_organization_created_idx'
+	`).Scan(&definition); err != nil {
+		t.Fatalf("read Organization audit index: %v", err)
+	}
+	for _, fragment := range []string{"organization_id", "created_at DESC", "id DESC"} {
+		if !strings.Contains(definition, fragment) {
+			t.Fatalf("Organization audit index %q is missing %q", definition, fragment)
+		}
 	}
 }
 

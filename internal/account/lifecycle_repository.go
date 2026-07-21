@@ -242,6 +242,13 @@ func (r *PostgresRepository) RequestDeletion(ctx context.Context, record Deletio
 	if !found || ownerID != record.UserID {
 		return ErrAccountNotFound
 	}
+	ownedOrganizationCount, err := lockOwnedOrganizations(ctx, tx, record.UserID)
+	if err != nil {
+		return err
+	}
+	if ownedOrganizationCount > 0 {
+		return &OrganizationOwnerTransferRequiredError{OwnedOrganizationCount: ownedOrganizationCount}
+	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE users
 		SET status = 'pending_deletion', deletion_requested_at = $2, deletion_finalized_at = NULL, updated_at = $2
@@ -281,6 +288,36 @@ func (r *PostgresRepository) RequestDeletion(ctx context.Context, record Deletio
 		return ErrServiceUnavailable
 	}
 	return nil
+}
+
+func lockOwnedOrganizations(ctx context.Context, tx pgx.Tx, userID uuid.UUID) (int, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT organization.id
+		FROM organizations organization
+		JOIN organization_memberships membership
+		  ON membership.organization_id = organization.id
+		WHERE membership.user_id = $1
+		  AND membership.role = 'owner'
+		  AND organization.status IN ('active', 'archived')
+		ORDER BY organization.id
+		FOR UPDATE OF organization, membership
+	`, userID)
+	if err != nil {
+		return 0, ErrServiceUnavailable
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		var organizationID uuid.UUID
+		if err := rows.Scan(&organizationID); err != nil || organizationID == uuid.Nil {
+			return 0, ErrServiceUnavailable
+		}
+		count++
+	}
+	if rows.Err() != nil {
+		return 0, ErrServiceUnavailable
+	}
+	return count, nil
 }
 
 func (r *PostgresRepository) RecoverDeletion(ctx context.Context, record DeletionRecoveryRecord) error {
@@ -372,6 +409,13 @@ func (r *PostgresRepository) FinalizeDeletion(
 	if status != "pending_deletion" || !requestedAt.Valid || finalizedAt.Before(requestedAt.Time.Add(deletionRecoveryWindow)) {
 		return ErrDeletionWindowExpired
 	}
+	ownedOrganizationCount, err := lockOwnedOrganizations(ctx, tx, userID)
+	if err != nil {
+		return err
+	}
+	if ownedOrganizationCount > 0 {
+		return &OrganizationOwnerTransferRequiredError{OwnedOrganizationCount: ownedOrganizationCount}
+	}
 	ownedWorkspaceRows, err := tx.Query(ctx, `
 		SELECT id FROM workspaces WHERE owner_user_id = $1 ORDER BY id FOR UPDATE
 	`, userID)
@@ -409,6 +453,12 @@ func (r *PostgresRepository) FinalizeDeletion(
 						   OR invitation.created_by_user_id = $1
 						   OR invitation.accepted_by_user_id = $1
 					)
+					OR metadata->>'invitation_id' IN (
+						SELECT invitation.id::text
+						FROM organization_invitations invitation
+						WHERE invitation.created_by_user_id = $1
+						   OR invitation.accepted_by_user_id = $1
+					)
 				THEN '{}'::jsonb
 				ELSE metadata
 			END,
@@ -423,6 +473,12 @@ func (r *PostgresRepository) FinalizeDeletion(
 						FROM workspace_invitations invitation
 						WHERE invitation.workspace_id = ANY($2::uuid[])
 						   OR invitation.created_by_user_id = $1
+						   OR invitation.accepted_by_user_id = $1
+					)
+					OR object_id IN (
+						SELECT invitation.id
+						FROM organization_invitations invitation
+						WHERE invitation.created_by_user_id = $1
 						   OR invitation.accepted_by_user_id = $1
 					)
 					OR object_id IN (
@@ -453,11 +509,23 @@ func (r *PostgresRepository) FinalizeDeletion(
 				   OR invitation.created_by_user_id = $1
 				   OR invitation.accepted_by_user_id = $1
 		   )
+		   OR metadata->>'invitation_id' IN (
+				SELECT invitation.id::text
+				FROM organization_invitations invitation
+				WHERE invitation.created_by_user_id = $1
+				   OR invitation.accepted_by_user_id = $1
+		   )
 		   OR object_id IN (
 				SELECT invitation.id
 				FROM workspace_invitations invitation
 				WHERE invitation.workspace_id = ANY($2::uuid[])
 				   OR invitation.created_by_user_id = $1
+				   OR invitation.accepted_by_user_id = $1
+		   )
+		   OR object_id IN (
+				SELECT invitation.id
+				FROM organization_invitations invitation
+				WHERE invitation.created_by_user_id = $1
 				   OR invitation.accepted_by_user_id = $1
 		   )
 		   OR object_id IN (
@@ -483,6 +551,20 @@ func (r *PostgresRepository) FinalizeDeletion(
 		return ErrServiceUnavailable
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM workspace_memberships WHERE user_id = $1 AND role <> 'owner'`, userID); err != nil {
+		return ErrServiceUnavailable
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE organization_invitations
+		SET created_by_user_id = CASE WHEN created_by_user_id = $1 THEN NULL ELSE created_by_user_id END,
+			accepted_by_user_id = CASE WHEN accepted_by_user_id = $1 THEN NULL ELSE accepted_by_user_id END
+		WHERE created_by_user_id = $1 OR accepted_by_user_id = $1
+	`, userID); err != nil {
+		return ErrServiceUnavailable
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM organization_idempotency_records WHERE actor_user_id = $1`, userID); err != nil {
+		return ErrServiceUnavailable
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM organization_memberships WHERE user_id = $1 AND role <> 'owner'`, userID); err != nil {
 		return ErrServiceUnavailable
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM workspaces WHERE id = ANY($1::uuid[])`, ownedWorkspaceIDs); err != nil {

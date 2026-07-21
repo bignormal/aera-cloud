@@ -165,6 +165,7 @@ func TestHTTPTokenRefreshRevokeAndSigningKeys(t *testing.T) {
 				{KeyID: "offline-v1", KeyType: "OKP", Curve: "Ed25519", Algorithm: "EdDSA", Use: "sig", Purpose: "offline_entitlement", X: "offline"},
 				{KeyID: "agent-control-v1", KeyType: "OKP", Curve: "Ed25519", Algorithm: "EdDSA", Use: "sig", Purpose: "agent_version", X: "agent"},
 				{KeyID: "agent-control-v1", KeyType: "OKP", Curve: "Ed25519", Algorithm: "EdDSA", Use: "sig", Purpose: "agent_policy", X: "agent"},
+				{KeyID: "agent-control-v1", KeyType: "OKP", Curve: "Ed25519", Algorithm: "EdDSA", Use: "sig", Purpose: "organization_policy", X: "agent"},
 			}
 		},
 	})
@@ -207,7 +208,8 @@ func TestHTTPTokenRefreshRevokeAndSigningKeys(t *testing.T) {
 		!strings.Contains(keysResponse.Body.String(), `"purpose":"access"`) ||
 		!strings.Contains(keysResponse.Body.String(), `"purpose":"offline_entitlement"`) ||
 		!strings.Contains(keysResponse.Body.String(), `"purpose":"agent_version"`) ||
-		!strings.Contains(keysResponse.Body.String(), `"purpose":"agent_policy"`) {
+		!strings.Contains(keysResponse.Body.String(), `"purpose":"agent_policy"`) ||
+		!strings.Contains(keysResponse.Body.String(), `"purpose":"organization_policy"`) {
 		t.Fatalf("keys response = %d %s", keysResponse.Code, keysResponse.Body.String())
 	}
 }
