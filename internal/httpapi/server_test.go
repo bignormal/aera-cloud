@@ -361,6 +361,46 @@ func TestWorkspaceAgentRoutesReachAgentControlBeforeWorkspaceWildcard(t *testing
 	}
 }
 
+func TestOrganizationAgentRoutesReachAgentControlBeforeOrganizationWildcard(t *testing.T) {
+	agentCalls := 0
+	organizationCalls := 0
+	agentHandler := http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		agentCalls++
+		response.WriteHeader(http.StatusAccepted)
+	})
+	organizationHandler := http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		organizationCalls++
+		response.WriteHeader(http.StatusTeapot)
+	})
+	handler := New(Dependencies{
+		PostgreSQL: &stubHealthChecker{}, Redis: &stubHealthChecker{},
+		AgentControl: agentHandler, Organization: organizationHandler,
+	})
+
+	for _, path := range []string{
+		"/api/v1/organizations/organization-id/agent-definitions",
+		"/api/v1/organizations/organization-id/agent-definitions/definition-id",
+		"/api/v1/organizations/organization-id/agent-definitions/definition-id/versions",
+		"/api/v1/organizations/organization-id/agent-publication-submissions",
+		"/api/v1/organizations/organization-id/agent-publication-submissions/submission-id",
+		"/api/v1/organizations/organization-id/agent-publication-submissions/submission-id/withdraw",
+		"/api/v1/organizations/organization-id/agent-publication-submissions/submission-id/reviews",
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("nested Organization Agent path %s status = %d", path, response.Code)
+		}
+	}
+	organizationResponse := httptest.NewRecorder()
+	handler.ServeHTTP(organizationResponse, httptest.NewRequest(
+		http.MethodGet, "/api/v1/organizations/organization-id/members", nil,
+	))
+	if organizationResponse.Code != http.StatusTeapot || agentCalls != 7 || organizationCalls != 1 {
+		t.Fatalf("routing calls Agent=%d Organization=%d status=%d", agentCalls, organizationCalls, organizationResponse.Code)
+	}
+}
+
 func TestWebAccountCenterHandlesOnlyUnmatchedNonServiceRoutes(t *testing.T) {
 	web := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.WriteHeader(http.StatusOK)
