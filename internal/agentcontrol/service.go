@@ -142,6 +142,11 @@ type ServiceRepository interface {
 	ListWorkspaceExperienceCandidates(context.Context, Principal, uuid.UUID) ([]ExperienceCandidate, error)
 	FindExperienceCandidate(context.Context, Principal, uuid.UUID, uuid.UUID, AuditEvidence, time.Time) (ExperienceCandidate, bool, error)
 	ReviewExperienceCandidate(context.Context, Principal, ReviewExperienceCandidateCommand) (ExperienceCandidate, bool, error)
+	SubmitOrganizationAgent(context.Context, SubmitOrganizationAgentCommand) (OrganizationAgentSubmission, error)
+	ListOrganizationAgentSubmissions(context.Context, Principal, uuid.UUID) ([]OrganizationAgentSubmission, error)
+	FindOrganizationAgentSubmission(context.Context, Principal, uuid.UUID, uuid.UUID) (OrganizationAgentSubmission, bool, error)
+	WithdrawOrganizationAgentSubmission(context.Context, WithdrawOrganizationAgentCommand) (OrganizationAgentSubmission, error)
+	ReviewOrganizationAgentSubmission(context.Context, ReviewOrganizationAgentCommand) (OrganizationAgentSubmission, error)
 }
 
 type ServiceConfig struct {

@@ -1972,6 +1972,7 @@ type idempotencyResponse struct {
 	PolicySnapshotID uuid.UUID `json:"policy_snapshot_id,omitempty"`
 	CandidateID      uuid.UUID `json:"candidate_id,omitempty"`
 	ReviewID         uuid.UUID `json:"review_id,omitempty"`
+	SubmissionID     uuid.UUID `json:"submission_id,omitempty"`
 }
 
 func lockAndReadIdempotency(

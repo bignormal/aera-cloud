@@ -294,7 +294,8 @@ func validOrganizationMetadata(metadata map[string]string, organizationID *uuid.
 			}
 		case "status", "previous_status":
 			switch value {
-			case "active", "archived", "dissolved", "pending", "accepted", "revoked", "expired":
+			case "active", "archived", "dissolved", "pending", "accepted", "revoked", "expired",
+				"approved", "rejected", "withdrawn", "superseded":
 			default:
 				return false
 			}

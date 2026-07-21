@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -48,6 +49,44 @@ type CanonicalOrganizationSubmission struct {
 	ManifestDigest [sha256.Size]byte
 	BundleDigest   [sha256.Size]byte
 	ContentDigest  [sha256.Size]byte
+}
+
+type OrganizationAgentReview struct {
+	ID                           uuid.UUID
+	OrganizationID               uuid.UUID
+	SubmissionID                 uuid.UUID
+	ReviewerUserID               uuid.UUID
+	Decision                     OrganizationReviewDecision
+	ReasonCode                   string
+	SafeNote                     string
+	OrganizationPolicySnapshotID uuid.UUID
+	OrganizationPolicyVersion    int64
+	ReviewedContentDigest        [sha256.Size]byte
+	ReviewedAt                   time.Time
+}
+
+type OrganizationAgentSubmission struct {
+	ID                uuid.UUID
+	OrganizationID    uuid.UUID
+	Kind              OrganizationSubmissionKind
+	DefinitionID      uuid.UUID
+	BaseVersionID     uuid.UUID
+	DisplayName       string
+	IconMediaType     string
+	IconData          []byte
+	Manifest          AgentManifestV1
+	Bundle            VersionBundleV1
+	ManifestDigest    [sha256.Size]byte
+	BundleDigest      [sha256.Size]byte
+	ContentDigest     [sha256.Size]byte
+	SubmittedByUserID uuid.UUID
+	Status            OrganizationSubmissionStatus
+	Revision          int64
+	SubmittedAt       time.Time
+	TerminalAt        *time.Time
+	UpdatedAt         time.Time
+	Review            *OrganizationAgentReview
+	Replayed          bool
 }
 
 func CanonicalizeOrganizationSubmission(
@@ -101,4 +140,50 @@ func CanonicalizeOrganizationSubmission(
 		BundleDigest:   version.BundleDigest,
 		ContentDigest:  version.ContentDigest,
 	}, nil
+}
+
+func publicationTextAssets(bundle VersionBundleV1) []PublicationTextAsset {
+	assets := make([]PublicationTextAsset, len(bundle.Assets))
+	for index, asset := range bundle.Assets {
+		assets[index] = PublicationTextAsset{Path: asset.Path, Content: asset.Content}
+	}
+	return assets
+}
+
+func cloneOrganizationAgentSubmissions(values []OrganizationAgentSubmission) []OrganizationAgentSubmission {
+	if values == nil {
+		return nil
+	}
+	cloned := make([]OrganizationAgentSubmission, len(values))
+	for index, value := range values {
+		cloned[index] = cloneOrganizationAgentSubmission(value)
+	}
+	return cloned
+}
+
+func cloneOrganizationAgentSubmission(value OrganizationAgentSubmission) OrganizationAgentSubmission {
+	value.IconData = bytes.Clone(value.IconData)
+	value.Manifest = cloneAgentManifest(value.Manifest)
+	value.Bundle = cloneVersionBundle(value.Bundle)
+	value.TerminalAt = cloneTimePointer(value.TerminalAt)
+	if value.Review != nil {
+		review := *value.Review
+		value.Review = &review
+	}
+	return value
+}
+
+func cloneAgentManifest(value AgentManifestV1) AgentManifestV1 {
+	value.Assets = append([]ManifestAssetV1(nil), value.Assets...)
+	value.ModelConstraints.AllowedProviders = append([]string(nil), value.ModelConstraints.AllowedProviders...)
+	value.ModelConstraints.AllowedModels = append([]string(nil), value.ModelConstraints.AllowedModels...)
+	value.Tools.Allowed = append([]string(nil), value.Tools.Allowed...)
+	value.Tools.Denied = append([]string(nil), value.Tools.Denied...)
+	value.Dependencies = append([]AgentDependencyV1(nil), value.Dependencies...)
+	return value
+}
+
+func cloneVersionBundle(value VersionBundleV1) VersionBundleV1 {
+	value.Assets = append([]BundleAssetV1(nil), value.Assets...)
+	return value
 }
