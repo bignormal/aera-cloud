@@ -55,8 +55,8 @@ type organizationAgentSubmissionDetailResponse struct {
 	DisplayName    string          `json:"display_name,omitempty"`
 	IconMediaType  string          `json:"icon_media_type,omitempty"`
 	IconData       string          `json:"icon_data,omitempty"`
-	Manifest       AgentManifestV1 `json:"manifest"`
-	Bundle         VersionBundleV1 `json:"bundle"`
+	Manifest       json.RawMessage `json:"manifest"`
+	Bundle         json.RawMessage `json:"bundle"`
 	ManifestDigest string          `json:"manifest_digest"`
 	BundleDigest   string          `json:"bundle_digest"`
 }
@@ -158,7 +158,7 @@ func (h *httpHandler) submitOrganizationAgent(response http.ResponseWriter, requ
 		writeOrganizationAgentServiceError(response, err, requestID)
 		return
 	}
-	writeAgentJSON(response, http.StatusCreated, publicOrganizationAgentSubmissionDetail(value))
+	writeOrganizationAgentSubmissionDetail(response, http.StatusCreated, value, requestID)
 }
 
 func (h *httpHandler) listOrganizationAgentSubmissions(response http.ResponseWriter, request *http.Request) {
@@ -189,14 +189,15 @@ func (h *httpHandler) getOrganizationAgentSubmission(response http.ResponseWrite
 	if !ok {
 		return
 	}
+	requestID := newAgentRequestID()
 	value, err := h.service.GetOrganizationAgentSubmission(
 		request.Context(), principal, organizationID, submissionID,
 	)
 	if err != nil {
-		writeOrganizationAgentServiceError(response, err, newAgentRequestID())
+		writeOrganizationAgentServiceError(response, err, requestID)
 		return
 	}
-	writeAgentJSON(response, http.StatusOK, publicOrganizationAgentSubmissionDetail(value))
+	writeOrganizationAgentSubmissionDetail(response, http.StatusOK, value, requestID)
 }
 
 func (h *httpHandler) withdrawOrganizationAgentSubmission(response http.ResponseWriter, request *http.Request) {
@@ -229,7 +230,7 @@ func (h *httpHandler) withdrawOrganizationAgentSubmission(response http.Response
 		writeOrganizationAgentServiceError(response, err, requestID)
 		return
 	}
-	writeAgentJSON(response, http.StatusOK, publicOrganizationAgentSubmissionDetail(value))
+	writeOrganizationAgentSubmissionDetail(response, http.StatusOK, value, requestID)
 }
 
 func (h *httpHandler) reviewOrganizationAgentSubmission(response http.ResponseWriter, request *http.Request) {
@@ -266,7 +267,7 @@ func (h *httpHandler) reviewOrganizationAgentSubmission(response http.ResponseWr
 		writeOrganizationAgentServiceError(response, err, requestID)
 		return
 	}
-	writeAgentJSON(response, http.StatusOK, publicOrganizationAgentSubmissionDetail(value))
+	writeOrganizationAgentSubmissionDetail(response, http.StatusOK, value, requestID)
 }
 
 func (h *httpHandler) authorizeOrganizationPath(
@@ -397,15 +398,35 @@ func publicOrganizationAgentSubmission(
 
 func publicOrganizationAgentSubmissionDetail(
 	value OrganizationAgentSubmission,
-) organizationAgentSubmissionDetailResponse {
+) (organizationAgentSubmissionDetailResponse, error) {
+	canonical, err := CanonicalizeVersion(value.Manifest, value.Bundle)
+	if err != nil || canonical.ManifestDigest != value.ManifestDigest ||
+		canonical.BundleDigest != value.BundleDigest || canonical.ContentDigest != value.ContentDigest {
+		return organizationAgentSubmissionDetailResponse{}, ErrServiceUnavailable
+	}
 	return organizationAgentSubmissionDetailResponse{
 		organizationAgentSubmissionResponse: publicOrganizationAgentSubmission(value),
 		DisplayName:                         value.DisplayName, IconMediaType: value.IconMediaType,
-		IconData: base64.RawURLEncoding.EncodeToString(value.IconData),
-		Manifest: cloneAgentManifest(value.Manifest), Bundle: cloneVersionBundle(value.Bundle),
+		IconData:       base64.RawURLEncoding.EncodeToString(value.IconData),
+		Manifest:       append(json.RawMessage(nil), canonical.ManifestJSON...),
+		Bundle:         append(json.RawMessage(nil), canonical.BundleJSON...),
 		ManifestDigest: hex.EncodeToString(value.ManifestDigest[:]),
 		BundleDigest:   hex.EncodeToString(value.BundleDigest[:]),
+	}, nil
+}
+
+func writeOrganizationAgentSubmissionDetail(
+	response http.ResponseWriter,
+	status int,
+	value OrganizationAgentSubmission,
+	requestID string,
+) {
+	payload, err := publicOrganizationAgentSubmissionDetail(value)
+	if err != nil {
+		writeOrganizationAgentServiceError(response, err, requestID)
+		return
 	}
+	writeAgentJSON(response, status, payload)
 }
 
 func optionalUUID(value uuid.UUID) *uuid.UUID {

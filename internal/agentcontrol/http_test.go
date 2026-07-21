@@ -321,6 +321,22 @@ func newAgentControlHTTPFixture(t *testing.T) *agentControlHTTPFixture {
 		DLPContractVersion: ExperienceCandidateDLPVersion, ContentDigest: candidateCanonical.ContentDigest,
 		Bundle: candidateCanonical.Bundle, CreatedAt: now,
 	}
+	organizationManifest, organizationBundle := validManifestFixture()
+	organizationCanonical, err := CanonicalizeOrganizationSubmission(OrganizationSubmissionPackage{
+		Kind: OrganizationSubmissionInitial, DefinitionID: definitionID,
+		DisplayName: "Research Agent", Manifest: organizationManifest, Bundle: organizationBundle,
+	})
+	if err != nil {
+		t.Fatalf("CanonicalizeOrganizationSubmission() error = %v", err)
+	}
+	organizationSubmission := OrganizationAgentSubmission{
+		ID: uuid.New(), OrganizationID: uuid.New(), Kind: OrganizationSubmissionInitial,
+		DefinitionID: definitionID, DisplayName: "Research Agent",
+		Manifest: organizationCanonical.Package.Manifest, Bundle: organizationCanonical.Package.Bundle,
+		ManifestDigest: organizationCanonical.ManifestDigest, BundleDigest: organizationCanonical.BundleDigest,
+		ContentDigest: organizationCanonical.ContentDigest, SubmittedByUserID: principal.UserID,
+		Status: OrganizationSubmissionPending, Revision: 1, SubmittedAt: now, UpdatedAt: now,
+	}
 	service := &stubAgentControlHTTPService{
 		definitions: []Definition{definition}, definition: definition, versions: []Version{version}, version: version,
 		publication: Publication{Definition: definition, Version: version},
@@ -332,6 +348,8 @@ func newAgentControlHTTPFixture(t *testing.T) *agentControlHTTPFixture {
 			ToolPermissionDigest: sha256.Sum256([]byte("tools")), CreatedAt: now,
 		},
 		candidates: []ExperienceCandidate{candidate}, candidate: candidate,
+		organizationSubmissions: []OrganizationAgentSubmission{organizationSubmission},
+		organizationSubmission:  organizationSubmission,
 	}
 	authenticator := &stubAgentControlAuthenticator{claims: session.AccessClaims{AccessBinding: session.AccessBinding{
 		UserID: principal.UserID, DeviceID: principal.DeviceID, PersonalSpaceID: principal.PersonalSpaceID, SessionID: uuid.New(),

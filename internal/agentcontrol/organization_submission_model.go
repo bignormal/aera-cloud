@@ -174,16 +174,25 @@ func cloneOrganizationAgentSubmission(value OrganizationAgentSubmission) Organiz
 }
 
 func cloneAgentManifest(value AgentManifestV1) AgentManifestV1 {
-	value.Assets = append([]ManifestAssetV1(nil), value.Assets...)
-	value.ModelConstraints.AllowedProviders = append([]string(nil), value.ModelConstraints.AllowedProviders...)
-	value.ModelConstraints.AllowedModels = append([]string(nil), value.ModelConstraints.AllowedModels...)
-	value.Tools.Allowed = append([]string(nil), value.Tools.Allowed...)
-	value.Tools.Denied = append([]string(nil), value.Tools.Denied...)
-	value.Dependencies = append([]AgentDependencyV1(nil), value.Dependencies...)
+	value.Assets = cloneOrganizationSlice(value.Assets)
+	value.ModelConstraints.AllowedProviders = cloneOrganizationSlice(value.ModelConstraints.AllowedProviders)
+	value.ModelConstraints.AllowedModels = cloneOrganizationSlice(value.ModelConstraints.AllowedModels)
+	value.Tools.Allowed = cloneOrganizationSlice(value.Tools.Allowed)
+	value.Tools.Denied = cloneOrganizationSlice(value.Tools.Denied)
+	value.Dependencies = cloneOrganizationSlice(value.Dependencies)
 	return value
 }
 
 func cloneVersionBundle(value VersionBundleV1) VersionBundleV1 {
-	value.Assets = append([]BundleAssetV1(nil), value.Assets...)
+	value.Assets = cloneOrganizationSlice(value.Assets)
 	return value
+}
+
+func cloneOrganizationSlice[T any](values []T) []T {
+	if values == nil {
+		return nil
+	}
+	cloned := make([]T, len(values))
+	copy(cloned, values)
+	return cloned
 }

@@ -165,3 +165,22 @@ func TestOrganizationPolicyDocumentRejectsCartesianModelBroadening(t *testing.T)
 		t.Fatalf("non-rectangular policy error = %v, want policy blocked", err)
 	}
 }
+
+func TestOrganizationPolicyDocumentPreservesEmptyAllowedToolsArray(t *testing.T) {
+	definitionID := uuid.New()
+	version := policyVersionFixture(t, definitionID, uuid.New(), 1)
+	document, err := policyDocumentForOrganizationVersion(version, EffectiveOrganizationAgentPolicy{
+		AgentPolicyConstraints: AgentPolicyConstraints{
+			AllowedProviders: []string{"openai"},
+			AllowedModels:    []string{"gpt-5.6"},
+			AllowedTools:     []string{},
+		},
+		AllowedModelPairs: []organization.ModelIdentifier{{Provider: "openai", Model: "gpt-5.6"}},
+	})
+	if err != nil {
+		t.Fatalf("policyDocumentForOrganizationVersion() error = %v", err)
+	}
+	if !bytes.Contains(document, []byte(`"allowed":[]`)) {
+		t.Fatalf("Organization policy document = %s, want an empty allowed tools array", document)
+	}
+}

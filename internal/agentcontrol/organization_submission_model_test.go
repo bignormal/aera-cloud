@@ -1,11 +1,34 @@
 package agentcontrol
 
 import (
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 )
+
+func TestCloneAgentManifestPreservesCanonicalEmptyArrays(t *testing.T) {
+	manifest := AgentManifestV1{
+		Assets:       make([]ManifestAssetV1, 0),
+		Dependencies: make([]AgentDependencyV1, 0),
+		ModelConstraints: ModelConstraintsV1{
+			AllowedProviders: make([]string, 0),
+			AllowedModels:    make([]string, 0),
+		},
+		Tools: ToolPolicyV1{Allowed: make([]string, 0), Denied: make([]string, 0)},
+	}
+	encoded, err := json.Marshal(cloneAgentManifest(manifest))
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	for _, expected := range []string{`"allowed":[]`, `"denied":[]`, `"dependencies":[]`} {
+		if !strings.Contains(string(encoded), expected) {
+			t.Fatalf("cloned manifest = %s, want %s", encoded, expected)
+		}
+	}
+}
 
 func TestCanonicalizeOrganizationSubmissionIsStableAndDetached(t *testing.T) {
 	input := lockedOrganizationInitialPackage(t)

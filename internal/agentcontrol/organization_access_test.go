@@ -261,6 +261,24 @@ func TestIntersectOrganizationAgentPolicyRejectsEmptyRequiredSetAndPairMismatch(
 	}
 }
 
+func TestIntersectOrganizationAgentPolicyPreservesExplicitEmptyToolAllowlist(t *testing.T) {
+	effective, err := IntersectOrganizationAgentPolicy(
+		organization.DefaultPolicyDocument(),
+		organization.DefaultPolicyDocument(),
+		AgentPolicyConstraints{
+			AllowedProviders: []string{"openai"},
+			AllowedModels:    []string{"gpt-5.6"},
+			AllowedTools:     []string{},
+		},
+	)
+	if err != nil {
+		t.Fatalf("IntersectOrganizationAgentPolicy() error = %v", err)
+	}
+	if effective.AllowedTools == nil || len(effective.AllowedTools) != 0 {
+		t.Fatalf("allowed tools = %#v, want an explicit empty allowlist", effective.AllowedTools)
+	}
+}
+
 type organizationAccessQueryer struct {
 	rows map[uuid.UUID]organizationAccessRow
 }

@@ -92,6 +92,34 @@ func TestOrganizationSubmissionRepositoryVisibilityWithdrawalAndRejection(t *tes
 	}
 }
 
+func TestValidSubmitOrganizationAgentCommandAcceptsCanonicalPackage(t *testing.T) {
+	now := time.Date(2026, 7, 21, 9, 0, 0, 0, time.UTC)
+	canonical, err := CanonicalizeOrganizationSubmission(lockedOrganizationInitialPackage(t))
+	if err != nil {
+		t.Fatalf("CanonicalizeOrganizationSubmission() error = %v", err)
+	}
+	command := SubmitOrganizationAgentCommand{
+		SubmissionID:   uuid.New(),
+		OrganizationID: uuid.New(),
+		Principal: Principal{
+			UserID: uuid.New(), DeviceID: uuid.New(), PersonalSpaceID: uuid.New(),
+		},
+		Canonical: canonical,
+		Idempotency: IdempotencyEvidence{
+			ID:          uuid.New(),
+			KeyHash:     sha256.Sum256([]byte("canonical-package-key")),
+			RequestHash: sha256.Sum256([]byte("canonical-package-request")),
+			ExpiresAt:   now.Add(time.Hour),
+		},
+		Audit:       AuditEvidence{EventID: uuid.New(), RequestID: "canonical-package-request"},
+		SubmittedAt: now,
+	}
+
+	if !validSubmitOrganizationAgentCommand(command) {
+		t.Fatal("validSubmitOrganizationAgentCommand() rejected a canonical Organization submission")
+	}
+}
+
 func TestOrganizationSubmissionRepositoryIdempotencyWithdrawalAndLifecycle(t *testing.T) {
 	fixture := newOrganizationSubmissionRepositoryFixture(t)
 	command := fixture.submitCommand(t, fixture.owner, 0x81)

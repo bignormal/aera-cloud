@@ -828,7 +828,7 @@ func publicVersion(value Version) versionResponse {
 		Manifest: append(json.RawMessage(nil), value.CanonicalManifest...), Bundle: append(json.RawMessage(nil), value.Bundle...),
 		ContentDigest: hex.EncodeToString(value.ContentDigest[:]), SigningKeyID: value.SigningKeyID,
 		Signature: base64.RawURLEncoding.EncodeToString(value.Signature), RuntimeMinimumVersion: value.RuntimeMinimumVersion,
-		RuntimeMaximumVersionExclusive: value.RuntimeMaximumVersionExclusive, PublishedAt: value.PublishedAt,
+		RuntimeMaximumVersionExclusive: value.RuntimeMaximumVersionExclusive, PublishedAt: value.PublishedAt.UTC(),
 	}
 }
 

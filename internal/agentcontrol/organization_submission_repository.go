@@ -551,7 +551,7 @@ func validSubmitOrganizationAgentCommand(command SubmitOrganizationAgentCommand)
 		!bytes.Equal(canonical.Package.IconData, command.Canonical.Package.IconData) {
 		return false
 	}
-	version, err := CanonicalizeVersion(canonical.Package.Manifest, canonical.Package.Bundle)
+	canonicalManifest, err := json.Marshal(canonical.Package.Manifest)
 	if err != nil {
 		return false
 	}
@@ -559,9 +559,13 @@ func validSubmitOrganizationAgentCommand(command SubmitOrganizationAgentCommand)
 	if err != nil {
 		return false
 	}
+	canonicalBundle, err := json.Marshal(canonical.Package.Bundle)
+	if err != nil {
+		return false
+	}
 	providedBundle, err := json.Marshal(command.Canonical.Package.Bundle)
-	return err == nil && bytes.Equal(version.ManifestJSON, providedManifest) &&
-		bytes.Equal(version.BundleJSON, providedBundle)
+	return err == nil && bytes.Equal(canonicalManifest, providedManifest) &&
+		bytes.Equal(canonicalBundle, providedBundle)
 }
 
 func validWithdrawOrganizationAgentCommand(command WithdrawOrganizationAgentCommand) bool {

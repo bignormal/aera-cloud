@@ -88,7 +88,7 @@ func IntersectOrganizationAgentPolicy(
 		AgentPolicyConstraints: AgentPolicyConstraints{
 			AllowedProviders: sortedPolicyKeys(providerSet),
 			AllowedModels:    sortedPolicyKeys(modelSet),
-			AllowedTools:     append([]string(nil), effectiveTools...),
+			AllowedTools:     cloneOrganizationSlice(effectiveTools),
 		},
 		AllowedModelPairs: append([]organization.ModelIdentifier(nil), pairs...),
 	}, nil
@@ -1144,9 +1144,9 @@ func policyDocumentForVersionWithConstraints(
 		return nil, ErrInvalidAgentContent
 	}
 	if effective != nil {
-		manifest.ModelConstraints.AllowedProviders = append([]string(nil), effective.AllowedProviders...)
-		manifest.ModelConstraints.AllowedModels = append([]string(nil), effective.AllowedModels...)
-		manifest.Tools.Allowed = append([]string(nil), effective.AllowedTools...)
+		manifest.ModelConstraints.AllowedProviders = cloneOrganizationSlice(effective.AllowedProviders)
+		manifest.ModelConstraints.AllowedModels = cloneOrganizationSlice(effective.AllowedModels)
+		manifest.Tools.Allowed = cloneOrganizationSlice(effective.AllowedTools)
 	}
 	document, err := marshalCanonical(policyDocumentV1{
 		SchemaVersion: 1, AgentDefinitionID: version.DefinitionID.String(), AgentVersionID: version.ID.String(),

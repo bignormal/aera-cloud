@@ -1,14 +1,52 @@
 package agentcontrol
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
+
+func TestPublicOrganizationSubmissionDetailKeepsCanonicalManifestShape(t *testing.T) {
+	input := lockedOrganizationInitialPackage(t)
+	input.IconMediaType = ""
+	input.IconData = nil
+	canonical, err := CanonicalizeOrganizationSubmission(input)
+	if err != nil {
+		t.Fatalf("CanonicalizeOrganizationSubmission() error = %v", err)
+	}
+	detail, err := publicOrganizationAgentSubmissionDetail(OrganizationAgentSubmission{
+		Manifest:       canonical.Package.Manifest,
+		Bundle:         canonical.Package.Bundle,
+		ManifestDigest: canonical.ManifestDigest,
+		BundleDigest:   canonical.BundleDigest,
+		ContentDigest:  canonical.ContentDigest,
+	})
+	if err != nil {
+		t.Fatalf("publicOrganizationAgentSubmissionDetail() error = %v", err)
+	}
+	encoded, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if !strings.Contains(string(encoded), `"maximum_version_exclusive":null`) {
+		t.Fatalf("submission detail = %s, want canonical nullable runtime maximum", encoded)
+	}
+}
+
+func TestPublicVersionNormalizesPublishedAtToUTC(t *testing.T) {
+	publishedAt := time.Date(2026, 7, 21, 18, 3, 16, 0, time.FixedZone("CST", 8*60*60))
+	response := publicVersion(Version{PublishedAt: publishedAt})
+	_, offset := response.PublishedAt.Zone()
+	if response.PublishedAt.Location() != time.UTC || offset != 0 {
+		t.Fatalf("public version PublishedAt = %s, want UTC", response.PublishedAt.Format(time.RFC3339Nano))
+	}
+}
 
 func TestHTTPOrganizationAgentRoutesUseClaimsAndNeverDirectPublish(t *testing.T) {
 	fixture := newAgentControlHTTPFixture(t)
