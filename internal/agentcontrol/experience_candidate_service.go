@@ -215,7 +215,7 @@ func validExperienceCandidateReviewNote(value string) bool {
 	if !validToken(value, 240) || !utf8.ValidString(value) || strings.ContainsAny(value, "\r\n\x00") {
 		return false
 	}
-	for _, rule := range experienceCandidateDLPRules {
+	for _, rule := range publicationDLPRules {
 		if rule.pattern.MatchString(value) {
 			return false
 		}

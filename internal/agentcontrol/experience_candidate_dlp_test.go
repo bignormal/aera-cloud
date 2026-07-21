@@ -61,3 +61,18 @@ func TestScanExperienceCandidateReturnsNoFindingsForSafeContent(t *testing.T) {
 		t.Fatalf("findings = %#v, want none", findings)
 	}
 }
+
+func TestScanAgentPublicationBlocksHermesPrivateState(t *testing.T) {
+	findings := ScanAgentPublication([]PublicationTextAsset{
+		{
+			Path:    "knowledge/private.md",
+			Content: "HERMES_HOME=/Users/alice/.hermes/profiles/work\nAPI_KEY=correct-horse-battery",
+		},
+	})
+	if len(findings) != 2 {
+		t.Fatalf("findings = %#v, want private path and credential", findings)
+	}
+	if findings[0].Code != "credential_environment_secret" || findings[1].Code != "private_absolute_path" {
+		t.Fatalf("finding codes = %#v, want credential then private path", findings)
+	}
+}

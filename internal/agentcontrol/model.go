@@ -24,8 +24,9 @@ var (
 type OwnerScope string
 
 const (
-	OwnerScopeUser      OwnerScope = "USER"
-	OwnerScopeWorkspace OwnerScope = "WORKSPACE"
+	OwnerScopeUser         OwnerScope = "USER"
+	OwnerScopeWorkspace    OwnerScope = "WORKSPACE"
+	OwnerScopeOrganization OwnerScope = "ORGANIZATION"
 )
 
 type AssetOwner struct {
@@ -33,16 +34,24 @@ type AssetOwner struct {
 	PersonalSpaceID uuid.UUID
 	UserID          uuid.UUID
 	WorkspaceID     uuid.UUID
+	OrganizationID  uuid.UUID
 }
 
 func (o AssetOwner) Validate() error {
 	switch o.Scope {
 	case OwnerScopeUser:
-		if o.PersonalSpaceID == uuid.Nil || o.UserID == uuid.Nil || o.WorkspaceID != uuid.Nil {
+		if o.PersonalSpaceID == uuid.Nil || o.UserID == uuid.Nil ||
+			o.WorkspaceID != uuid.Nil || o.OrganizationID != uuid.Nil {
 			return ErrInvalidAgentContent
 		}
 	case OwnerScopeWorkspace:
-		if o.WorkspaceID == uuid.Nil || o.PersonalSpaceID != uuid.Nil || o.UserID != uuid.Nil {
+		if o.PersonalSpaceID != uuid.Nil || o.UserID != uuid.Nil ||
+			o.WorkspaceID == uuid.Nil || o.OrganizationID != uuid.Nil {
+			return ErrInvalidAgentContent
+		}
+	case OwnerScopeOrganization:
+		if o.PersonalSpaceID != uuid.Nil || o.UserID != uuid.Nil ||
+			o.WorkspaceID != uuid.Nil || o.OrganizationID == uuid.Nil {
 			return ErrInvalidAgentContent
 		}
 	default:
@@ -52,10 +61,14 @@ func (o AssetOwner) Validate() error {
 }
 
 func (o AssetOwner) Key() uuid.UUID {
-	if o.Scope == OwnerScopeWorkspace {
+	switch o.Scope {
+	case OwnerScopeWorkspace:
 		return o.WorkspaceID
+	case OwnerScopeOrganization:
+		return o.OrganizationID
+	default:
+		return o.UserID
 	}
-	return o.UserID
 }
 
 type Owner struct {
