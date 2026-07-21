@@ -35,6 +35,7 @@ var (
 		"agent_definition_id": {}, "agent_version_id": {},
 		"agent_installation_id": {}, "policy_snapshot_id": {},
 		"content_digest": {}, "source_owner_scope": {}, "source_workspace_id": {},
+		"source_organization_id":  {},
 		"experience_candidate_id": {}, "decision": {}, "reason_code": {},
 	}
 	workspaceMetadataKeys = map[string]struct{}{
@@ -195,6 +196,7 @@ func validMetadata(eventType string, metadata map[string]string, organizationID 
 	_, hasOwnerID := metadata["owner_id"]
 	sourceOwnerScope, hasSourceOwnerScope := metadata["source_owner_scope"]
 	_, hasSourceWorkspaceID := metadata["source_workspace_id"]
+	_, hasSourceOrganizationID := metadata["source_organization_id"]
 	if hasWorkspaceID && (!hasOwnerScope || ownerScope != "WORKSPACE" || hasTenantID || hasOwnerID) {
 		return false
 	}
@@ -216,17 +218,21 @@ func validMetadata(eventType string, metadata map[string]string, organizationID 
 			return false
 		}
 	}
-	if hasSourceOwnerScope || hasSourceWorkspaceID {
+	if hasSourceOwnerScope || hasSourceWorkspaceID || hasSourceOrganizationID {
 		if eventType != "agent_installation_created" || !hasSourceOwnerScope {
 			return false
 		}
 		switch sourceOwnerScope {
 		case "USER":
-			if hasSourceWorkspaceID {
+			if hasSourceWorkspaceID || hasSourceOrganizationID {
 				return false
 			}
 		case "WORKSPACE":
-			if !hasSourceWorkspaceID {
+			if !hasSourceWorkspaceID || hasSourceOrganizationID {
+				return false
+			}
+		case "ORGANIZATION":
+			if hasSourceWorkspaceID || !hasSourceOrganizationID {
 				return false
 			}
 		default:

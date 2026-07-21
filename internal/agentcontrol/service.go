@@ -94,6 +94,40 @@ func IntersectOrganizationAgentPolicy(
 	}, nil
 }
 
+func effectiveOrganizationAgentPolicyForVersion(
+	version Version,
+	organizationPolicy organization.PolicyDocument,
+) (EffectiveOrganizationAgentPolicy, error) {
+	if version.ID == uuid.Nil || version.DefinitionID == uuid.Nil || zeroDigest(version.ContentDigest) {
+		return EffectiveOrganizationAgentPolicy{}, ErrInvalidAgentContent
+	}
+	manifest, err := DecodeManifest(version.CanonicalManifest)
+	if err != nil {
+		return EffectiveOrganizationAgentPolicy{}, ErrInvalidAgentContent
+	}
+	bundle, err := DecodeBundle(version.Bundle)
+	if err != nil {
+		return EffectiveOrganizationAgentPolicy{}, ErrInvalidAgentContent
+	}
+	canonical, err := CanonicalizeVersion(manifest, bundle)
+	if err != nil || canonical.ContentDigest != version.ContentDigest {
+		return EffectiveOrganizationAgentPolicy{}, ErrInvalidAgentContent
+	}
+	effective, err := IntersectOrganizationAgentPolicy(
+		organization.DefaultPolicyDocument(),
+		organizationPolicy,
+		AgentPolicyConstraints{
+			AllowedProviders: manifest.ModelConstraints.AllowedProviders,
+			AllowedModels:    manifest.ModelConstraints.AllowedModels,
+			AllowedTools:     manifest.Tools.Allowed,
+		},
+	)
+	if err != nil {
+		return EffectiveOrganizationAgentPolicy{}, err
+	}
+	return effective, nil
+}
+
 func modelPairAllowed(pair organization.ModelIdentifier, allowlist []organization.ModelIdentifier) bool {
 	if allowlist == nil {
 		return true
@@ -122,12 +156,15 @@ type ServiceRepository interface {
 	PublishWorkspaceNext(context.Context, Principal, uuid.UUID, NextPublicationCommand) (Publication, error)
 	FindDefinition(context.Context, Principal, uuid.UUID) (Definition, bool, error)
 	FindWorkspaceDefinition(context.Context, Principal, uuid.UUID, uuid.UUID) (Definition, bool, error)
+	FindOrganizationDefinition(context.Context, Principal, uuid.UUID, uuid.UUID) (Definition, bool, error)
 	FindVersion(context.Context, Principal, uuid.UUID) (Version, bool, error)
 	FindPolicySnapshot(context.Context, Principal, uuid.UUID) (PolicySnapshot, bool, error)
 	ListDefinitions(context.Context, Principal) ([]Definition, error)
 	ListVersions(context.Context, Principal, uuid.UUID) ([]Version, error)
 	ListWorkspaceDefinitions(context.Context, Principal, uuid.UUID) ([]Definition, error)
 	ListWorkspaceVersions(context.Context, Principal, uuid.UUID, uuid.UUID) ([]Version, error)
+	ListOrganizationDefinitions(context.Context, Principal, uuid.UUID) ([]Definition, error)
+	ListOrganizationVersions(context.Context, Principal, uuid.UUID, uuid.UUID) ([]Version, error)
 	AppendVersionRevocation(context.Context, Principal, VersionRevocationCommand) (VersionRevocation, error)
 	RecordDenied(context.Context, Principal, DeniedAuditCommand) error
 	CreatePendingInstallation(context.Context, Principal, CreateInstallationCommand) (InstallationCreation, error)
@@ -195,6 +232,7 @@ type CreateInstallationRequest struct {
 	DefinitionID      uuid.UUID
 	VersionID         uuid.UUID
 	SourceWorkspaceID *uuid.UUID
+	OrganizationID    *uuid.UUID
 	IdempotencyKey    string
 	RequestID         string
 }
@@ -466,6 +504,21 @@ func (s *Service) ListWorkspaceDefinitions(
 	return cloneDefinitions(definitions), nil
 }
 
+func (s *Service) ListOrganizationDefinitions(
+	ctx context.Context,
+	principal Principal,
+	organizationID uuid.UUID,
+) ([]Definition, error) {
+	if s == nil || !validPrincipal(principal) || organizationID == uuid.Nil {
+		return nil, ErrInvalidRequest
+	}
+	definitions, err := s.repository.ListOrganizationDefinitions(ctx, principal, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	return cloneDefinitions(definitions), nil
+}
+
 func (s *Service) GetDefinition(
 	ctx context.Context,
 	principal Principal,
@@ -512,6 +565,29 @@ func (s *Service) GetWorkspaceDefinition(
 	return cloneDefinition(definition), nil
 }
 
+func (s *Service) GetOrganizationDefinition(
+	ctx context.Context,
+	principal Principal,
+	organizationID uuid.UUID,
+	definitionID uuid.UUID,
+	requestID string,
+) (Definition, error) {
+	if s == nil || !validPrincipal(principal) || organizationID == uuid.Nil || definitionID == uuid.Nil ||
+		!validRequestID(requestID) {
+		return Definition{}, ErrInvalidRequest
+	}
+	definition, found, err := s.repository.FindOrganizationDefinition(
+		ctx, principal, organizationID, definitionID,
+	)
+	if err != nil {
+		return Definition{}, err
+	}
+	if !found {
+		return Definition{}, ErrOrganizationAgentNotFound
+	}
+	return cloneDefinition(definition), nil
+}
+
 func (s *Service) ListVersions(
 	ctx context.Context,
 	principal Principal,
@@ -549,6 +625,27 @@ func (s *Service) ListWorkspaceVersions(
 		if auditErr := s.recordDenied(ctx, principal, "agent_definition", definitionID, requestID); auditErr != nil {
 			return nil, auditErr
 		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return cloneVersions(versions), nil
+}
+
+func (s *Service) ListOrganizationVersions(
+	ctx context.Context,
+	principal Principal,
+	organizationID uuid.UUID,
+	definitionID uuid.UUID,
+	requestID string,
+) ([]Version, error) {
+	if s == nil || !validPrincipal(principal) || organizationID == uuid.Nil || definitionID == uuid.Nil ||
+		!validRequestID(requestID) {
+		return nil, ErrInvalidRequest
+	}
+	versions, err := s.repository.ListOrganizationVersions(ctx, principal, organizationID, definitionID)
+	if errors.Is(err, ErrNotFound) {
+		return nil, ErrOrganizationAgentNotFound
 	}
 	if err != nil {
 		return nil, err
@@ -656,17 +753,20 @@ func (s *Service) CreateInstallation(
 ) (InstallationCreation, error) {
 	if s == nil || !validPrincipal(principal) || request.DefinitionID == uuid.Nil || request.VersionID == uuid.Nil ||
 		(request.SourceWorkspaceID != nil && *request.SourceWorkspaceID == uuid.Nil) ||
+		(request.OrganizationID != nil && *request.OrganizationID == uuid.Nil) ||
+		(request.SourceWorkspaceID != nil && request.OrganizationID != nil) ||
 		!validIdempotencyKey(request.IdempotencyKey) || !validRequestID(request.RequestID) {
 		return InstallationCreation{}, ErrInvalidRequest
 	}
 	requestHash, err := hashRequest(struct {
-		Operation    string  `json:"operation"`
-		DefinitionID string  `json:"definition_id"`
-		VersionID    string  `json:"version_id"`
-		WorkspaceID  *string `json:"workspace_id,omitempty"`
+		Operation      string  `json:"operation"`
+		DefinitionID   string  `json:"definition_id"`
+		VersionID      string  `json:"version_id"`
+		WorkspaceID    *string `json:"workspace_id,omitempty"`
+		OrganizationID *string `json:"organization_id,omitempty"`
 	}{
 		Operation: operationCreateInstallation, DefinitionID: request.DefinitionID.String(), VersionID: request.VersionID.String(),
-		WorkspaceID: uuidStringPointer(request.SourceWorkspaceID),
+		WorkspaceID: uuidStringPointer(request.SourceWorkspaceID), OrganizationID: uuidStringPointer(request.OrganizationID),
 	})
 	if err != nil {
 		return InstallationCreation{}, ErrInvalidRequest
@@ -678,9 +778,16 @@ func (s *Service) CreateInstallation(
 	}
 	created, err := s.repository.CreatePendingInstallation(ctx, principal, CreateInstallationCommand{
 		InstallationID: installationID, DefinitionID: request.DefinitionID, VersionID: request.VersionID,
-		SourceWorkspaceID: cloneUUIDPointer(request.SourceWorkspaceID),
+		SourceWorkspaceID:    cloneUUIDPointer(request.SourceWorkspaceID),
+		SourceOrganizationID: cloneUUIDPointer(request.OrganizationID),
 		BuildPolicy: func(version Version) (PolicyMaterial, error) {
 			return s.buildPolicy(installationID, policyID, version, 1, now)
+		},
+		BuildOrganizationPolicy: func(
+			version Version,
+			effective EffectiveOrganizationAgentPolicy,
+		) (PolicyMaterial, error) {
+			return s.buildOrganizationPolicy(installationID, policyID, version, 1, effective, now)
 		},
 		Idempotency: IdempotencyEvidence{
 			ID: idempotencyID, KeyHash: sha256.Sum256([]byte(request.IdempotencyKey)),
@@ -773,6 +880,15 @@ func (s *Service) SelectInstallationVersion(
 		BuildPolicy: func(policyVersion int64, version Version) (PolicyMaterial, error) {
 			return s.buildPolicy(request.InstallationID, policyID, version, policyVersion, now)
 		},
+		BuildOrganizationPolicy: func(
+			policyVersion int64,
+			version Version,
+			effective EffectiveOrganizationAgentPolicy,
+		) (PolicyMaterial, error) {
+			return s.buildOrganizationPolicy(
+				request.InstallationID, policyID, version, policyVersion, effective, now,
+			)
+		},
 		Audit: AuditEvidence{EventID: auditID, RequestID: request.RequestID}, SelectedAt: now,
 	})
 	if errors.Is(err, ErrNotFound) {
@@ -849,6 +965,32 @@ func (s *Service) buildPolicy(
 	createdAt time.Time,
 ) (PolicyMaterial, error) {
 	document, err := policyDocumentForVersion(version)
+	if err != nil {
+		return PolicyMaterial{}, err
+	}
+	digest := sha256.Sum256(document)
+	attestation, err := s.signer.SignPolicy(PolicySignatureInput{
+		PolicyID: policyID, PolicyVersion: policyVersion, DocumentDigest: digest,
+	})
+	if err != nil {
+		return PolicyMaterial{}, ErrServiceUnavailable
+	}
+	return PolicyMaterial{
+		ID: policyID, InstallationID: installationID, AgentVersionID: version.ID, PolicyVersion: policyVersion,
+		Document: document, ContentDigest: digest, Issuer: attestation.Issuer, SigningKeyID: attestation.KeyID,
+		Signature: append([]byte(nil), attestation.Signature...), CreatedAt: createdAt.UTC(),
+	}, nil
+}
+
+func (s *Service) buildOrganizationPolicy(
+	installationID uuid.UUID,
+	policyID uuid.UUID,
+	version Version,
+	policyVersion int64,
+	effective EffectiveOrganizationAgentPolicy,
+	createdAt time.Time,
+) (PolicyMaterial, error) {
+	document, err := policyDocumentForOrganizationVersion(version, effective)
 	if err != nil {
 		return PolicyMaterial{}, err
 	}
@@ -952,6 +1094,34 @@ type policyDocumentV1 struct {
 }
 
 func policyDocumentForVersion(version Version) ([]byte, error) {
+	return policyDocumentForVersionWithConstraints(version, nil)
+}
+
+func policyDocumentForOrganizationVersion(
+	version Version,
+	effective EffectiveOrganizationAgentPolicy,
+) ([]byte, error) {
+	if len(effective.AllowedProviders) == 0 || len(effective.AllowedModels) == 0 {
+		return nil, ErrOrganizationPublicationPolicyBlocked
+	}
+	allowedPairs := make(map[string]struct{}, len(effective.AllowedModelPairs))
+	for _, pair := range effective.AllowedModelPairs {
+		allowedPairs[pair.Provider+"\x00"+pair.Model] = struct{}{}
+	}
+	for _, provider := range effective.AllowedProviders {
+		for _, model := range effective.AllowedModels {
+			if _, allowed := allowedPairs[provider+"\x00"+model]; !allowed {
+				return nil, ErrOrganizationPublicationPolicyBlocked
+			}
+		}
+	}
+	return policyDocumentForVersionWithConstraints(version, &effective.AgentPolicyConstraints)
+}
+
+func policyDocumentForVersionWithConstraints(
+	version Version,
+	effective *AgentPolicyConstraints,
+) ([]byte, error) {
 	if version.ID == uuid.Nil || version.DefinitionID == uuid.Nil || zeroDigest(version.ContentDigest) ||
 		len(version.CanonicalManifest) == 0 || len(version.CanonicalManifest) > MaxManifestBytes ||
 		len(version.Bundle) == 0 || len(version.Bundle) > MaxBundleBytes {
@@ -972,6 +1142,11 @@ func policyDocumentForVersion(version Version) ([]byte, error) {
 	var manifest canonicalManifest
 	if err := decodeStrictJSON(canonical.ManifestJSON, &manifest); err != nil || manifest.SchemaVersion != 1 {
 		return nil, ErrInvalidAgentContent
+	}
+	if effective != nil {
+		manifest.ModelConstraints.AllowedProviders = append([]string(nil), effective.AllowedProviders...)
+		manifest.ModelConstraints.AllowedModels = append([]string(nil), effective.AllowedModels...)
+		manifest.Tools.Allowed = append([]string(nil), effective.AllowedTools...)
 	}
 	document, err := marshalCanonical(policyDocumentV1{
 		SchemaVersion: 1, AgentDefinitionID: version.DefinitionID.String(), AgentVersionID: version.ID.String(),

@@ -193,14 +193,16 @@ type Installation struct {
 }
 
 type CreateInstallationCommand struct {
-	InstallationID    uuid.UUID
-	DefinitionID      uuid.UUID
-	VersionID         uuid.UUID
-	SourceWorkspaceID *uuid.UUID
-	BuildPolicy       func(Version) (PolicyMaterial, error)
-	Idempotency       IdempotencyEvidence
-	Audit             AuditEvidence
-	CreatedAt         time.Time
+	InstallationID          uuid.UUID
+	DefinitionID            uuid.UUID
+	VersionID               uuid.UUID
+	SourceWorkspaceID       *uuid.UUID
+	SourceOrganizationID    *uuid.UUID
+	BuildPolicy             func(Version) (PolicyMaterial, error)
+	BuildOrganizationPolicy func(Version, EffectiveOrganizationAgentPolicy) (PolicyMaterial, error)
+	Idempotency             IdempotencyEvidence
+	Audit                   AuditEvidence
+	CreatedAt               time.Time
 }
 
 type InstallationCreation struct {
@@ -220,11 +222,12 @@ type ActivationCommand struct {
 }
 
 type VersionSelectionCommand struct {
-	InstallationID uuid.UUID
-	VersionID      uuid.UUID
-	BuildPolicy    func(policyVersion int64, version Version) (PolicyMaterial, error)
-	Audit          AuditEvidence
-	SelectedAt     time.Time
+	InstallationID          uuid.UUID
+	VersionID               uuid.UUID
+	BuildPolicy             func(policyVersion int64, version Version) (PolicyMaterial, error)
+	BuildOrganizationPolicy func(policyVersion int64, version Version, effective EffectiveOrganizationAgentPolicy) (PolicyMaterial, error)
+	Audit                   AuditEvidence
+	SelectedAt              time.Time
 }
 
 type ArchiveInstallationCommand struct {
@@ -724,14 +727,49 @@ func (r *PostgresRepository) FindVersion(
 	if r == nil || r.postgres == nil || !validPrincipal(principal) || versionID == uuid.Nil {
 		return Version{}, false, ErrInvalidRepositoryCommand
 	}
-	version, err := scanVersion(r.postgres.QueryRow(ctx, versionQuery, principal.PersonalSpaceID, principal.UserID, versionID))
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return Version{}, false, ErrServiceUnavailable
+	}
+	defer rollback(tx)
+	var ownerScope string
+	var organizationValue pgtype.UUID
+	err = tx.QueryRow(ctx, `
+		SELECT owner_scope, organization_id FROM agent_versions WHERE id = $1
+	`, versionID).Scan(&ownerScope, &organizationValue)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Version{}, false, nil
 	}
 	if err != nil {
 		return Version{}, false, ErrServiceUnavailable
 	}
-	return version, true, nil
+	var version Version
+	if OwnerScope(ownerScope) == OwnerScopeOrganization {
+		if !organizationValue.Valid {
+			return Version{}, false, ErrServiceUnavailable
+		}
+		organizationID := uuid.UUID(organizationValue.Bytes)
+		if _, err := requireOrganizationAgentAccess(
+			ctx, tx, principal, organizationID, organizationAgentRead, true,
+		); err != nil {
+			if errors.Is(err, ErrOrganizationAgentNotFound) {
+				return Version{}, false, nil
+			}
+			return Version{}, false, err
+		}
+		version, err = loadOrganizationVersion(ctx, tx, organizationID, versionID)
+	} else {
+		version, err = scanVersion(tx.QueryRow(
+			ctx, versionQuery, principal.PersonalSpaceID, principal.UserID, versionID,
+		))
+	}
+	if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, ErrNotFound) {
+		return Version{}, false, nil
+	}
+	if err != nil {
+		return Version{}, false, ErrServiceUnavailable
+	}
+	return version, true, commitTransaction(ctx, tx)
 }
 
 func (r *PostgresRepository) FindPolicySnapshot(
@@ -996,10 +1034,18 @@ func (r *PostgresRepository) CreatePendingInstallation(
 		return InstallationCreation{}, ErrServiceUnavailable
 	}
 	defer rollback(tx)
+	var organizationAccess OrganizationAgentAccess
 	if command.SourceWorkspaceID != nil {
 		if _, err := requireWorkspaceAgentAccess(
 			ctx, tx, principal, *command.SourceWorkspaceID, workspaceAgentInstall, true,
 		); err != nil {
+			return InstallationCreation{}, err
+		}
+	} else if command.SourceOrganizationID != nil {
+		organizationAccess, err = requireOrganizationAgentAccess(
+			ctx, tx, principal, *command.SourceOrganizationID, organizationAgentInstall, false,
+		)
+		if err != nil {
 			return InstallationCreation{}, err
 		}
 	}
@@ -1034,7 +1080,7 @@ func (r *PostgresRepository) CreatePendingInstallation(
 	}
 	var definitionStatus string
 	var version Version
-	if command.SourceWorkspaceID == nil {
+	if command.SourceWorkspaceID == nil && command.SourceOrganizationID == nil {
 		err = tx.QueryRow(ctx, `
 			SELECT d.status
 			FROM agent_definitions d
@@ -1042,7 +1088,7 @@ func (r *PostgresRepository) CreatePendingInstallation(
 			WHERE d.id = $3 AND d.tenant_id = $1 AND d.owner_scope = 'USER' AND d.owner_id = $2
 			  AND v.tenant_id = $1 AND v.owner_scope = 'USER' AND v.owner_id = $2
 		`, owner.TenantID, owner.OwnerID, command.DefinitionID, command.VersionID).Scan(&definitionStatus)
-	} else {
+	} else if command.SourceWorkspaceID != nil {
 		err = tx.QueryRow(ctx, `
 			SELECT d.status
 			FROM agent_definitions d
@@ -1050,8 +1096,19 @@ func (r *PostgresRepository) CreatePendingInstallation(
 			WHERE d.id = $2 AND d.owner_scope = 'WORKSPACE' AND d.workspace_id = $1
 			  AND v.owner_scope = 'WORKSPACE' AND v.workspace_id = $1
 		`, *command.SourceWorkspaceID, command.DefinitionID, command.VersionID).Scan(&definitionStatus)
+	} else {
+		err = tx.QueryRow(ctx, `
+			SELECT d.status
+			FROM agent_definitions d
+			JOIN agent_versions v ON v.definition_id = d.id AND v.id = $3
+			WHERE d.id = $2 AND d.owner_scope = 'ORGANIZATION' AND d.organization_id = $1
+			  AND v.owner_scope = 'ORGANIZATION' AND v.organization_id = $1
+		`, *command.SourceOrganizationID, command.DefinitionID, command.VersionID).Scan(&definitionStatus)
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
+		if command.SourceOrganizationID != nil {
+			return InstallationCreation{}, ErrOrganizationAgentNotFound
+		}
 		return InstallationCreation{}, ErrNotFound
 	}
 	if err != nil {
@@ -1060,15 +1117,17 @@ func (r *PostgresRepository) CreatePendingInstallation(
 	if definitionStatus == definitionStatusArchived {
 		return InstallationCreation{}, ErrDefinitionArchived
 	}
-	if command.SourceWorkspaceID == nil {
+	if command.SourceWorkspaceID == nil && command.SourceOrganizationID == nil {
 		if revoked, err := versionIsRevoked(ctx, tx, principal, command.VersionID); err != nil {
 			return InstallationCreation{}, err
 		} else if revoked {
 			return InstallationCreation{}, ErrVersionRevoked
 		}
 		version, err = loadVersion(ctx, tx, principal, command.VersionID)
-	} else {
+	} else if command.SourceWorkspaceID != nil {
 		version, err = loadWorkspaceVersion(ctx, tx, *command.SourceWorkspaceID, command.VersionID)
+	} else {
+		version, err = loadOrganizationVersion(ctx, tx, *command.SourceOrganizationID, command.VersionID)
 	}
 	if err != nil || version.DefinitionID != command.DefinitionID {
 		if err != nil {
@@ -1076,7 +1135,18 @@ func (r *PostgresRepository) CreatePendingInstallation(
 		}
 		return InstallationCreation{}, ErrNotFound
 	}
-	policy, err := command.BuildPolicy(version)
+	var policy PolicyMaterial
+	if command.SourceOrganizationID == nil {
+		policy, err = command.BuildPolicy(version)
+	} else {
+		effective, effectiveErr := effectiveOrganizationAgentPolicyForVersion(
+			version, organizationAccess.PolicyDocument,
+		)
+		if effectiveErr != nil {
+			return InstallationCreation{}, effectiveErr
+		}
+		policy, err = command.BuildOrganizationPolicy(version, effective)
+	}
 	if err != nil {
 		return InstallationCreation{}, err
 	}
@@ -1118,6 +1188,9 @@ func (r *PostgresRepository) CreatePendingInstallation(
 	if command.SourceWorkspaceID != nil {
 		auditMetadata["source_owner_scope"] = string(OwnerScopeWorkspace)
 		auditMetadata["source_workspace_id"] = command.SourceWorkspaceID.String()
+	} else if command.SourceOrganizationID != nil {
+		auditMetadata["source_owner_scope"] = string(OwnerScopeOrganization)
+		auditMetadata["source_organization_id"] = command.SourceOrganizationID.String()
 	}
 	if err := recordAudit(ctx, tx, principal, command.Audit, "agent_installation_created", "agent_installation",
 		command.InstallationID, command.CreatedAt, auditMetadata); err != nil {
@@ -1299,15 +1372,17 @@ func (r *PostgresRepository) SelectInstallationVersion(
 	var definitionStatus string
 	var definitionOwnerScope string
 	var workspaceValue pgtype.UUID
+	var organizationValue pgtype.UUID
 	err = tx.QueryRow(ctx, `
-		SELECT d.status, d.owner_scope, d.workspace_id
+		SELECT d.status, d.owner_scope, d.workspace_id, d.organization_id
 		FROM agent_definitions d
 		WHERE d.id = $3 AND (
 			(d.tenant_id = $1 AND d.owner_scope = 'USER' AND d.owner_id = $2)
 			OR (d.owner_scope = 'WORKSPACE' AND d.workspace_id IS NOT NULL)
+			OR (d.owner_scope = 'ORGANIZATION' AND d.organization_id IS NOT NULL)
 		)
 	`, owner.TenantID, owner.OwnerID, installation.DefinitionID).Scan(
-		&definitionStatus, &definitionOwnerScope, &workspaceValue,
+		&definitionStatus, &definitionOwnerScope, &workspaceValue, &organizationValue,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Installation{}, ErrNotFound
@@ -1319,9 +1394,10 @@ func (r *PostgresRepository) SelectInstallationVersion(
 		return Installation{}, ErrDefinitionArchived
 	}
 	var version Version
+	var organizationEffective *EffectiveOrganizationAgentPolicy
 	switch OwnerScope(definitionOwnerScope) {
 	case OwnerScopeUser:
-		if workspaceValue.Valid {
+		if workspaceValue.Valid || organizationValue.Valid {
 			return Installation{}, ErrServiceUnavailable
 		}
 		if revoked, err := versionIsRevoked(ctx, tx, principal, command.VersionID); err != nil {
@@ -1331,7 +1407,7 @@ func (r *PostgresRepository) SelectInstallationVersion(
 		}
 		version, err = loadVersion(ctx, tx, principal, command.VersionID)
 	case OwnerScopeWorkspace:
-		if !workspaceValue.Valid {
+		if !workspaceValue.Valid || organizationValue.Valid {
 			return Installation{}, ErrServiceUnavailable
 		}
 		workspaceID := uuid.UUID(workspaceValue.Bytes)
@@ -1341,6 +1417,27 @@ func (r *PostgresRepository) SelectInstallationVersion(
 			return Installation{}, err
 		}
 		version, err = loadWorkspaceVersion(ctx, tx, workspaceID, command.VersionID)
+	case OwnerScopeOrganization:
+		if workspaceValue.Valid || !organizationValue.Valid || command.BuildOrganizationPolicy == nil {
+			return Installation{}, ErrServiceUnavailable
+		}
+		organizationID := uuid.UUID(organizationValue.Bytes)
+		access, accessErr := requireOrganizationAgentAccess(
+			ctx, tx, principal, organizationID, organizationAgentInstall, false,
+		)
+		if accessErr != nil {
+			return Installation{}, accessErr
+		}
+		version, err = loadOrganizationVersion(ctx, tx, organizationID, command.VersionID)
+		if err == nil {
+			effective, effectiveErr := effectiveOrganizationAgentPolicyForVersion(
+				version, access.PolicyDocument,
+			)
+			if effectiveErr != nil {
+				return Installation{}, effectiveErr
+			}
+			organizationEffective = &effective
+		}
 	default:
 		return Installation{}, ErrServiceUnavailable
 	}
@@ -1361,7 +1458,14 @@ func (r *PostgresRepository) SelectInstallationVersion(
 	if err != nil {
 		return Installation{}, ErrServiceUnavailable
 	}
-	policy, err := command.BuildPolicy(currentPolicyVersion+1, version)
+	var policy PolicyMaterial
+	if organizationEffective == nil {
+		policy, err = command.BuildPolicy(currentPolicyVersion+1, version)
+	} else {
+		policy, err = command.BuildOrganizationPolicy(
+			currentPolicyVersion+1, version, *organizationEffective,
+		)
+	}
 	if err != nil {
 		return Installation{}, err
 	}
@@ -1584,11 +1688,22 @@ const versionQuery = `
 	LEFT JOIN users workspace_owner ON workspace_owner.id = workspace.owner_user_id
 	LEFT JOIN workspace_memberships membership
 		ON membership.workspace_id = v.workspace_id AND membership.user_id = $2
+	LEFT JOIN organizations organization ON organization.id = v.organization_id
+	LEFT JOIN organization_memberships organization_membership
+		ON organization_membership.organization_id = v.organization_id
+		AND organization_membership.user_id = $2
+	LEFT JOIN users organization_member
+		ON organization_member.id = organization_membership.user_id
 	WHERE v.id = $3 AND (
 		(v.tenant_id = $1 AND v.owner_scope = 'USER' AND v.owner_id = $2)
 		OR (
 			v.owner_scope = 'WORKSPACE' AND membership.user_id IS NOT NULL
 			AND workspace.status = 'active' AND workspace_owner.status = 'active'
+		)
+		OR (
+			v.owner_scope = 'ORGANIZATION' AND organization_membership.user_id IS NOT NULL
+			AND organization.status IN ('active', 'archived')
+			AND organization_member.status = 'active'
 		)
 	)
 `
@@ -2292,7 +2407,10 @@ func validVersionMaterial(material VersionMaterial, expectedNumber int64) bool {
 
 func validCreateInstallation(command CreateInstallationCommand) bool {
 	return command.InstallationID != uuid.Nil && command.DefinitionID != uuid.Nil && command.VersionID != uuid.Nil &&
-		(command.SourceWorkspaceID == nil || *command.SourceWorkspaceID != uuid.Nil) && command.BuildPolicy != nil &&
+		(command.SourceWorkspaceID == nil || *command.SourceWorkspaceID != uuid.Nil) &&
+		(command.SourceOrganizationID == nil || *command.SourceOrganizationID != uuid.Nil) &&
+		(command.SourceWorkspaceID == nil || command.SourceOrganizationID == nil) && command.BuildPolicy != nil &&
+		(command.SourceOrganizationID == nil || command.BuildOrganizationPolicy != nil) &&
 		validIdempotency(command.Idempotency, command.CreatedAt) && validAuditEvidence(command.Audit) && !command.CreatedAt.IsZero()
 }
 
