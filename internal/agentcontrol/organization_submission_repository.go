@@ -60,9 +60,22 @@ type ReviewOrganizationAgentCommand struct {
 	Decision         OrganizationReviewDecision
 	ReasonCode       string
 	SafeNote         string
+	BuildVersion     func(CanonicalOrganizationSubmission, int64) (VersionMaterial, error)
 	Idempotency      IdempotencyEvidence
 	Audit            AuditEvidence
 	ReviewedAt       time.Time
+}
+
+type OrganizationSubmissionSupersededError struct {
+	Submission OrganizationAgentSubmission
+}
+
+func (err *OrganizationSubmissionSupersededError) Error() string {
+	return ErrOrganizationSubmissionSuperseded.Error()
+}
+
+func (err *OrganizationSubmissionSupersededError) Unwrap() error {
+	return ErrOrganizationSubmissionSuperseded
 }
 
 func (r *PostgresRepository) SubmitOrganizationAgent(
@@ -313,6 +326,9 @@ func (r *PostgresRepository) ReviewOrganizationAgentSubmission(
 	ctx context.Context,
 	command ReviewOrganizationAgentCommand,
 ) (OrganizationAgentSubmission, error) {
+	if command.Decision == OrganizationReviewApprove {
+		return r.approveOrganizationAgentSubmission(ctx, command)
+	}
 	if r == nil || r.postgres == nil || !validRejectOrganizationAgentCommand(command) {
 		return OrganizationAgentSubmission{}, ErrInvalidRepositoryCommand
 	}
@@ -394,6 +410,126 @@ func (r *PostgresRepository) ReviewOrganizationAgentSubmission(
 	return value, commitTransaction(ctx, tx)
 }
 
+func (r *PostgresRepository) approveOrganizationAgentSubmission(
+	ctx context.Context,
+	command ReviewOrganizationAgentCommand,
+) (OrganizationAgentSubmission, error) {
+	if r == nil || r.postgres == nil || !validApproveOrganizationAgentCommand(command) {
+		return OrganizationAgentSubmission{}, ErrInvalidRepositoryCommand
+	}
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return OrganizationAgentSubmission{}, ErrServiceUnavailable
+	}
+	defer rollback(tx)
+	reviewer, err := requireOrganizationAgentAccess(
+		ctx, tx, command.Principal, command.OrganizationID, organizationAgentReview, false,
+	)
+	if err != nil {
+		return OrganizationAgentSubmission{}, err
+	}
+	response, found, err := lockAndReadOrganizationAgentIdempotency(
+		ctx, tx, command.OrganizationID, operationReviewOrganizationAgent, command.Idempotency,
+	)
+	if err != nil {
+		return OrganizationAgentSubmission{}, err
+	}
+	if found {
+		value, err := loadOrganizationAgentSubmission(ctx, tx, command.OrganizationID, response.SubmissionID)
+		if err != nil {
+			return OrganizationAgentSubmission{}, err
+		}
+		value.Replayed = true
+		if err := commitTransaction(ctx, tx); err != nil {
+			return OrganizationAgentSubmission{}, err
+		}
+		if value.Status == OrganizationSubmissionSuperseded {
+			return OrganizationAgentSubmission{}, &OrganizationSubmissionSupersededError{Submission: value}
+		}
+		return value, nil
+	}
+	submission, err := loadOrganizationAgentSubmissionForUpdate(
+		ctx, tx, command.OrganizationID, command.SubmissionID,
+	)
+	if err != nil {
+		return OrganizationAgentSubmission{}, err
+	}
+	if submission.Status != OrganizationSubmissionPending || submission.Revision != command.ExpectedRevision {
+		return OrganizationAgentSubmission{}, ErrOrganizationSubmissionConflict
+	}
+	if submission.SubmittedByUserID == command.Principal.UserID {
+		return OrganizationAgentSubmission{}, ErrOrganizationSubmissionSelfReview
+	}
+	if err := requireCurrentOrganizationPublisher(
+		ctx, tx, command.OrganizationID, submission.SubmittedByUserID,
+	); err != nil {
+		return OrganizationAgentSubmission{}, err
+	}
+	canonical, err := recanonicalizeStoredOrganizationSubmission(submission)
+	if err != nil {
+		return OrganizationAgentSubmission{}, err
+	}
+	findings := ScanAgentPublication(publicationTextAssets(canonical.Package.Bundle))
+	if len(findings) != 0 {
+		return OrganizationAgentSubmission{}, &OrganizationPublicationDLPError{
+			Findings: cloneExperienceCandidateFindings(findings),
+		}
+	}
+	if err := validateAgainstCurrentOrganizationPolicy(canonical, reviewer.PolicyDocument); err != nil {
+		return OrganizationAgentSubmission{}, err
+	}
+
+	versionNumber := int64(1)
+	if submission.Kind == OrganizationSubmissionInitial {
+		var exists bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (SELECT 1 FROM agent_definitions WHERE id = $1)
+		`, submission.DefinitionID).Scan(&exists); err != nil {
+			return OrganizationAgentSubmission{}, ErrServiceUnavailable
+		}
+		if exists {
+			return OrganizationAgentSubmission{}, ErrOrganizationSubmissionConflict
+		}
+	} else {
+		currentVersionID, currentVersionNumber, err := lockOrganizationDefinitionVersion(
+			ctx, tx, command.OrganizationID, submission.DefinitionID,
+		)
+		if err != nil {
+			return OrganizationAgentSubmission{}, err
+		}
+		if currentVersionID != submission.BaseVersionID {
+			result, err := markOrganizationSubmissionSuperseded(ctx, tx, submission, reviewer, command)
+			if err != nil {
+				return OrganizationAgentSubmission{}, err
+			}
+			if err := commitTransaction(ctx, tx); err != nil {
+				return OrganizationAgentSubmission{}, err
+			}
+			return OrganizationAgentSubmission{}, &OrganizationSubmissionSupersededError{
+				Submission: cloneOrganizationAgentSubmission(result),
+			}
+		}
+		versionNumber = currentVersionNumber + 1
+	}
+	material, err := command.BuildVersion(canonical, versionNumber)
+	if err != nil {
+		return OrganizationAgentSubmission{}, err
+	}
+	if !validOrganizationVersionMaterial(material, canonical, versionNumber) {
+		return OrganizationAgentSubmission{}, ErrInvalidRepositoryCommand
+	}
+	if err := persistApprovedOrganizationPublication(
+		ctx, tx, submission, canonical, material, reviewer, command,
+	); err != nil {
+		return OrganizationAgentSubmission{}, err
+	}
+	result, err := loadOrganizationAgentSubmission(ctx, tx, command.OrganizationID, command.SubmissionID)
+	if err != nil {
+		return OrganizationAgentSubmission{}, err
+	}
+	return result, commitTransaction(ctx, tx)
+}
+
 func validSubmitOrganizationAgentCommand(command SubmitOrganizationAgentCommand) bool {
 	if command.SubmissionID == uuid.Nil || command.OrganizationID == uuid.Nil ||
 		!validPrincipal(command.Principal) || command.SubmittedAt.IsZero() ||
@@ -440,6 +576,204 @@ func validRejectOrganizationAgentCommand(command ReviewOrganizationAgentCommand)
 		command.Decision == OrganizationReviewReject && organizationReviewReasonPattern.MatchString(command.ReasonCode) &&
 		(command.SafeNote == "" || validOrganizationReviewNote(command.SafeNote)) && !command.ReviewedAt.IsZero() &&
 		validIdempotency(command.Idempotency, command.ReviewedAt) && validAuditEvidence(command.Audit)
+}
+
+func validApproveOrganizationAgentCommand(command ReviewOrganizationAgentCommand) bool {
+	return command.ReviewID != uuid.Nil && command.OrganizationID != uuid.Nil && command.SubmissionID != uuid.Nil &&
+		command.ExpectedRevision > 0 && validPrincipal(command.Principal) &&
+		command.Decision == OrganizationReviewApprove && command.ReasonCode == "" && command.SafeNote == "" &&
+		command.BuildVersion != nil && !command.ReviewedAt.IsZero() &&
+		validIdempotency(command.Idempotency, command.ReviewedAt) && validAuditEvidence(command.Audit)
+}
+
+func requireCurrentOrganizationPublisher(
+	ctx context.Context,
+	tx pgx.Tx,
+	organizationID uuid.UUID,
+	userID uuid.UUID,
+) error {
+	var role string
+	err := tx.QueryRow(ctx, `
+		SELECT membership.role
+		FROM organization_memberships membership
+		JOIN users account ON account.id = membership.user_id AND account.status = 'active'
+		WHERE membership.organization_id = $1 AND membership.user_id = $2
+		FOR SHARE OF membership, account
+	`, organizationID, userID).Scan(&role)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrOrganizationAgentForbidden
+	}
+	if err != nil {
+		return ErrServiceUnavailable
+	}
+	if role != "owner" && role != "admin" {
+		return ErrOrganizationAgentForbidden
+	}
+	return nil
+}
+
+func recanonicalizeStoredOrganizationSubmission(
+	submission OrganizationAgentSubmission,
+) (CanonicalOrganizationSubmission, error) {
+	canonical, err := CanonicalizeOrganizationSubmission(OrganizationSubmissionPackage{
+		Kind: submission.Kind, DefinitionID: submission.DefinitionID, BaseVersionID: submission.BaseVersionID,
+		DisplayName: submission.DisplayName, IconMediaType: submission.IconMediaType,
+		IconData: submission.IconData, Manifest: submission.Manifest, Bundle: submission.Bundle,
+	})
+	if err != nil || canonical.ManifestDigest != submission.ManifestDigest ||
+		canonical.BundleDigest != submission.BundleDigest || canonical.ContentDigest != submission.ContentDigest {
+		return CanonicalOrganizationSubmission{}, ErrInvalidAgentContent
+	}
+	return canonical, nil
+}
+
+func lockOrganizationDefinitionVersion(
+	ctx context.Context,
+	tx pgx.Tx,
+	organizationID uuid.UUID,
+	definitionID uuid.UUID,
+) (uuid.UUID, int64, error) {
+	var versionID uuid.UUID
+	var versionNumber int64
+	err := tx.QueryRow(ctx, `
+		SELECT definition.latest_version_id, version.version_number
+		FROM agent_definitions definition
+		JOIN agent_versions version ON version.id = definition.latest_version_id
+		WHERE definition.id = $1 AND definition.owner_scope = 'ORGANIZATION'
+		  AND definition.organization_id = $2 AND definition.status = 'active'
+		  AND version.owner_scope = 'ORGANIZATION' AND version.organization_id = $2
+		FOR UPDATE OF definition
+	`, definitionID, organizationID).Scan(&versionID, &versionNumber)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, 0, ErrOrganizationAgentNotFound
+	}
+	if err != nil || versionID == uuid.Nil || versionNumber <= 0 {
+		return uuid.Nil, 0, ErrServiceUnavailable
+	}
+	return versionID, versionNumber, nil
+}
+
+func validOrganizationVersionMaterial(
+	material VersionMaterial,
+	canonical CanonicalOrganizationSubmission,
+	versionNumber int64,
+) bool {
+	version, err := CanonicalizeVersion(canonical.Package.Manifest, canonical.Package.Bundle)
+	return err == nil && validVersionMaterial(material, versionNumber) &&
+		bytes.Equal(material.CanonicalManifest, version.ManifestJSON) &&
+		bytes.Equal(material.Bundle, version.BundleJSON) && material.ContentDigest == version.ContentDigest
+}
+
+func persistApprovedOrganizationPublication(
+	ctx context.Context,
+	tx pgx.Tx,
+	submission OrganizationAgentSubmission,
+	canonical CanonicalOrganizationSubmission,
+	material VersionMaterial,
+	reviewer OrganizationAgentAccess,
+	command ReviewOrganizationAgentCommand,
+) error {
+	if submission.Kind == OrganizationSubmissionInitial {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO agent_definitions (
+				id, tenant_id, owner_scope, owner_id, workspace_id, organization_id,
+				display_name, icon_media_type, icon_data, status, latest_version_id,
+				created_by, created_at, updated_at
+			) VALUES ($1, NULL, 'ORGANIZATION', NULL, NULL, $2, $3, NULLIF($4, ''), $5,
+			          'active', NULL, $6, $7, $7)
+		`, submission.DefinitionID, submission.OrganizationID, submission.DisplayName,
+			submission.IconMediaType, nilIfEmptyBytes(submission.IconData), submission.SubmittedByUserID,
+			command.ReviewedAt.UTC()); err != nil {
+			return ErrServiceUnavailable
+		}
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO agent_versions (
+			id, definition_id, tenant_id, owner_scope, owner_id, workspace_id, organization_id,
+			organization_submission_id, organization_policy_snapshot_id, version_number,
+			canonical_manifest, bundle, content_digest, signing_key_id, signature,
+			runtime_minimum_version, runtime_maximum_version_exclusive, published_by, published_at
+		) VALUES ($1, $2, NULL, 'ORGANIZATION', NULL, NULL, $3, $4, $5, $6,
+		          $7::jsonb, $8::jsonb, $9, $10, $11, $12, NULLIF($13, ''), $14, $15)
+	`, material.ID, submission.DefinitionID, submission.OrganizationID, submission.ID,
+		reviewer.PolicySnapshotID, material.VersionNumber, string(material.CanonicalManifest),
+		string(material.Bundle), material.ContentDigest[:], material.SigningKeyID, material.Signature,
+		material.RuntimeMinimumVersion, material.RuntimeMaximumVersionExclusive,
+		command.Principal.UserID, command.ReviewedAt.UTC()); err != nil {
+		return ErrServiceUnavailable
+	}
+	result, err := tx.Exec(ctx, `
+		UPDATE agent_definitions
+		SET latest_version_id = $3, updated_at = $4
+		WHERE id = $1 AND owner_scope = 'ORGANIZATION' AND organization_id = $2 AND status = 'active'
+	`, submission.DefinitionID, submission.OrganizationID, material.ID, command.ReviewedAt.UTC())
+	if err != nil || result.RowsAffected() != 1 {
+		return ErrServiceUnavailable
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO organization_agent_reviews (
+			id, organization_id, submission_id, reviewer_user_id, decision, reason_code,
+			safe_note, organization_policy_snapshot_id, organization_policy_version,
+			reviewed_content_digest, reviewed_at
+		) VALUES ($1, $2, $3, $4, 'approve', NULL, NULL, $5, $6, $7, $8)
+	`, command.ReviewID, submission.OrganizationID, submission.ID, command.Principal.UserID,
+		reviewer.PolicySnapshotID, reviewer.PolicyVersion, canonical.ContentDigest[:],
+		command.ReviewedAt.UTC()); err != nil {
+		return ErrServiceUnavailable
+	}
+	if err := transitionOrganizationAgentSubmission(
+		ctx, tx, submission.OrganizationID, submission.ID, command.ExpectedRevision,
+		OrganizationSubmissionApproved, command.ReviewedAt,
+	); err != nil {
+		return err
+	}
+	response := idempotencyResponse{
+		DefinitionID: submission.DefinitionID, VersionID: material.ID,
+		SubmissionID: submission.ID, ReviewID: command.ReviewID,
+	}
+	if err := insertOrganizationAgentIdempotency(
+		ctx, tx, submission.OrganizationID, operationReviewOrganizationAgent, command.Idempotency,
+		"organization_agent_submission", submission.ID, response, command.ReviewedAt,
+	); err != nil {
+		return err
+	}
+	return recordOrganizationAgentSubmissionAudit(
+		ctx, tx, command.Principal, submission.OrganizationID, command.Audit,
+		"organization_agent_submission_approved", submission.ID, canonical.ContentDigest,
+		OrganizationSubmissionApproved, command.ExpectedRevision+1,
+		submission.Status, submission.Revision, reviewer, command.ReviewedAt,
+	)
+}
+
+func markOrganizationSubmissionSuperseded(
+	ctx context.Context,
+	tx pgx.Tx,
+	submission OrganizationAgentSubmission,
+	reviewer OrganizationAgentAccess,
+	command ReviewOrganizationAgentCommand,
+) (OrganizationAgentSubmission, error) {
+	if err := transitionOrganizationAgentSubmission(
+		ctx, tx, submission.OrganizationID, submission.ID, command.ExpectedRevision,
+		OrganizationSubmissionSuperseded, command.ReviewedAt,
+	); err != nil {
+		return OrganizationAgentSubmission{}, err
+	}
+	response := idempotencyResponse{DefinitionID: submission.DefinitionID, SubmissionID: submission.ID}
+	if err := insertOrganizationAgentIdempotency(
+		ctx, tx, submission.OrganizationID, operationReviewOrganizationAgent, command.Idempotency,
+		"organization_agent_submission", submission.ID, response, command.ReviewedAt,
+	); err != nil {
+		return OrganizationAgentSubmission{}, err
+	}
+	if err := recordOrganizationAgentSubmissionAudit(
+		ctx, tx, command.Principal, submission.OrganizationID, command.Audit,
+		"organization_agent_submission_superseded", submission.ID, submission.ContentDigest,
+		OrganizationSubmissionSuperseded, command.ExpectedRevision+1,
+		submission.Status, submission.Revision, reviewer, command.ReviewedAt,
+	); err != nil {
+		return OrganizationAgentSubmission{}, err
+	}
+	return loadOrganizationAgentSubmission(ctx, tx, submission.OrganizationID, submission.ID)
 }
 
 func validateAgainstCurrentOrganizationPolicy(

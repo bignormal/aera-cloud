@@ -221,9 +221,7 @@ func (s *Service) ReviewOrganizationAgentSubmission(
 	request ReviewOrganizationAgentRequest,
 ) (OrganizationAgentSubmission, error) {
 	if s == nil || !validPrincipal(principal) || organizationID == uuid.Nil || request.SubmissionID == uuid.Nil ||
-		request.ExpectedRevision <= 0 || request.Decision != OrganizationReviewReject ||
-		!organizationReviewReasonPattern.MatchString(request.ReasonCode) ||
-		(request.SafeNote != "" && !validOrganizationReviewNote(request.SafeNote)) ||
+		request.ExpectedRevision <= 0 || !validOrganizationReviewRequest(request) ||
 		!validIdempotencyKey(request.IdempotencyKey) || !validRequestID(request.RequestID) {
 		return OrganizationAgentSubmission{}, ErrInvalidRequest
 	}
@@ -245,25 +243,76 @@ func (s *Service) ReviewOrganizationAgentSubmission(
 	if err != nil {
 		return OrganizationAgentSubmission{}, ErrInvalidRequest
 	}
-	identifiers, ok := s.newOrganizationSubmissionIDs(3)
+	identifierCount := 3
+	if request.Decision == OrganizationReviewApprove {
+		identifierCount = 4
+	}
+	identifiers, ok := s.newOrganizationSubmissionIDs(identifierCount)
 	if !ok {
 		return OrganizationAgentSubmission{}, ErrServiceUnavailable
 	}
 	now := s.clock().UTC()
+	idempotencyIndex := 1
+	auditIndex := 2
+	var buildVersion func(CanonicalOrganizationSubmission, int64) (VersionMaterial, error)
+	if request.Decision == OrganizationReviewApprove {
+		versionID := identifiers[1]
+		idempotencyIndex = 2
+		auditIndex = 3
+		buildVersion = func(
+			canonical CanonicalOrganizationSubmission,
+			versionNumber int64,
+		) (VersionMaterial, error) {
+			version, minimum, maximum, err := canonicalizePublication(
+				canonical.Package.Manifest, canonical.Package.Bundle,
+			)
+			if err != nil || version.ManifestDigest != canonical.ManifestDigest ||
+				version.BundleDigest != canonical.BundleDigest || version.ContentDigest != canonical.ContentDigest {
+				return VersionMaterial{}, ErrInvalidAgentContent
+			}
+			attestation, err := s.signer.SignVersion(VersionSignatureInput{
+				DefinitionID: canonical.Package.DefinitionID, VersionID: versionID,
+				VersionNumber: versionNumber, ManifestDigest: canonical.ManifestDigest,
+				BundleDigest: canonical.BundleDigest,
+			})
+			if err != nil {
+				return VersionMaterial{}, ErrServiceUnavailable
+			}
+			return VersionMaterial{
+				ID: versionID, VersionNumber: versionNumber,
+				CanonicalManifest: append([]byte(nil), version.ManifestJSON...),
+				Bundle:            append([]byte(nil), version.BundleJSON...), ContentDigest: version.ContentDigest,
+				SigningKeyID: attestation.KeyID, Signature: append([]byte(nil), attestation.Signature...),
+				RuntimeMinimumVersion: minimum, RuntimeMaximumVersionExclusive: maximum,
+			}, nil
+		}
+	}
 	result, err := s.repository.ReviewOrganizationAgentSubmission(ctx, ReviewOrganizationAgentCommand{
 		ReviewID: identifiers[0], OrganizationID: organizationID, SubmissionID: request.SubmissionID,
 		ExpectedRevision: request.ExpectedRevision, Principal: principal, Decision: request.Decision,
-		ReasonCode: request.ReasonCode, SafeNote: request.SafeNote,
+		ReasonCode: request.ReasonCode, SafeNote: request.SafeNote, BuildVersion: buildVersion,
 		Idempotency: IdempotencyEvidence{
-			ID: identifiers[1], KeyHash: sha256.Sum256([]byte(request.IdempotencyKey)),
+			ID: identifiers[idempotencyIndex], KeyHash: sha256.Sum256([]byte(request.IdempotencyKey)),
 			RequestHash: requestHash, ExpiresAt: now.Add(idempotencyLifetime),
 		},
-		Audit: AuditEvidence{EventID: identifiers[2], RequestID: request.RequestID}, ReviewedAt: now,
+		Audit: AuditEvidence{EventID: identifiers[auditIndex], RequestID: request.RequestID}, ReviewedAt: now,
 	})
 	if err != nil {
 		return OrganizationAgentSubmission{}, err
 	}
 	return cloneOrganizationAgentSubmission(result), nil
+}
+
+func validOrganizationReviewRequest(request ReviewOrganizationAgentRequest) bool {
+	switch request.Decision {
+	case OrganizationReviewApprove:
+		return request.ReasonCode == "" && request.SafeNote == ""
+	case OrganizationReviewReject:
+		return organizationReviewReasonPattern.MatchString(request.ReasonCode) &&
+			(request.SafeNote == "" || validOrganizationReviewNote(request.SafeNote))
+	default:
+		return false
+	}
 }
 
 func validateOrganizationPublicationPolicy(manifest AgentManifestV1, bundle VersionBundleV1) error {

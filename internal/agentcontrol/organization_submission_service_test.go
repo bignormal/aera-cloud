@@ -8,6 +8,57 @@ import (
 	"github.com/google/uuid"
 )
 
+func TestOrganizationApprovalServiceBuildsSignedVersionFromRepositoryCanonicalContent(t *testing.T) {
+	fixture := newAgentControlServiceFixture(t)
+	organizationID := uuid.New()
+	submissionID := uuid.New()
+	definitionID := uuid.New()
+	request := ReviewOrganizationAgentRequest{
+		SubmissionID: submissionID, ExpectedRevision: 1, Decision: OrganizationReviewApprove,
+		IdempotencyKey: "organization-approve", RequestID: "organization-approve-request",
+	}
+	fixture.repository.reviewOrganizationSubmission = func(
+		_ context.Context,
+		command ReviewOrganizationAgentCommand,
+	) (OrganizationAgentSubmission, error) {
+		if command.Decision != OrganizationReviewApprove || command.BuildVersion == nil {
+			t.Fatalf("approval command = %+v", command)
+		}
+		input := lockedOrganizationInitialPackage(t)
+		input.DefinitionID = definitionID
+		canonical, err := CanonicalizeOrganizationSubmission(input)
+		if err != nil {
+			t.Fatalf("CanonicalizeOrganizationSubmission() error = %v", err)
+		}
+		material, err := command.BuildVersion(canonical, 1)
+		if err != nil {
+			t.Fatalf("BuildVersion() error = %v", err)
+		}
+		if material.VersionNumber != 1 || material.ContentDigest != canonical.ContentDigest {
+			t.Fatalf("signed material = %+v", material)
+		}
+		if err := fixture.verifier.VerifyVersion(VersionAttestation{
+			Issuer: fixture.issuer, KeyID: material.SigningKeyID,
+			DefinitionID: definitionID, VersionID: material.ID, VersionNumber: material.VersionNumber,
+			ManifestDigest: canonical.ManifestDigest, BundleDigest: canonical.BundleDigest,
+			Signature: material.Signature,
+		}); err != nil {
+			t.Fatalf("VerifyVersion() error = %v", err)
+		}
+		return OrganizationAgentSubmission{
+			ID: submissionID, OrganizationID: organizationID, DefinitionID: definitionID,
+			Status: OrganizationSubmissionApproved, Revision: 2,
+		}, nil
+	}
+
+	result, err := fixture.service.ReviewOrganizationAgentSubmission(
+		context.Background(), fixture.principal, organizationID, request,
+	)
+	if err != nil || result.Status != OrganizationSubmissionApproved {
+		t.Fatalf("ReviewOrganizationAgentSubmission(approve) = %+v error=%v", result, err)
+	}
+}
+
 func TestSubmitOrganizationAgentCanonicalizesClaimsAndReplays(t *testing.T) {
 	fixture := newAgentControlServiceFixture(t)
 	organizationID := uuid.New()

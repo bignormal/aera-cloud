@@ -34,10 +34,13 @@ const organizationAgentAccessQuery = `
 	FROM organizations organization
 	JOIN organization_memberships membership
 	  ON membership.organization_id = organization.id AND membership.user_id = $2
+	JOIN users account
+	  ON account.id = membership.user_id AND account.status = 'active'
 	JOIN organization_policy_snapshots policy
 	  ON policy.organization_id = organization.id
 	 AND policy.id = organization.current_policy_snapshot_id
 	WHERE organization.id = $1
+	FOR SHARE OF organization, membership, account, policy
 `
 
 func requireOrganizationAgentAccess(
