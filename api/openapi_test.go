@@ -121,8 +121,8 @@ func TestOpenAPIContainsStrictUserAgentControlPlaneContract(t *testing.T) {
 		t.Fatalf("read openapi.yaml: %v", err)
 	}
 	document := string(contents)
-	if !strings.Contains(document, "version: 0.6.0") {
-		t.Fatal("OpenAPI version was not advanced for Organization Foundation V1")
+	if !strings.Contains(document, "version: 0.7.0") {
+		t.Fatal("OpenAPI version was not advanced for Organization Agent V1")
 	}
 	for _, path := range []string{
 		"/api/v1/agent-definitions:",
@@ -191,6 +191,60 @@ func TestOpenAPIContainsStrictUserAgentControlPlaneContract(t *testing.T) {
 		if strings.Contains(installationSchema, forbidden) {
 			t.Fatalf("installation schema exposed ownership input %q", forbidden)
 		}
+	}
+}
+
+func TestOpenAPIContainsOrganizationAgentApprovalContract(t *testing.T) {
+	contents, err := os.ReadFile("openapi.yaml")
+	if err != nil {
+		t.Fatalf("read openapi.yaml: %v", err)
+	}
+	document := string(contents)
+	for _, path := range []string{
+		"/api/v1/organizations/{organization_id}/agent-definitions:",
+		"/api/v1/organizations/{organization_id}/agent-definitions/{definition_id}:",
+		"/api/v1/organizations/{organization_id}/agent-definitions/{definition_id}/versions:",
+		"/api/v1/organizations/{organization_id}/agent-publication-submissions:",
+		"/api/v1/organizations/{organization_id}/agent-publication-submissions/{submission_id}:",
+		"/api/v1/organizations/{organization_id}/agent-publication-submissions/{submission_id}/withdraw:",
+		"/api/v1/organizations/{organization_id}/agent-publication-submissions/{submission_id}/reviews:",
+	} {
+		if !strings.Contains(document, path) {
+			t.Fatalf("OpenAPI is missing %s", path)
+		}
+	}
+	for _, schema := range []string{
+		"OrganizationAgentSubmission:", "OrganizationAgentSubmissionDetail:", "OrganizationAgentReview:",
+		"SubmitInitialOrganizationAgentRequest:", "SubmitNextOrganizationAgentRequest:",
+		"ReviewOrganizationAgentRequest:", "WithdrawOrganizationAgentRequest:",
+	} {
+		if !strings.Contains(document, schema) {
+			t.Fatalf("OpenAPI is missing schema %q", schema)
+		}
+	}
+	installationStart := strings.Index(document, "    CreateAgentInstallationRequest:\n")
+	installationEnd := strings.Index(document, "    ActivateAgentInstallationRequest:\n")
+	if installationStart < 0 || installationEnd <= installationStart {
+		t.Fatal("OpenAPI is missing CreateAgentInstallationRequest")
+	}
+	installation := document[installationStart:installationEnd]
+	for _, fragment := range []string{"organization_id:", "oneOf:", "not:"} {
+		if !strings.Contains(installation, fragment) {
+			t.Fatalf("installation source union is missing %q:\n%s", fragment, installation)
+		}
+	}
+	for _, code := range []string{
+		"organization_agent_not_found", "organization_agent_forbidden", "organization_archived",
+		"organization_submission_self_review", "organization_submission_conflict",
+		"organization_submission_superseded", "organization_publication_policy_blocked",
+		"organization_publication_dlp_blocked",
+	} {
+		if !strings.Contains(document, "- "+code) {
+			t.Fatalf("OpenAPI is missing Organization Agent error code %q", code)
+		}
+	}
+	if strings.Contains(document, "/api/v1/organizations/{organization_id}/agent-definitions:\n    post:") {
+		t.Fatal("OpenAPI exposed direct Organization Agent publication")
 	}
 }
 
@@ -334,8 +388,8 @@ func TestOpenAPIContainsStrictOrganizationFoundationContract(t *testing.T) {
 		t.Fatalf("read openapi.yaml: %v", err)
 	}
 	document := string(contents)
-	if !strings.HasPrefix(document, "openapi: 3.0.3\n") || !strings.Contains(document, "version: 0.6.0") {
-		t.Fatal("OpenAPI was not advanced to the Organization Foundation 0.6.0 contract on OpenAPI 3.0.3")
+	if !strings.HasPrefix(document, "openapi: 3.0.3\n") || !strings.Contains(document, "version: 0.7.0") {
+		t.Fatal("OpenAPI did not preserve Organization Foundation in the Organization Agent 0.7.0 contract")
 	}
 	for _, path := range []string{
 		"/api/v1/organizations:",

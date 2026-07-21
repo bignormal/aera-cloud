@@ -1,8 +1,8 @@
 openapi: 3.0.3
 info:
   title: AgentEra App Cloud API
-  version: 0.6.0
-  description: Account, device authorization, USER and Workspace Agent, ExperienceCandidate, Workspace, and Organization control-plane contract for AgentEra Studio.
+  version: 0.7.0
+  description: Account, device authorization, USER, Workspace, and governed Organization Agent, ExperienceCandidate, Workspace, and Organization control-plane contract for AgentEra Studio.
 servers:
   - url: https://accounts.agentera.example
 paths:
@@ -1392,6 +1392,243 @@ paths:
           $ref: '#/components/responses/OrganizationNotFound'
         '503':
           $ref: '#/components/responses/OrganizationServiceUnavailable'
+  /api/v1/organizations/{organization_id}/agent-definitions:
+    get:
+      operationId: listOrganizationAgentDefinitions
+      description: Lists approved Organization-owned Agent definitions for a current Owner, Admin, Auditor, or Member. Archived Organizations are read-only.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+      responses:
+        '200':
+          description: Approved Organization Agent catalog.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentDefinitionList'
+        '400':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '401':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '404':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '503':
+          $ref: '#/components/responses/OrganizationAgentError'
+  /api/v1/organizations/{organization_id}/agent-definitions/{definition_id}:
+    get:
+      operationId: getOrganizationAgentDefinition
+      description: Returns one approved Definition from the exact visible Organization.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+        - $ref: '#/components/parameters/AgentDefinitionID'
+      responses:
+        '200':
+          description: Approved Organization Agent Definition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentDefinition'
+        '400':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '401':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '404':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '503':
+          $ref: '#/components/responses/OrganizationAgentError'
+  /api/v1/organizations/{organization_id}/agent-definitions/{definition_id}/versions:
+    get:
+      operationId: listOrganizationAgentVersions
+      description: Lists immutable approved Versions from the exact visible Organization. There is no direct publication operation on this path.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+        - $ref: '#/components/parameters/AgentDefinitionID'
+      responses:
+        '200':
+          description: Immutable approved Organization Agent Versions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentVersionList'
+        '400':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '401':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '404':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '503':
+          $ref: '#/components/responses/OrganizationAgentError'
+  /api/v1/organizations/{organization_id}/agent-publication-submissions:
+    get:
+      operationId: listOrganizationAgentPublicationSubmissions
+      description: Lists immutable submission summaries for current Owner, Admin, or Auditor roles without exposing matched DLP evidence.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+      responses:
+        '200':
+          description: Organization Agent publication submission history.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationAgentSubmissionList'
+        '400':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '401':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '403':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '404':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '503':
+          $ref: '#/components/responses/OrganizationAgentError'
+    post:
+      operationId: submitOrganizationAgentPublication
+      description: Submits one immutable initial or next-version approval package. The maximum Agent publication request body is 2621440 bytes. The path is the only Organization identity.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitOrganizationAgentRequest'
+      responses:
+        '201':
+          description: Immutable pending submission created or exactly replayed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationAgentSubmissionDetail'
+        '400':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '401':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '403':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '404':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '409':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '413':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '422':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '503':
+          $ref: '#/components/responses/OrganizationAgentError'
+  /api/v1/organizations/{organization_id}/agent-publication-submissions/{submission_id}:
+    get:
+      operationId: getOrganizationAgentPublicationSubmission
+      description: Returns one immutable submission and terminal review when present to a current Owner, Admin, or Auditor.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+        - $ref: '#/components/parameters/OrganizationAgentSubmissionID'
+      responses:
+        '200':
+          description: Immutable Organization Agent approval package.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationAgentSubmissionDetail'
+        '400':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '401':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '403':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '404':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '503':
+          $ref: '#/components/responses/OrganizationAgentError'
+  /api/v1/organizations/{organization_id}/agent-publication-submissions/{submission_id}/withdraw:
+    post:
+      operationId: withdrawOrganizationAgentPublicationSubmission
+      description: Withdraws the original current Owner/Admin author's pending immutable submission at an exact revision.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+        - $ref: '#/components/parameters/OrganizationAgentSubmissionID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WithdrawOrganizationAgentRequest'
+      responses:
+        '200':
+          description: Submission transitioned to withdrawn or exactly replayed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationAgentSubmissionDetail'
+        '400':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '401':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '403':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '404':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '409':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '503':
+          $ref: '#/components/responses/OrganizationAgentError'
+  /api/v1/organizations/{organization_id}/agent-publication-submissions/{submission_id}/reviews:
+    post:
+      operationId: reviewOrganizationAgentPublicationSubmission
+      description: Approves or rejects another current Owner/Admin author's immutable pending package. Approval atomically publishes one signed Version; self-review is forbidden.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+        - $ref: '#/components/parameters/OrganizationAgentSubmissionID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewOrganizationAgentRequest'
+      responses:
+        '200':
+          description: Submission terminal review result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationAgentSubmissionDetail'
+        '400':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '401':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '403':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '404':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '409':
+          description: Submission conflict or committed superseded result.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/OrganizationAgentErrorEnvelope'
+                  - $ref: '#/components/schemas/OrganizationAgentSupersededEnvelope'
+        '422':
+          $ref: '#/components/responses/OrganizationAgentError'
+        '503':
+          $ref: '#/components/responses/OrganizationAgentError'
   /api/v1/workspaces:
     get:
       operationId: listWorkspaces
@@ -2302,7 +2539,7 @@ paths:
   /api/v1/agent-installations:
     post:
       operationId: createUserAgentInstallation
-      description: The maximum Agent metadata request body is 65536 bytes. The authenticated device determines USER installation ownership; optional workspace_id binds a WORKSPACE-owned source asset.
+      description: The maximum Agent metadata request body is 65536 bytes. The authenticated device determines USER installation ownership; optional workspace_id or organization_id binds exactly one shared source asset without changing runtime ownership.
       security:
         - desktopAccessToken: []
       parameters:
@@ -2324,12 +2561,16 @@ paths:
           $ref: '#/components/responses/InvalidRequest'
         '401':
           $ref: '#/components/responses/SessionRevoked'
+        '403':
+          $ref: '#/components/responses/OrganizationAgentError'
         '404':
           $ref: '#/components/responses/AgentNotFound'
         '409':
           $ref: '#/components/responses/AgentConflict'
         '413':
           $ref: '#/components/responses/InvalidRequest'
+        '422':
+          $ref: '#/components/responses/OrganizationAgentError'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
   /api/v1/agent-installations/{installation_id}/activate:
@@ -2569,6 +2810,15 @@ components:
       in: path
       required: true
       description: Canonical lowercase nonzero UUID for an immutable Organization policy snapshot.
+      schema:
+        type: string
+        format: uuid
+        pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    OrganizationAgentSubmissionID:
+      name: submission_id
+      in: path
+      required: true
+      description: Canonical lowercase nonzero UUID for an immutable Organization Agent publication submission.
       schema:
         type: string
         format: uuid
@@ -3458,6 +3708,294 @@ components:
               maxItems: 128
               items:
                 $ref: '#/components/schemas/ExperienceCandidateFinding'
+    OrganizationAgentSubmissionStatus:
+      type: string
+      enum: [pending, approved, rejected, withdrawn, superseded]
+    OrganizationAgentReview:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - reviewer_user_id
+        - decision
+        - reason_code
+        - safe_note
+        - organization_policy_snapshot_id
+        - organization_policy_version
+        - reviewed_content_digest
+        - reviewed_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        reviewer_user_id:
+          type: string
+          format: uuid
+        decision:
+          type: string
+          enum: [approve, reject]
+        reason_code:
+          type: string
+          nullable: true
+          minLength: 1
+          maxLength: 64
+          pattern: '^[a-z][a-z0-9_]{0,63}$'
+        safe_note:
+          type: string
+          nullable: true
+          minLength: 1
+          maxLength: 500
+        organization_policy_snapshot_id:
+          type: string
+          format: uuid
+        organization_policy_version:
+          type: integer
+          format: int64
+          minimum: 1
+        reviewed_content_digest:
+          $ref: '#/components/schemas/SHA256Digest'
+        reviewed_at:
+          type: string
+          format: date-time
+    OrganizationAgentSubmission:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - organization_id
+        - kind
+        - definition_id
+        - base_version_id
+        - submitted_by_user_id
+        - content_digest
+        - status
+        - revision
+        - submitted_at
+        - terminal_at
+        - updated_at
+        - review
+      properties:
+        id:
+          type: string
+          format: uuid
+        organization_id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          enum: [initial, next]
+        definition_id:
+          type: string
+          format: uuid
+        base_version_id:
+          type: string
+          format: uuid
+          nullable: true
+        submitted_by_user_id:
+          type: string
+          format: uuid
+        content_digest:
+          $ref: '#/components/schemas/SHA256Digest'
+        status:
+          $ref: '#/components/schemas/OrganizationAgentSubmissionStatus'
+        revision:
+          type: integer
+          format: int64
+          minimum: 1
+        submitted_at:
+          type: string
+          format: date-time
+        terminal_at:
+          type: string
+          format: date-time
+          nullable: true
+        updated_at:
+          type: string
+          format: date-time
+        review:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/OrganizationAgentReview'
+    OrganizationAgentSubmissionDetail:
+      allOf:
+        - $ref: '#/components/schemas/OrganizationAgentSubmission'
+        - type: object
+          required: [manifest, bundle, manifest_digest, bundle_digest]
+          properties:
+            display_name:
+              type: string
+              minLength: 1
+              maxLength: 100
+            icon_media_type:
+              type: string
+              enum: [image/png, image/webp]
+            icon_data:
+              type: string
+              description: Static icon bytes encoded as canonical unpadded base64url.
+              maxLength: 699051
+              pattern: '^[A-Za-z0-9_-]+$'
+            manifest:
+              $ref: '#/components/schemas/AgentManifestV1'
+            bundle:
+              $ref: '#/components/schemas/AgentVersionBundleV1'
+            manifest_digest:
+              $ref: '#/components/schemas/SHA256Digest'
+            bundle_digest:
+              $ref: '#/components/schemas/SHA256Digest'
+    OrganizationAgentSubmissionList:
+      type: object
+      additionalProperties: false
+      required: [submissions]
+      properties:
+        submissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrganizationAgentSubmission'
+    SubmitOrganizationAgentRequest:
+      oneOf:
+        - $ref: '#/components/schemas/SubmitInitialOrganizationAgentRequest'
+        - $ref: '#/components/schemas/SubmitNextOrganizationAgentRequest'
+      discriminator:
+        propertyName: kind
+        mapping:
+          initial: '#/components/schemas/SubmitInitialOrganizationAgentRequest'
+          next: '#/components/schemas/SubmitNextOrganizationAgentRequest'
+    SubmitInitialOrganizationAgentRequest:
+      type: object
+      additionalProperties: false
+      required: [kind, display_name, manifest, bundle]
+      properties:
+        kind:
+          type: string
+          enum: [initial]
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        icon_media_type:
+          type: string
+          enum: [image/png, image/webp]
+        icon_data:
+          type: string
+          description: Static icon bytes encoded as canonical unpadded base64url.
+          maxLength: 699051
+          pattern: '^[A-Za-z0-9_-]+$'
+        manifest:
+          $ref: '#/components/schemas/AgentManifestV1'
+        bundle:
+          $ref: '#/components/schemas/AgentVersionBundleV1'
+    SubmitNextOrganizationAgentRequest:
+      type: object
+      additionalProperties: false
+      required: [kind, definition_id, base_version_id, manifest, bundle]
+      properties:
+        kind:
+          type: string
+          enum: [next]
+        definition_id:
+          type: string
+          format: uuid
+          pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        base_version_id:
+          type: string
+          format: uuid
+          pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        manifest:
+          $ref: '#/components/schemas/AgentManifestV1'
+        bundle:
+          $ref: '#/components/schemas/AgentVersionBundleV1'
+    WithdrawOrganizationAgentRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_revision]
+      properties:
+        expected_revision:
+          type: integer
+          format: int64
+          minimum: 1
+    ReviewOrganizationAgentRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_revision, decision]
+      properties:
+        expected_revision:
+          type: integer
+          format: int64
+          minimum: 1
+        decision:
+          type: string
+          enum: [approve, reject]
+        reason_code:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[a-z][a-z0-9_]{0,63}$'
+        safe_note:
+          type: string
+          minLength: 1
+          maxLength: 500
+    OrganizationAgentErrorCode:
+      type: string
+      enum:
+        - invalid_request
+        - session_revoked
+        - organization_agent_not_found
+        - organization_agent_forbidden
+        - organization_archived
+        - organization_submission_self_review
+        - organization_submission_conflict
+        - organization_submission_superseded
+        - organization_publication_policy_blocked
+        - organization_publication_dlp_blocked
+        - idempotency_conflict
+        - invalid_agent_content
+        - service_unavailable
+    OrganizationAgentErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, request_id]
+          properties:
+            code:
+              $ref: '#/components/schemas/OrganizationAgentErrorCode'
+            message:
+              type: string
+              enum: [localized by the client]
+            request_id:
+              type: string
+              minLength: 1
+              maxLength: 128
+            findings:
+              type: array
+              maxItems: 128
+              items:
+                $ref: '#/components/schemas/ExperienceCandidateFinding'
+    OrganizationAgentSupersededEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error, submission]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, request_id]
+          properties:
+            code:
+              type: string
+              enum: [organization_submission_superseded]
+            message:
+              type: string
+              enum: [localized by the client]
+            request_id:
+              type: string
+              minLength: 1
+              maxLength: 128
+        submission:
+          $ref: '#/components/schemas/OrganizationAgentSubmission'
     AgentDefinitionList:
       type: object
       additionalProperties: false
@@ -3786,6 +4324,17 @@ components:
       type: object
       additionalProperties: false
       required: [definition_id, version_id]
+      oneOf:
+        - required: [workspace_id]
+          not:
+            required: [organization_id]
+        - required: [organization_id]
+          not:
+            required: [workspace_id]
+        - not:
+            anyOf:
+              - required: [workspace_id]
+              - required: [organization_id]
       properties:
         definition_id:
           type: string
@@ -3796,7 +4345,11 @@ components:
         workspace_id:
           type: string
           format: uuid
-          description: Exact source Workspace for a WORKSPACE-owned definition and version; omitted for USER-owned assets.
+          description: Exact source Workspace for a WORKSPACE-owned definition and version; mutually exclusive with organization_id.
+        organization_id:
+          type: string
+          format: uuid
+          description: Exact active source Organization for an approved ORGANIZATION-owned definition and version; mutually exclusive with workspace_id.
     ActivateAgentInstallationRequest:
       type: object
       additionalProperties: false
@@ -4889,6 +5442,14 @@ components:
         - member_limit_reached
         - invitation_limit_reached
         - organization_owner_transfer_required
+        - organization_agent_not_found
+        - organization_agent_forbidden
+        - organization_archived
+        - organization_submission_self_review
+        - organization_submission_conflict
+        - organization_submission_superseded
+        - organization_publication_policy_blocked
+        - organization_publication_dlp_blocked
         - rate_limited
         - service_unavailable
     ErrorEnvelope:
@@ -4958,6 +5519,12 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorEnvelope'
+    OrganizationAgentError:
+      description: Organization Agent validation, authorization, lifecycle, approval, DLP, policy, idempotency, or service result without private evidence.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OrganizationAgentErrorEnvelope'
     ExperienceCandidateError:
       description: Candidate validation, DLP, visibility, Workspace lifecycle, terminal review, idempotency, or service failure without private evidence text.
       content:

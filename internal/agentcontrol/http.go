@@ -36,6 +36,14 @@ type HTTPService interface {
 	GetWorkspaceDefinition(context.Context, Principal, uuid.UUID, uuid.UUID, string) (Definition, error)
 	ListWorkspaceVersions(context.Context, Principal, uuid.UUID, uuid.UUID, string) ([]Version, error)
 	PublishWorkspaceNext(context.Context, Principal, uuid.UUID, PublishNextRequest) (Publication, error)
+	ListOrganizationDefinitions(context.Context, Principal, uuid.UUID) ([]Definition, error)
+	GetOrganizationDefinition(context.Context, Principal, uuid.UUID, uuid.UUID, string) (Definition, error)
+	ListOrganizationVersions(context.Context, Principal, uuid.UUID, uuid.UUID, string) ([]Version, error)
+	SubmitOrganizationAgent(context.Context, Principal, uuid.UUID, SubmitOrganizationAgentRequest) (OrganizationAgentSubmission, error)
+	ListOrganizationAgentSubmissions(context.Context, Principal, uuid.UUID) ([]OrganizationAgentSubmission, error)
+	GetOrganizationAgentSubmission(context.Context, Principal, uuid.UUID, uuid.UUID) (OrganizationAgentSubmission, error)
+	WithdrawOrganizationAgentSubmission(context.Context, Principal, uuid.UUID, WithdrawOrganizationAgentRequest) (OrganizationAgentSubmission, error)
+	ReviewOrganizationAgentSubmission(context.Context, Principal, uuid.UUID, ReviewOrganizationAgentRequest) (OrganizationAgentSubmission, error)
 	GetVersion(context.Context, Principal, uuid.UUID, string) (Version, error)
 	GetPolicySnapshot(context.Context, Principal, uuid.UUID, string) (PolicySnapshot, error)
 	RevokeVersion(context.Context, Principal, RevokeVersionRequest) (VersionRevocation, error)
@@ -78,6 +86,14 @@ func NewHandler(config HTTPConfig) http.Handler {
 	router.Get("/api/v1/workspaces/{workspaceID}/agent-definitions/{definitionID}", handler.getWorkspaceDefinition)
 	router.Get("/api/v1/workspaces/{workspaceID}/agent-definitions/{definitionID}/versions", handler.listWorkspaceVersions)
 	router.Post("/api/v1/workspaces/{workspaceID}/agent-definitions/{definitionID}/versions", handler.publishWorkspaceNext)
+	router.Get("/api/v1/organizations/{organizationID}/agent-definitions", handler.listOrganizationDefinitions)
+	router.Get("/api/v1/organizations/{organizationID}/agent-definitions/{definitionID}", handler.getOrganizationDefinition)
+	router.Get("/api/v1/organizations/{organizationID}/agent-definitions/{definitionID}/versions", handler.listOrganizationVersions)
+	router.Post("/api/v1/organizations/{organizationID}/agent-publication-submissions", handler.submitOrganizationAgent)
+	router.Get("/api/v1/organizations/{organizationID}/agent-publication-submissions", handler.listOrganizationAgentSubmissions)
+	router.Get("/api/v1/organizations/{organizationID}/agent-publication-submissions/{submissionID}", handler.getOrganizationAgentSubmission)
+	router.Post("/api/v1/organizations/{organizationID}/agent-publication-submissions/{submissionID}/withdraw", handler.withdrawOrganizationAgentSubmission)
+	router.Post("/api/v1/organizations/{organizationID}/agent-publication-submissions/{submissionID}/reviews", handler.reviewOrganizationAgentSubmission)
 	router.Post("/api/v1/workspaces/{workspaceID}/agent-definitions/{definitionID}/experience-candidates", handler.submitExperienceCandidate)
 	router.Get("/api/v1/workspaces/{workspaceID}/experience-candidates/mine", handler.listOwnExperienceCandidates)
 	router.Get("/api/v1/workspaces/{workspaceID}/experience-candidates", handler.listWorkspaceExperienceCandidates)
@@ -455,15 +471,29 @@ func (h *httpHandler) createInstallation(response http.ResponseWriter, request *
 		return
 	}
 	var payload struct {
-		DefinitionID uuid.UUID  `json:"definition_id"`
-		VersionID    uuid.UUID  `json:"version_id"`
-		WorkspaceID  *uuid.UUID `json:"workspace_id,omitempty"`
+		DefinitionID   string  `json:"definition_id"`
+		VersionID      string  `json:"version_id"`
+		WorkspaceID    *string `json:"workspace_id,omitempty"`
+		OrganizationID *string `json:"organization_id,omitempty"`
 	}
 	if !decodeAgentJSON(response, request, metadataRequestBodyLimit, &payload) {
 		return
 	}
+	if payload.WorkspaceID != nil && payload.OrganizationID != nil {
+		writeAgentError(response, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	definitionID, definitionOK := canonicalUUID(payload.DefinitionID)
+	versionID, versionOK := canonicalUUID(payload.VersionID)
+	workspaceID, workspaceOK := optionalCanonicalUUID(payload.WorkspaceID)
+	organizationID, organizationOK := optionalCanonicalUUID(payload.OrganizationID)
+	if !definitionOK || !versionOK || !workspaceOK || !organizationOK {
+		writeAgentError(response, http.StatusBadRequest, "invalid_request")
+		return
+	}
 	creation, err := h.service.CreateInstallation(request.Context(), principal, CreateInstallationRequest{
-		DefinitionID: payload.DefinitionID, VersionID: payload.VersionID, SourceWorkspaceID: payload.WorkspaceID,
+		DefinitionID: definitionID, VersionID: versionID, SourceWorkspaceID: workspaceID,
+		OrganizationID: organizationID,
 		IdempotencyKey: idempotencyKey, RequestID: newAgentRequestID(),
 	})
 	if err != nil {
@@ -667,8 +697,9 @@ func requireIdempotencyKey(response http.ResponseWriter, request *http.Request) 
 }
 
 func pathUUID(response http.ResponseWriter, request *http.Request, name string) (uuid.UUID, bool) {
-	identifier, err := uuid.Parse(chi.URLParam(request, name))
-	if err != nil || identifier == uuid.Nil {
+	raw := chi.URLParam(request, name)
+	identifier, err := uuid.Parse(raw)
+	if err != nil || identifier == uuid.Nil || identifier.String() != raw {
 		writeAgentError(response, http.StatusBadRequest, "invalid_request")
 		return uuid.Nil, false
 	}
@@ -884,6 +915,20 @@ func writeAgentServiceErrorWithRequestID(response http.ResponseWriter, err error
 		writeAgentErrorWithRequestID(response, http.StatusConflict, "workspace_archived", requestID)
 	case errors.Is(err, ErrWorkspaceOwnerUnavailable):
 		writeAgentErrorWithRequestID(response, http.StatusConflict, "workspace_owner_unavailable", requestID)
+	case errors.Is(err, ErrOrganizationAgentNotFound):
+		writeAgentErrorWithRequestID(response, http.StatusNotFound, "organization_agent_not_found", requestID)
+	case errors.Is(err, ErrOrganizationAgentForbidden):
+		writeAgentErrorWithRequestID(response, http.StatusForbidden, "organization_agent_forbidden", requestID)
+	case errors.Is(err, ErrOrganizationArchived):
+		writeAgentErrorWithRequestID(response, http.StatusConflict, "organization_archived", requestID)
+	case errors.Is(err, ErrOrganizationSubmissionSelfReview):
+		writeAgentErrorWithRequestID(response, http.StatusForbidden, "organization_submission_self_review", requestID)
+	case errors.Is(err, ErrOrganizationSubmissionConflict):
+		writeAgentErrorWithRequestID(response, http.StatusConflict, "organization_submission_conflict", requestID)
+	case errors.Is(err, ErrOrganizationPublicationPolicyBlocked):
+		writeAgentErrorWithRequestID(response, http.StatusUnprocessableEntity, "organization_publication_policy_blocked", requestID)
+	case errors.Is(err, ErrOrganizationPublicationDLPBlocked):
+		writeAgentErrorWithRequestID(response, http.StatusUnprocessableEntity, "organization_publication_dlp_blocked", requestID)
 	default:
 		writeAgentErrorWithRequestID(response, http.StatusServiceUnavailable, "service_unavailable", requestID)
 	}

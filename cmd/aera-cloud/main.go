@@ -101,7 +101,8 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 	if err != nil {
 		return err
 	}
-	agentControlHandler, err := buildAgentControlHandler(cfg, postgres, redisStore.Client())
+	agentRepository := agentcontrol.NewPostgresRepository(postgres)
+	agentControlHandler, err := buildAgentControlHandler(cfg, postgres, redisStore.Client(), agentRepository)
 	if err != nil {
 		return err
 	}
@@ -109,7 +110,9 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 	if err != nil {
 		return err
 	}
-	organizationHandler, err := buildOrganizationHandler(cfg, postgres, redisStore.Client())
+	organizationHandler, err := buildOrganizationHandler(
+		cfg, postgres, redisStore.Client(), agentcontrol.NewOrganizationAssetGuard(agentRepository),
+	)
 	if err != nil {
 		return err
 	}
@@ -413,7 +416,11 @@ func buildAgentControlHandler(
 	cfg config.Config,
 	postgres *pgxpool.Pool,
 	redisClient redis.UniversalClient,
+	repository *agentcontrol.PostgresRepository,
 ) (http.Handler, error) {
+	if repository == nil {
+		return nil, errors.New("Agent control repository is unavailable")
+	}
 	accessAuthenticator, err := buildAccessAuthenticator(cfg, postgres, redisClient)
 	if err != nil {
 		return nil, err
@@ -426,7 +433,7 @@ func buildAgentControlHandler(
 		return nil, err
 	}
 	service, err := agentcontrol.NewService(agentcontrol.ServiceConfig{
-		Repository: agentcontrol.NewPostgresRepository(postgres), Signer: signer,
+		Repository: repository, Signer: signer,
 	})
 	if err != nil {
 		return nil, err
@@ -480,8 +487,9 @@ func buildOrganizationHandler(
 	cfg config.Config,
 	postgres *pgxpool.Pool,
 	redisClient redis.UniversalClient,
+	assetGuard organization.AssetGuard,
 ) (http.Handler, error) {
-	if postgres == nil || redisClient == nil {
+	if postgres == nil || redisClient == nil || assetGuard == nil {
 		return nil, errors.New("organization dependencies are unavailable")
 	}
 	accessAuthenticator, err := buildAccessAuthenticator(cfg, postgres, redisClient)
@@ -515,7 +523,7 @@ func buildOrganizationHandler(
 	if err != nil {
 		return nil, err
 	}
-	repository := organization.NewPostgresRepository(postgres, signer, organization.NewFoundationAssetGuard())
+	repository := organization.NewPostgresRepository(postgres, signer, assetGuard)
 	service, err := organization.NewService(organization.ServiceConfig{
 		Repository: repository, Limiter: limiter,
 		OwnedLimit: cfg.OrganizationOwnedLimit, MemberLimit: cfg.OrganizationMemberLimit,

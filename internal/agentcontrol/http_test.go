@@ -347,6 +347,7 @@ func newAgentControlHTTPFixture(t *testing.T) *agentControlHTTPFixture {
 type stubAgentControlHTTPService struct {
 	lastPrincipal            Principal
 	lastWorkspaceID          uuid.UUID
+	lastOrganizationID       uuid.UUID
 	lastInstallationRequest  CreateInstallationRequest
 	err                      error
 	definitions              []Definition
@@ -369,6 +370,8 @@ type stubAgentControlHTTPService struct {
 	candidateReviewCalls     int
 	candidateOwnListCalls    int
 	candidateReviewListCalls int
+	organizationSubmissions  []OrganizationAgentSubmission
+	organizationSubmission   OrganizationAgentSubmission
 }
 
 func (s *stubAgentControlHTTPService) ListDefinitions(_ context.Context, principal Principal) ([]Definition, error) {
@@ -471,6 +474,94 @@ func (s *stubAgentControlHTTPService) PublishWorkspaceNext(
 	s.lastPrincipal = principal
 	s.lastWorkspaceID = workspaceID
 	return s.publication, s.err
+}
+
+func (s *stubAgentControlHTTPService) ListOrganizationDefinitions(
+	_ context.Context,
+	principal Principal,
+	organizationID uuid.UUID,
+) ([]Definition, error) {
+	s.lastPrincipal = principal
+	s.lastOrganizationID = organizationID
+	return s.definitions, s.err
+}
+
+func (s *stubAgentControlHTTPService) GetOrganizationDefinition(
+	_ context.Context,
+	principal Principal,
+	organizationID uuid.UUID,
+	_ uuid.UUID,
+	_ string,
+) (Definition, error) {
+	s.lastPrincipal = principal
+	s.lastOrganizationID = organizationID
+	return s.definition, s.err
+}
+
+func (s *stubAgentControlHTTPService) ListOrganizationVersions(
+	_ context.Context,
+	principal Principal,
+	organizationID uuid.UUID,
+	_ uuid.UUID,
+	_ string,
+) ([]Version, error) {
+	s.lastPrincipal = principal
+	s.lastOrganizationID = organizationID
+	return s.versions, s.err
+}
+
+func (s *stubAgentControlHTTPService) SubmitOrganizationAgent(
+	_ context.Context,
+	principal Principal,
+	organizationID uuid.UUID,
+	_ SubmitOrganizationAgentRequest,
+) (OrganizationAgentSubmission, error) {
+	s.lastPrincipal = principal
+	s.lastOrganizationID = organizationID
+	return s.organizationSubmission, s.err
+}
+
+func (s *stubAgentControlHTTPService) ListOrganizationAgentSubmissions(
+	_ context.Context,
+	principal Principal,
+	organizationID uuid.UUID,
+) ([]OrganizationAgentSubmission, error) {
+	s.lastPrincipal = principal
+	s.lastOrganizationID = organizationID
+	return s.organizationSubmissions, s.err
+}
+
+func (s *stubAgentControlHTTPService) GetOrganizationAgentSubmission(
+	_ context.Context,
+	principal Principal,
+	organizationID uuid.UUID,
+	_ uuid.UUID,
+) (OrganizationAgentSubmission, error) {
+	s.lastPrincipal = principal
+	s.lastOrganizationID = organizationID
+	return s.organizationSubmission, s.err
+}
+
+func (s *stubAgentControlHTTPService) WithdrawOrganizationAgentSubmission(
+	_ context.Context,
+	principal Principal,
+	organizationID uuid.UUID,
+	_ WithdrawOrganizationAgentRequest,
+) (OrganizationAgentSubmission, error) {
+	s.lastPrincipal = principal
+	s.lastOrganizationID = organizationID
+	return s.organizationSubmission, s.err
+}
+
+func (s *stubAgentControlHTTPService) ReviewOrganizationAgentSubmission(
+	_ context.Context,
+	principal Principal,
+	organizationID uuid.UUID,
+	_ ReviewOrganizationAgentRequest,
+) (OrganizationAgentSubmission, error) {
+	s.lastPrincipal = principal
+	s.lastOrganizationID = organizationID
+	return s.organizationSubmission, s.err
 }
 
 func (s *stubAgentControlHTTPService) ActivateInstallation(_ context.Context, principal Principal, _ ActivateInstallationRequest) (Installation, error) {

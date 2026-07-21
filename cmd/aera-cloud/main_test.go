@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bignormal/aera-cloud/internal/agentcontrol"
 	"github.com/bignormal/aera-cloud/internal/config"
 	"github.com/bignormal/aera-cloud/internal/oauth"
 	"github.com/bignormal/aera-cloud/internal/store"
@@ -273,7 +274,9 @@ func TestBuildAgentControlHandlerWiresAccessTokenOnlyRoute(t *testing.T) {
 	}
 	redisClient := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
 	defer func() { _ = redisClient.Close() }()
-	handler, err := buildAgentControlHandler(cfg, nil, redisClient)
+	handler, err := buildAgentControlHandler(
+		cfg, nil, redisClient, agentcontrol.NewPostgresRepository(nil),
+	)
 	if err != nil {
 		t.Fatalf("buildAgentControlHandler() error = %v", err)
 	}
@@ -326,7 +329,7 @@ func TestBuildWorkspaceHandlerWiresConfiguredControlPlaneDependencies(t *testing
 	}
 }
 
-func TestBuildOrganizationHandlerWiresConfiguredFoundationDependencies(t *testing.T) {
+func TestBuildOrganizationHandlerWiresConfiguredAgentAssetGuard(t *testing.T) {
 	services := testkit.IntegrationServices(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -350,7 +353,9 @@ func TestBuildOrganizationHandlerWiresConfiguredFoundationDependencies(t *testin
 		t.Fatalf("config.Load() error = %v", err)
 	}
 
-	handler, err := buildOrganizationHandler(cfg, postgres, redisStore.Client())
+	agentRepository := agentcontrol.NewPostgresRepository(postgres)
+	guard := agentcontrol.NewOrganizationAssetGuard(agentRepository)
+	handler, err := buildOrganizationHandler(cfg, postgres, redisStore.Client(), guard)
 	if err != nil {
 		t.Fatalf("buildOrganizationHandler() error = %v", err)
 	}
@@ -361,8 +366,11 @@ func TestBuildOrganizationHandlerWiresConfiguredFoundationDependencies(t *testin
 		t.Fatalf("response = %d %q", response.Code, response.Body.String())
 	}
 
-	if _, err := buildOrganizationHandler(cfg, nil, redisStore.Client()); err == nil {
+	if _, err := buildOrganizationHandler(cfg, nil, redisStore.Client(), guard); err == nil {
 		t.Fatal("buildOrganizationHandler() accepted a nil PostgreSQL dependency")
+	}
+	if _, err := buildOrganizationHandler(cfg, postgres, redisStore.Client(), nil); err == nil {
+		t.Fatal("buildOrganizationHandler() accepted a nil Organization asset guard")
 	}
 }
 
