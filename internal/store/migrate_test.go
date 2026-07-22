@@ -16,16 +16,16 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func TestEmbeddedMigrationsIncludeInternalAdminAPI(t *testing.T) {
+func TestEmbeddedMigrationsIncludeOfficialManagedAgentV1(t *testing.T) {
 	loaded, err := loadMigrations(migrations.FS)
 	if err != nil {
 		t.Fatalf("loadMigrations() error = %v", err)
 	}
-	if len(loaded) != 15 {
-		t.Fatalf("embedded migration count = %d, want 15", len(loaded))
+	if len(loaded) != 16 {
+		t.Fatalf("embedded migration count = %d, want 16", len(loaded))
 	}
 	last := loaded[len(loaded)-1]
-	if last.version != 15 || last.name != "000015_internal_admin_api.sql" {
+	if last.version != 16 || last.name != "000016_official_managed_agent_v1.sql" {
 		t.Fatalf("last embedded migration = %d/%s", last.version, last.name)
 	}
 }
@@ -83,6 +83,14 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 		"organization_agent_submissions",
 		"organization_agent_reviews",
 		"admin_operations",
+		"platforms",
+		"platform_agent_drafts",
+		"platform_agent_policy_snapshots",
+		"platform_agent_submissions",
+		"platform_agent_reviews",
+		"official_releases",
+		"official_release_revisions",
+		"official_release_audience_accounts",
 	}
 	for _, table := range tables {
 		var exists bool
@@ -107,6 +115,9 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	assertUniqueConstraint(t, ctx, postgres, "organization_policy_snapshots", "organization_policy_snapshots_organization_id_id_key", []string{"organization_id", "id"})
 	assertUniqueConstraint(t, ctx, postgres, "organization_agent_submissions", "organization_agent_submissions_org_id_key", []string{"organization_id", "id"})
 	assertUniqueConstraint(t, ctx, postgres, "organization_agent_reviews", "organization_agent_reviews_submission_key", []string{"submission_id"})
+	assertUniqueConstraint(t, ctx, postgres, "platform_agent_reviews", "platform_agent_reviews_submission_key", []string{"submission_id"})
+	assertUniqueConstraint(t, ctx, postgres, "official_releases", "official_releases_platform_definition_channel_key", []string{"platform_id", "definition_id", "channel"})
+	assertUniqueConstraint(t, ctx, postgres, "official_release_revisions", "official_release_revisions_release_revision_key", []string{"release_id", "revision_number"})
 	assertCheckConstraintContains(t, ctx, postgres, "agent_versions", "agent_versions_content_digest_length_check", "octet_length(content_digest) = 32")
 	assertCheckConstraintContains(t, ctx, postgres, "agent_versions", "agent_versions_signature_length_check", "octet_length(signature) = 64")
 	assertCheckConstraintContains(t, ctx, postgres, "policy_snapshots", "policy_snapshots_content_digest_length_check", "octet_length(content_digest) = 32")
@@ -131,12 +142,23 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	assertCheckConstraintContains(t, ctx, postgres, "agent_definitions", "agent_definitions_owner_variant_check", "workspace_id")
 	assertCheckConstraintContains(t, ctx, postgres, "agent_definitions", "agent_definitions_owner_variant_check", "ORGANIZATION")
 	assertCheckConstraintContains(t, ctx, postgres, "agent_definitions", "agent_definitions_owner_variant_check", "organization_id")
+	assertCheckConstraintContains(t, ctx, postgres, "agent_definitions", "agent_definitions_owner_variant_check", "PLATFORM")
+	assertCheckConstraintContains(t, ctx, postgres, "agent_definitions", "agent_definitions_creator_variant_check", "created_by_admin_id")
 	assertCheckConstraintContains(t, ctx, postgres, "agent_versions", "agent_versions_owner_variant_check", "WORKSPACE")
 	assertCheckConstraintContains(t, ctx, postgres, "agent_versions", "agent_versions_owner_variant_check", "ORGANIZATION")
 	assertCheckConstraintContains(t, ctx, postgres, "agent_versions", "agent_versions_owner_variant_check", "organization_submission_id")
 	assertCheckConstraintContains(t, ctx, postgres, "agent_versions", "agent_versions_owner_variant_check", "organization_policy_snapshot_id")
+	assertCheckConstraintContains(t, ctx, postgres, "agent_versions", "agent_versions_owner_variant_check", "PLATFORM")
+	assertCheckConstraintContains(t, ctx, postgres, "agent_versions", "agent_versions_owner_variant_check", "platform_submission_id")
+	assertCheckConstraintContains(t, ctx, postgres, "agent_versions", "agent_versions_owner_variant_check", "platform_policy_snapshot_id")
 	assertCheckConstraintContains(t, ctx, postgres, "agent_control_idempotency_keys", "agent_control_idempotency_owner_variant_check", "WORKSPACE")
 	assertCheckConstraintContains(t, ctx, postgres, "agent_control_idempotency_keys", "agent_control_idempotency_owner_variant_check", "ORGANIZATION")
+	assertCheckConstraintContains(t, ctx, postgres, "agent_control_idempotency_keys", "agent_control_idempotency_owner_variant_check", "PLATFORM")
+	assertCheckConstraintContains(t, ctx, postgres, "installations", "installations_official_source_check", "selected_release_revision_id")
+	assertCheckConstraintContains(t, ctx, postgres, "official_release_revisions", "official_release_revisions_rollout_check", "10000")
+	assertCheckConstraintContains(t, ctx, postgres, "official_release_revisions", "official_release_revisions_action_check", "rollback")
+	assertCheckConstraintContains(t, ctx, postgres, "admin_operations", "admin_operations_action_check", "official_release_rollback")
+	assertCheckConstraintContains(t, ctx, postgres, "admin_operations", "admin_operations_target_type_check", "official_release")
 	assertCheckConstraintContains(t, ctx, postgres, "organization_agent_submissions", "organization_agent_submissions_kind_check", "initial")
 	assertCheckConstraintContains(t, ctx, postgres, "organization_agent_submissions", "organization_agent_submissions_status_check", "superseded")
 	assertCheckConstraintContains(t, ctx, postgres, "organization_agent_submissions", "organization_agent_submissions_terminal_check", "terminal_at")
@@ -205,6 +227,10 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	assertForeignKeyConstraintContains(t, ctx, postgres, "organization_agent_submissions", "organization_agent_submissions_organization_fk", "ON DELETE RESTRICT")
 	assertForeignKeyConstraintContains(t, ctx, postgres, "organization_agent_reviews", "organization_agent_reviews_submission_fk", "FOREIGN KEY (organization_id, submission_id)")
 	assertForeignKeyConstraintContains(t, ctx, postgres, "organization_agent_reviews", "organization_agent_reviews_policy_fk", "FOREIGN KEY (organization_id, organization_policy_snapshot_id)")
+	assertForeignKeyConstraintContains(t, ctx, postgres, "agent_versions", "agent_versions_platform_submission_fk", "FOREIGN KEY (platform_id, platform_submission_id)")
+	assertForeignKeyConstraintContains(t, ctx, postgres, "agent_versions", "agent_versions_platform_policy_fk", "FOREIGN KEY (platform_id, platform_policy_snapshot_id)")
+	assertForeignKeyConstraintContains(t, ctx, postgres, "official_releases", "official_releases_current_revision_fk", "DEFERRABLE INITIALLY DEFERRED")
+	assertForeignKeyConstraintContains(t, ctx, postgres, "installations", "installations_official_selection_fk", "FOREIGN KEY (official_release_id, selected_release_revision_id, selected_version_id)")
 
 	assertIndexDefinitionContains(t, ctx, postgres, "workspace_memberships_one_owner_idx", "UNIQUE", "workspace_id", "WHERE", "owner")
 	assertIndexDefinitionContains(t, ctx, postgres, "workspaces_owner_active_idx", "owner_user_id", "WHERE", "active")
@@ -228,30 +254,51 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	assertIndexDefinitionContains(t, ctx, postgres, "agent_definitions_organization_list_idx", "organization_id", "updated_at", "ORGANIZATION")
 	assertIndexDefinitionContains(t, ctx, postgres, "agent_versions_organization_time_idx", "organization_id", "published_at", "ORGANIZATION")
 	assertIndexDefinitionContains(t, ctx, postgres, "organization_agent_submissions_queue_idx", "organization_id", "status", "submitted_at")
+	assertIndexDefinitionContains(t, ctx, postgres, "agent_control_idempotency_platform_operation_key", "UNIQUE", "platform_id", "operation", "key_hash", "PLATFORM")
+	assertIndexDefinitionContains(t, ctx, postgres, "agent_definitions_platform_list_idx", "platform_id", "updated_at", "PLATFORM")
+	assertIndexDefinitionContains(t, ctx, postgres, "official_release_revisions_release_created_idx", "release_id", "revision_number")
 
 	assertColumns(t, ctx, postgres, "agent_definitions", []string{
 		"id", "tenant_id", "owner_scope", "owner_id", "display_name", "icon_media_type", "icon_data",
 		"status", "latest_version_id", "created_by", "created_at", "updated_at", "workspace_id", "organization_id",
+		"platform_id", "created_by_admin_id",
 	})
 	assertColumns(t, ctx, postgres, "agent_versions", []string{
 		"id", "definition_id", "tenant_id", "owner_scope", "owner_id", "version_number",
 		"canonical_manifest", "bundle", "content_digest", "signing_key_id", "signature",
 		"runtime_minimum_version", "runtime_maximum_version_exclusive", "published_by", "published_at", "workspace_id",
 		"organization_id", "organization_submission_id", "organization_policy_snapshot_id",
+		"platform_id", "platform_submission_id", "platform_policy_snapshot_id", "published_by_admin_id",
 	})
-	assertColumns(t, ctx, postgres, "agent_control_idempotency_keys", []string{"workspace_id", "organization_id"})
+	assertColumns(t, ctx, postgres, "agent_control_idempotency_keys", []string{"workspace_id", "organization_id", "platform_id"})
 	for _, table := range []string{"agent_definitions", "agent_versions", "agent_control_idempotency_keys"} {
 		assertColumnNullable(t, ctx, postgres, table, "tenant_id", true)
 		assertColumnNullable(t, ctx, postgres, table, "owner_id", true)
 		assertColumnNullable(t, ctx, postgres, table, "workspace_id", true)
 		assertColumnNullable(t, ctx, postgres, table, "organization_id", true)
+		assertColumnNullable(t, ctx, postgres, table, "platform_id", true)
 	}
+	assertColumnNullable(t, ctx, postgres, "agent_definitions", "created_by", true)
+	assertColumnNullable(t, ctx, postgres, "agent_definitions", "created_by_admin_id", true)
+	assertColumnNullable(t, ctx, postgres, "agent_versions", "published_by", true)
+	assertColumnNullable(t, ctx, postgres, "agent_versions", "published_by_admin_id", true)
 	assertColumnNullable(t, ctx, postgres, "agent_versions", "organization_submission_id", true)
 	assertColumnNullable(t, ctx, postgres, "agent_versions", "organization_policy_snapshot_id", true)
 	assertColumns(t, ctx, postgres, "installations", []string{
 		"id", "tenant_id", "owner_scope", "owner_id", "device_id", "device_installation_id",
 		"definition_id", "selected_version_id", "runtime_profile_id", "policy_snapshot_id", "update_policy",
 		"status", "created_by", "created_at", "updated_at", "activated_at", "archived_at",
+		"official_release_id", "selected_release_revision_id",
+	})
+	assertColumns(t, ctx, postgres, "runtime_binding_records", []string{"official_release_revision_id"})
+	assertColumns(t, ctx, postgres, "platform_agent_reviews", []string{
+		"platform_id", "submission_id", "reviewer_admin_id", "platform_policy_snapshot_id",
+		"platform_policy_version", "reviewed_content_digest",
+	})
+	assertColumns(t, ctx, postgres, "official_release_revisions", []string{
+		"release_id", "revision_number", "agent_version_id", "state", "rollout_basis_points",
+		"minimum_desktop_version", "bucket_algorithm_version", "rollout_key_id", "action",
+		"previous_revision_id", "rollback_target_revision_id", "actor_admin_id", "actor_admin_role",
 	})
 	assertColumns(t, ctx, postgres, "workspaces", []string{
 		"id", "owner_user_id", "display_name", "status", "revision", "created_at", "updated_at", "archived_at",
@@ -347,6 +394,14 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	assertTriggerExists(t, ctx, postgres, "organization_agent_submissions", "organization_agent_submission_immutable_trigger")
 	assertTriggerExists(t, ctx, postgres, "organization_agent_reviews", "organization_agent_review_immutable_trigger")
 	assertTriggerExists(t, ctx, postgres, "organization_agent_reviews", "organization_agent_review_separation_trigger")
+	assertTriggerExists(t, ctx, postgres, "platform_agent_policy_snapshots", "platform_agent_policy_snapshot_immutable_trigger")
+	assertTriggerExists(t, ctx, postgres, "platform_agent_submissions", "platform_agent_submission_immutable_trigger")
+	assertTriggerExists(t, ctx, postgres, "platform_agent_reviews", "platform_agent_review_immutable_trigger")
+	assertTriggerExists(t, ctx, postgres, "official_release_revisions", "official_release_revision_immutable_trigger")
+	assertTriggerExists(t, ctx, postgres, "official_release_audience_accounts", "official_release_audience_immutable_trigger")
+	assertDeferredConstraintTrigger(t, ctx, postgres, "official_release_revisions", "official_release_revision_source_constraint_trigger")
+	assertDeferredConstraintTrigger(t, ctx, postgres, "installations", "installations_official_source_constraint_trigger")
+	assertDeferredConstraintTrigger(t, ctx, postgres, "runtime_binding_records", "runtime_binding_official_source_constraint_trigger")
 	assertDeferredConstraintTrigger(t, ctx, postgres, "workspaces", "workspaces_owner_membership_constraint_trigger")
 	assertDeferredConstraintTrigger(t, ctx, postgres, "workspace_memberships", "workspace_memberships_owner_constraint_trigger")
 	assertDeferredConstraintTrigger(t, ctx, postgres, "organizations", "organizations_owner_membership_constraint_trigger")
@@ -356,8 +411,8 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	if err := postgres.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if applied != 15 {
-		t.Fatalf("applied migration count = %d, want 15", applied)
+	if applied != 16 {
+		t.Fatalf("applied migration count = %d, want 16", applied)
 	}
 	var receiptConsumedColumn bool
 	if err := postgres.QueryRow(ctx, `
