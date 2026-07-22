@@ -28,6 +28,10 @@ type CommandData interface {
 	GetOperation(context.Context, uuid.UUID) (Operation, error)
 }
 
+type OfficialAuditData interface {
+	ListOfficialAuditEvents(context.Context, OfficialAuditQuery) (DataPage[OfficialAuditEvent], error)
+}
+
 type DataPage[T any] struct {
 	Items []T
 	Next  *PagePosition
@@ -52,18 +56,25 @@ type SessionQuery struct {
 	Now    time.Time
 }
 
+type OfficialAuditQuery struct {
+	Limit int
+	After *PagePosition
+}
+
 type ControlServiceConfig struct {
-	Queries   QueryData
-	Commands  CommandData
-	Protector *Protector
-	Clock     func() time.Time
+	Queries       QueryData
+	Commands      CommandData
+	OfficialAudit OfficialAuditData
+	Protector     *Protector
+	Clock         func() time.Time
 }
 
 type ControlService struct {
-	queries   QueryData
-	commands  CommandData
-	protector *Protector
-	clock     func() time.Time
+	queries       QueryData
+	commands      CommandData
+	officialAudit OfficialAuditData
+	protector     *Protector
+	clock         func() time.Time
 }
 
 func NewControlService(config ControlServiceConfig) (*ControlService, error) {
@@ -71,7 +82,8 @@ func NewControlService(config ControlServiceConfig) (*ControlService, error) {
 		return nil, errors.New("admin control service read dependencies are required")
 	}
 	return &ControlService{
-		queries: config.Queries, commands: config.Commands, protector: config.Protector, clock: config.Clock,
+		queries: config.Queries, commands: config.Commands, officialAudit: config.OfficialAudit,
+		protector: config.Protector, clock: config.Clock,
 	}, nil
 }
 
@@ -197,10 +209,28 @@ func (s *ControlService) GetOperation(ctx context.Context, operationID uuid.UUID
 	if err != nil {
 		return Operation{}, mapControlDataError(err)
 	}
-	if err := validateOperation(operation); err != nil {
+	if err := validateOperation(operation); err != nil || operation.ID != operationID {
 		return Operation{}, ErrUnavailable
 	}
 	return operation, nil
+}
+
+func (s *ControlService) ListOfficialAuditEvents(
+	ctx context.Context,
+	request PageRequest,
+) (Page[OfficialAuditEvent], error) {
+	if s == nil || s.officialAudit == nil {
+		return Page[OfficialAuditEvent]{}, ErrUnavailable
+	}
+	limit, after, err := s.decodePageRequest("official_agent_audit", request)
+	if err != nil {
+		return Page[OfficialAuditEvent]{}, err
+	}
+	data, err := s.officialAudit.ListOfficialAuditEvents(ctx, OfficialAuditQuery{Limit: limit, After: after})
+	if err != nil {
+		return Page[OfficialAuditEvent]{}, mapControlDataError(err)
+	}
+	return toControlPage(s.protector, "official_agent_audit", data)
 }
 
 func (s *ControlService) decodePageRequest(resource string, request PageRequest) (int, *PagePosition, error) {

@@ -277,6 +277,11 @@ func TestBuildInternalAdminServesAuthenticatedTLSHealth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildInternalAdmin() error = %v", err)
 	}
+	officialWithoutSharedService := cfg
+	officialWithoutSharedService.OfficialAgent.Enabled = true
+	if _, _, err := buildInternalAdmin(officialWithoutSharedService, postgres, redisStore); err == nil {
+		t.Fatal("buildInternalAdmin() accepted enabled Official Agents without the shared PlatformService")
+	}
 	server := httptest.NewUnstartedServer(handler)
 	server.TLS = serverTLS.Clone()
 	server.StartTLS()

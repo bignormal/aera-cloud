@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/bignormal/aera-cloud/internal/secure"
@@ -240,6 +241,70 @@ func (r *ControlRepository) ListUserSessions(ctx context.Context, query SessionQ
 		return DataPage[Session]{}, ErrUnavailable
 	}
 	return retainSessionPage(sessions, query.Limit), nil
+}
+
+func (r *ControlRepository) ListOfficialAuditEvents(
+	ctx context.Context,
+	query OfficialAuditQuery,
+) (DataPage[OfficialAuditEvent], error) {
+	if r == nil || !validRepositoryPage(query.Limit, query.After) {
+		return DataPage[OfficialAuditEvent]{}, ErrInvalidCommand
+	}
+	afterTime, afterID := repositoryPageArguments(query.After)
+	rows, err := r.postgres.Query(ctx, `
+		SELECT id, event_type, object_type, object_id, outcome,
+		       COALESCE(reason_code, metadata->>'reason_code', ''), request_id,
+		       (metadata->>'actor_admin_id')::uuid, metadata->>'actor_admin_role', created_at
+		FROM audit_events
+		WHERE event_type LIKE 'official\_%' ESCAPE '\'
+		  AND ($1::timestamptz IS NULL OR (created_at, id) < ($1, $2::uuid))
+		ORDER BY created_at DESC, id DESC
+		LIMIT $3
+	`, afterTime, afterID, query.Limit+1)
+	if err != nil {
+		return DataPage[OfficialAuditEvent]{}, ErrUnavailable
+	}
+	defer rows.Close()
+	items := make([]OfficialAuditEvent, 0, query.Limit+1)
+	for rows.Next() {
+		var item OfficialAuditEvent
+		if err := rows.Scan(
+			&item.ID, &item.EventType, &item.ObjectType, &item.ObjectID, &item.Outcome,
+			&item.ReasonCode, &item.RequestID, &item.ActorAdminID, &item.ActorAdminRole, &item.CreatedAt,
+		); err != nil || !validOfficialAuditEvent(item) {
+			return DataPage[OfficialAuditEvent]{}, ErrUnavailable
+		}
+		item.CreatedAt = item.CreatedAt.UTC()
+		items = append(items, item)
+	}
+	if rows.Err() != nil {
+		return DataPage[OfficialAuditEvent]{}, ErrUnavailable
+	}
+	page := DataPage[OfficialAuditEvent]{Items: items}
+	if len(page.Items) > query.Limit {
+		page.Items = page.Items[:query.Limit]
+		last := page.Items[len(page.Items)-1]
+		page.Next = &PagePosition{Time: last.CreatedAt, ID: last.ID}
+	}
+	return page, nil
+}
+
+func validOfficialAuditEvent(value OfficialAuditEvent) bool {
+	if value.ID == uuid.Nil || value.ObjectID == uuid.Nil || value.ActorAdminID == uuid.Nil ||
+		value.CreatedAt.IsZero() || !strings.HasPrefix(value.EventType, "official_") ||
+		!validControlText(value.EventType, 3, 100, false) ||
+		!validControlText(value.ObjectType, 3, 64, false) ||
+		!validControlText(value.RequestID, 1, 128, false) ||
+		(value.Outcome != "success" && value.Outcome != "denied") ||
+		(value.ReasonCode != "" && !controlReasonPattern.MatchString(value.ReasonCode)) {
+		return false
+	}
+	switch value.ActorAdminRole {
+	case "super_admin", "developer", "operator", "support", "finance", "auditor":
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *ControlRepository) attachMaskedIdentities(ctx context.Context, users []User) error {

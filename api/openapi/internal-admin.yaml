@@ -1,11 +1,15 @@
 openapi: 3.1.0
 info:
   title: Aera Cloud Internal Admin API
-  version: 1.0.0
+  version: 1.1.0
   description: |
     Shared provider/consumer contract for the Aera Cloud Internal Admin API.
     Exact identity lookup accepts a full email or phone only in the request body;
     every identity field in every response remains masked.
+    Official Agent routes additionally require signed admin_id/admin_role claims.
+    Mutations bind operation_id to Idempotency-Key; rollback also binds a distinct
+    requester_admin_id and approval_id. GET operations/{operationID} is the only
+    ambiguous-result reconciliation endpoint.
 servers:
   - url: https://aera-cloud-admin.invalid
 security:
@@ -123,6 +127,283 @@ paths:
       operationId: getCloudAdminOperation
       parameters: [{ $ref: '#/components/parameters/OperationID' }]
       responses: { '200': { $ref: '#/components/responses/Operation' } }
+  /internal/admin/v1/official-agent-definitions:
+    get:
+      operationId: listOfficialAgentDefinitions
+      parameters: [{ $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses:
+        '200': { $ref: '#/components/responses/OfficialDefinitionPage' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    post:
+      operationId: reserveOfficialAgentDefinition
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { $ref: '#/components/requestBodies/OfficialDefinitionMutation' }
+      responses:
+        '200': { $ref: '#/components/responses/Operation' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+        '422': { $ref: '#/components/responses/PublicationDLPBlocked' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/official-agent-definitions/{definitionID}:
+    get:
+      operationId: getOfficialAgentDefinition
+      parameters: [{ $ref: '#/components/parameters/DefinitionID' }]
+      responses:
+        '200': { $ref: '#/components/responses/OfficialDefinition' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '404': { $ref: '#/components/responses/OfficialAgentNotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/official-agent-drafts:
+    get:
+      operationId: listOfficialAgentDrafts
+      parameters: [{ $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses:
+        '200': { $ref: '#/components/responses/OfficialDraftPage' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    post:
+      operationId: createOfficialAgentDraft
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { $ref: '#/components/requestBodies/OfficialDraftCreateMutation' }
+      responses:
+        '200': { $ref: '#/components/responses/Operation' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '404': { $ref: '#/components/responses/OfficialAgentNotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+        '422': { $ref: '#/components/responses/PublicationDLPBlocked' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/official-agent-drafts/{draftID}:
+    get:
+      operationId: getOfficialAgentDraft
+      parameters: [{ $ref: '#/components/parameters/DraftID' }]
+      responses:
+        '200': { $ref: '#/components/responses/OfficialDraft' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '404': { $ref: '#/components/responses/OfficialAgentNotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    patch:
+      operationId: updateOfficialAgentDraft
+      parameters: [{ $ref: '#/components/parameters/DraftID' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { $ref: '#/components/requestBodies/OfficialDraftUpdateMutation' }
+      responses:
+        '200': { $ref: '#/components/responses/Operation' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '404': { $ref: '#/components/responses/OfficialAgentNotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+        '422': { $ref: '#/components/responses/PublicationDLPBlocked' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/official-agent-drafts/{draftID}/validate:
+    post:
+      operationId: validateOfficialAgentDraft
+      parameters: [{ $ref: '#/components/parameters/DraftID' }]
+      responses:
+        '200': { $ref: '#/components/responses/OfficialDraftValidation' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '404': { $ref: '#/components/responses/OfficialAgentNotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/official-agent-drafts/{draftID}/submissions:
+    post:
+      operationId: submitOfficialAgentDraft
+      parameters: [{ $ref: '#/components/parameters/DraftID' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { $ref: '#/components/requestBodies/OfficialDeveloperEmptyMutation' }
+      responses:
+        '200': { $ref: '#/components/responses/Operation' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '404': { $ref: '#/components/responses/OfficialAgentNotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+        '422': { $ref: '#/components/responses/PublicationDLPBlocked' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/official-agent-submissions:
+    get:
+      operationId: listOfficialAgentSubmissions
+      parameters:
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+        - name: status
+          in: query
+          schema: { enum: [pending, approved, rejected, withdrawn, superseded] }
+      responses:
+        '200': { $ref: '#/components/responses/OfficialSubmissionPage' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/official-agent-submissions/{submissionID}:
+    get:
+      operationId: getOfficialAgentSubmission
+      parameters: [{ $ref: '#/components/parameters/SubmissionID' }]
+      responses:
+        '200': { $ref: '#/components/responses/OfficialSubmission' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '404': { $ref: '#/components/responses/OfficialAgentNotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/official-agent-submissions/{submissionID}/withdraw:
+    post:
+      operationId: withdrawOfficialAgentSubmission
+      parameters: [{ $ref: '#/components/parameters/SubmissionID' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { $ref: '#/components/requestBodies/OfficialDeveloperEmptyMutation' }
+      responses:
+        '200': { $ref: '#/components/responses/Operation' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '404': { $ref: '#/components/responses/OfficialAgentNotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/official-agent-submissions/{submissionID}/reviews:
+    post:
+      operationId: reviewOfficialAgentSubmission
+      parameters: [{ $ref: '#/components/parameters/SubmissionID' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { $ref: '#/components/requestBodies/OfficialReviewMutation' }
+      responses:
+        '200': { $ref: '#/components/responses/Operation' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '404': { $ref: '#/components/responses/OfficialAgentNotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+        '422': { $ref: '#/components/responses/PublicationDLPBlocked' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/official-agent-versions:
+    get:
+      operationId: listOfficialAgentVersions
+      parameters: [{ $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses:
+        '200': { $ref: '#/components/responses/OfficialVersionPage' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/official-agent-versions/{versionID}:
+    get:
+      operationId: getOfficialAgentVersion
+      parameters: [{ $ref: '#/components/parameters/VersionID' }]
+      responses:
+        '200': { $ref: '#/components/responses/OfficialVersion' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '404': { $ref: '#/components/responses/OfficialAgentNotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/official-agent-releases:
+    get:
+      operationId: listOfficialAgentReleases
+      parameters: [{ $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses:
+        '200': { $ref: '#/components/responses/OfficialReleasePage' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/official-agent-releases/{releaseID}:
+    get:
+      operationId: getOfficialAgentRelease
+      parameters: [{ $ref: '#/components/parameters/ReleaseID' }]
+      responses:
+        '200': { $ref: '#/components/responses/OfficialRelease' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '404': { $ref: '#/components/responses/OfficialAgentNotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/official-agent-releases/{releaseID}/activate:
+    post:
+      operationId: activateOfficialAgentRelease
+      parameters: [{ $ref: '#/components/parameters/ReleaseID' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { $ref: '#/components/requestBodies/OfficialActivateMutation' }
+      responses:
+        '200': { $ref: '#/components/responses/Operation' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '404': { $ref: '#/components/responses/OfficialAgentNotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/official-agent-releases/{releaseID}/rollout:
+    post:
+      operationId: updateOfficialAgentRollout
+      parameters: [{ $ref: '#/components/parameters/ReleaseID' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { $ref: '#/components/requestBodies/OfficialRolloutMutation' }
+      responses:
+        '200': { $ref: '#/components/responses/Operation' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '404': { $ref: '#/components/responses/OfficialAgentNotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/official-agent-releases/{releaseID}/pause:
+    post:
+      operationId: pauseOfficialAgentRelease
+      parameters: [{ $ref: '#/components/parameters/ReleaseID' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { $ref: '#/components/requestBodies/OfficialOperatorEmptyMutation' }
+      responses:
+        '200': { $ref: '#/components/responses/Operation' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '404': { $ref: '#/components/responses/OfficialAgentNotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/official-agent-releases/{releaseID}/resume:
+    post:
+      operationId: resumeOfficialAgentRelease
+      parameters: [{ $ref: '#/components/parameters/ReleaseID' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { $ref: '#/components/requestBodies/OfficialOperatorEmptyMutation' }
+      responses:
+        '200': { $ref: '#/components/responses/Operation' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '404': { $ref: '#/components/responses/OfficialAgentNotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/official-agent-releases/{releaseID}/rollback:
+    post:
+      operationId: rollbackOfficialAgentRelease
+      description: Requires a distinct signed requester_admin_id and approval_id.
+      parameters: [{ $ref: '#/components/parameters/ReleaseID' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { $ref: '#/components/requestBodies/OfficialRollbackMutation' }
+      responses:
+        '200': { $ref: '#/components/responses/Operation' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '404': { $ref: '#/components/responses/OfficialAgentNotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/official-agent-audit-events:
+    get:
+      operationId: listOfficialAgentAuditEvents
+      description: Complete safe history; available only to Super Admin and Auditor actors.
+      parameters: [{ $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses:
+        '200': { $ref: '#/components/responses/OfficialAuditPage' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 components:
   securitySchemes:
     mutualTLS: { type: mutualTLS }
@@ -134,6 +415,11 @@ components:
     DeviceID: { name: deviceID, in: path, required: true, schema: { type: string, format: uuid } }
     SessionID: { name: sessionID, in: path, required: true, schema: { type: string, format: uuid } }
     OperationID: { name: operationID, in: path, required: true, schema: { type: string, format: uuid } }
+    DefinitionID: { name: definitionID, in: path, required: true, schema: { type: string, format: uuid } }
+    DraftID: { name: draftID, in: path, required: true, schema: { type: string, format: uuid } }
+    SubmissionID: { name: submissionID, in: path, required: true, schema: { type: string, format: uuid } }
+    VersionID: { name: versionID, in: path, required: true, schema: { type: string, format: uuid } }
+    ReleaseID: { name: releaseID, in: path, required: true, schema: { type: string, format: uuid } }
     IdempotencyKey: { name: Idempotency-Key, in: header, required: true, schema: { type: string, format: uuid } }
   requestBodies:
     Command:
@@ -141,12 +427,96 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Command' }
+    OfficialDefinitionMutation:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialDefinitionMutation' } } }
+    OfficialDraftCreateMutation:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialDraftCreateMutation' } } }
+    OfficialDraftUpdateMutation:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialDraftUpdateMutation' } } }
+    OfficialDeveloperEmptyMutation:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialDeveloperEmptyMutation' } } }
+    OfficialOperatorEmptyMutation:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialOperatorEmptyMutation' } } }
+    OfficialReviewMutation:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialReviewMutation' } } }
+    OfficialActivateMutation:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialActivateMutation' } } }
+    OfficialRolloutMutation:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialRolloutMutation' } } }
+    OfficialRollbackMutation:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialRollbackMutation' } } }
   responses:
     Operation:
       description: Idempotent operation state
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Operation' }
+    OfficialDefinition:
+      description: Safe official Agent definition
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialDefinition' } } }
+    OfficialDefinitionPage:
+      description: Official Agent definition page
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialDefinitionPage' } } }
+    OfficialDraft:
+      description: Official Agent draft
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialDraft' } } }
+    OfficialDraftPage:
+      description: Official Agent draft page
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialDraftPage' } } }
+    OfficialDraftValidation:
+      description: Deterministic DLP and canonicalization result
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialDraftValidation' } } }
+    OfficialSubmission:
+      description: Immutable review submission state
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialSubmission' } } }
+    OfficialSubmissionPage:
+      description: Official Agent submission page
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialSubmissionPage' } } }
+    OfficialVersion:
+      description: Published immutable official Agent version without signing material
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialVersion' } } }
+    OfficialVersionPage:
+      description: Official Agent version page
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialVersionPage' } } }
+    OfficialRelease:
+      description: Current release revision with allowlist count only
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialRelease' } } }
+    OfficialReleasePage:
+      description: Official Agent release page
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialReleasePage' } } }
+    OfficialAuditPage:
+      description: Rebuilt safe official Agent audit page
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialAuditPage' } } }
+    InvalidRequest:
+      description: Strict request validation failed
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
+    AuthenticationRequired:
+      description: mTLS or actor-bound service JWT authentication failed
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
+    PermissionDenied:
+      description: The signed employee role or action scope is not authorized
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
+    OfficialAgentNotFound:
+      description: The requested official Agent control-plane record does not exist
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
+    StateConflict:
+      description: Expected revision or idempotency evidence conflicts with durable state; reconcile through GET operations/{operationID}
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
+    PublicationDLPBlocked:
+      description: Publication content failed the frozen DLP contract
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
+    ServiceUnavailable:
+      description: Cloud could not prove a safe result; callers must remain unavailable or reconcile by operation ID
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
   schemas:
     Health:
       type: object
@@ -244,6 +614,565 @@ components:
         ticket_reference: { type: string, minLength: 1, maxLength: 128 }
         note: { type: string, minLength: 1, maxLength: 500 }
         expected_revision: { type: integer, minimum: 1 }
+    OfficialMutationEvidence:
+      type: object
+      required: [operation_id, actor_admin_id, actor_admin_role, expected_revision, reason_code]
+      properties:
+        operation_id: { type: string, format: uuid }
+        actor_admin_id: { type: string, format: uuid }
+        actor_admin_role: { enum: [super_admin, developer, operator, support, finance, auditor] }
+        approval_id: { type: string, format: uuid }
+        requester_admin_id: { type: string, format: uuid }
+        expected_revision: { type: integer, minimum: 1 }
+        reason_code: { type: string, pattern: '^[a-z][a-z0-9_]{2,63}$' }
+        ticket_reference: { type: string, minLength: 1, maxLength: 128 }
+    OfficialDefinitionMutation:
+      allOf:
+        - { $ref: '#/components/schemas/OfficialMutationEvidence' }
+        - type: object
+          required: [actor_admin_role, expected_revision, payload]
+          properties:
+            actor_admin_role: { const: developer }
+            expected_revision: { const: 1 }
+            payload:
+              type: object
+              additionalProperties: false
+              required: [display_name]
+              dependentRequired:
+                icon_media_type: [icon_data]
+                icon_data: [icon_media_type]
+              properties:
+                display_name: { type: string, minLength: 1, maxLength: 100 }
+                icon_media_type: { enum: [image/png, image/webp] }
+                icon_data: { type: string, format: byte, maxLength: 699052 }
+      unevaluatedProperties: false
+    OfficialDraftCreatePayload:
+      type: object
+      additionalProperties: false
+      required: [definition_id, kind, display_name, manifest, bundle]
+      dependentRequired:
+        icon_media_type: [icon_data]
+        icon_data: [icon_media_type]
+      properties:
+        definition_id: { type: string, format: uuid }
+        base_version_id: { type: string, format: uuid }
+        kind: { enum: [initial, next] }
+        display_name: { type: string, minLength: 1, maxLength: 100 }
+        icon_media_type: { enum: [image/png, image/webp] }
+        icon_data: { type: string, format: byte, maxLength: 699052 }
+        manifest: { $ref: '#/components/schemas/AgentManifestV1' }
+        bundle: { $ref: '#/components/schemas/AgentVersionBundleV1' }
+      oneOf:
+        - properties: { kind: { const: initial } }
+          not: { required: [base_version_id] }
+        - properties: { kind: { const: next } }
+          required: [base_version_id]
+    OfficialDraftUpdatePayload:
+      type: object
+      additionalProperties: false
+      required: [kind, display_name, manifest, bundle]
+      dependentRequired:
+        icon_media_type: [icon_data]
+        icon_data: [icon_media_type]
+      properties:
+        base_version_id: { type: string, format: uuid }
+        kind: { enum: [initial, next] }
+        display_name: { type: string, minLength: 1, maxLength: 100 }
+        icon_media_type: { enum: [image/png, image/webp] }
+        icon_data: { type: string, format: byte, maxLength: 699052 }
+        manifest: { $ref: '#/components/schemas/AgentManifestV1' }
+        bundle: { $ref: '#/components/schemas/AgentVersionBundleV1' }
+      oneOf:
+        - properties: { kind: { const: initial } }
+          not: { required: [base_version_id] }
+        - properties: { kind: { const: next } }
+          required: [base_version_id]
+    OfficialDraftCreateMutation:
+      allOf:
+        - { $ref: '#/components/schemas/OfficialMutationEvidence' }
+        - type: object
+          required: [actor_admin_role, expected_revision, payload]
+          properties:
+            actor_admin_role: { const: developer }
+            expected_revision: { const: 1 }
+            payload: { $ref: '#/components/schemas/OfficialDraftCreatePayload' }
+      unevaluatedProperties: false
+    OfficialDraftUpdateMutation:
+      allOf:
+        - { $ref: '#/components/schemas/OfficialMutationEvidence' }
+        - type: object
+          required: [actor_admin_role, payload]
+          properties:
+            actor_admin_role: { const: developer }
+            payload: { $ref: '#/components/schemas/OfficialDraftUpdatePayload' }
+      unevaluatedProperties: false
+    OfficialDeveloperEmptyMutation:
+      allOf:
+        - { $ref: '#/components/schemas/OfficialMutationEvidence' }
+        - type: object
+          required: [actor_admin_role, payload]
+          properties:
+            actor_admin_role: { const: developer }
+            payload: { type: object, additionalProperties: false }
+      unevaluatedProperties: false
+    OfficialOperatorEmptyMutation:
+      allOf:
+        - { $ref: '#/components/schemas/OfficialMutationEvidence' }
+        - type: object
+          required: [actor_admin_role, payload]
+          properties:
+            actor_admin_role: { const: operator }
+            payload: { type: object, additionalProperties: false }
+      unevaluatedProperties: false
+    OfficialReviewMutation:
+      allOf:
+        - { $ref: '#/components/schemas/OfficialMutationEvidence' }
+        - type: object
+          required: [actor_admin_role, payload]
+          properties:
+            actor_admin_role: { const: super_admin }
+            payload:
+              type: object
+              additionalProperties: false
+              required: [decision]
+              properties:
+                decision: { enum: [approve, reject] }
+                review_reason_code: { type: string, pattern: '^[a-z][a-z0-9_]{2,63}$' }
+                safe_note: { type: string, maxLength: 500 }
+                initial_channels:
+                  type: array
+                  maxItems: 2
+                  uniqueItems: true
+                  items: { enum: [internal, stable] }
+              oneOf:
+                - required: [decision, initial_channels]
+                  properties: { decision: { const: approve } }
+                  not:
+                    anyOf:
+                      - { required: [review_reason_code] }
+                      - { required: [safe_note] }
+                - required: [decision, review_reason_code]
+                  properties: { decision: { const: reject } }
+                  not: { required: [initial_channels] }
+      unevaluatedProperties: false
+    OfficialActivateMutation:
+      allOf:
+        - { $ref: '#/components/schemas/OfficialMutationEvidence' }
+        - type: object
+          required: [actor_admin_role, payload]
+          properties:
+            actor_admin_role: { const: operator }
+            payload:
+              type: object
+              additionalProperties: false
+              required: [version_id, rollout_basis_points, minimum_desktop_version]
+              properties:
+                version_id: { type: string, format: uuid }
+                rollout_basis_points: { type: integer, minimum: 0, maximum: 10000 }
+                minimum_desktop_version: { type: string, minLength: 5, maxLength: 64 }
+                allowlisted_user_ids: { $ref: '#/components/schemas/OfficialAllowlist' }
+      unevaluatedProperties: false
+    OfficialRolloutMutation:
+      allOf:
+        - { $ref: '#/components/schemas/OfficialMutationEvidence' }
+        - type: object
+          required: [actor_admin_role, payload]
+          properties:
+            actor_admin_role: { const: operator }
+            payload:
+              type: object
+              additionalProperties: false
+              required: [rollout_basis_points, minimum_desktop_version]
+              properties:
+                rollout_basis_points: { type: integer, minimum: 0, maximum: 10000 }
+                minimum_desktop_version: { type: string, minLength: 5, maxLength: 64 }
+                allowlisted_user_ids: { $ref: '#/components/schemas/OfficialAllowlist' }
+      unevaluatedProperties: false
+    OfficialRollbackMutation:
+      allOf:
+        - { $ref: '#/components/schemas/OfficialMutationEvidence' }
+        - type: object
+          required: [actor_admin_role, approval_id, requester_admin_id, payload]
+          properties:
+            actor_admin_role: { const: super_admin }
+            payload:
+              type: object
+              additionalProperties: false
+              required: [target_version_id, target_release_revision_id]
+              properties:
+                target_version_id: { type: string, format: uuid }
+                target_release_revision_id: { type: string, format: uuid }
+      unevaluatedProperties: false
+    OfficialAllowlist:
+      type: array
+      maxItems: 10000
+      uniqueItems: true
+      items: { type: string, format: uuid }
+    AgentManifestV1:
+      type: object
+      additionalProperties: false
+      required: [schema_version, identity, assets, model_constraints, tools, dependencies, runtime_compatibility]
+      properties:
+        schema_version: { type: integer, enum: [1] }
+        identity: { $ref: '#/components/schemas/AgentIdentityV1' }
+        assets:
+          type: array
+          maxItems: 128
+          items: { $ref: '#/components/schemas/AgentManifestAssetV1' }
+        model_constraints: { $ref: '#/components/schemas/AgentModelConstraintsV1' }
+        tools: { $ref: '#/components/schemas/AgentToolPolicyV1' }
+        dependencies:
+          type: array
+          maxItems: 128
+          items: { $ref: '#/components/schemas/AgentDependencyV1' }
+        runtime_compatibility: { $ref: '#/components/schemas/AgentRuntimeCompatibilityV1' }
+    AgentIdentityV1:
+      type: object
+      additionalProperties: false
+      required: [system_prompt]
+      properties:
+        system_prompt: { type: string, minLength: 1, maxLength: 262144 }
+    AgentManifestAssetV1:
+      type: object
+      additionalProperties: false
+      required: [path, kind, media_type, sha256]
+      properties:
+        path: { type: string, minLength: 1, maxLength: 512 }
+        kind: { enum: [skill, sop, knowledge] }
+        media_type: { enum: [text/markdown, text/plain] }
+        sha256: { $ref: '#/components/schemas/SHA256Digest' }
+    AgentModelConstraintsV1:
+      type: object
+      additionalProperties: false
+      required: [allowed_providers, allowed_models]
+      properties:
+        allowed_providers:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string, minLength: 1, maxLength: 128 }
+        allowed_models:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string, minLength: 1, maxLength: 256 }
+    AgentToolPolicyV1:
+      type: object
+      additionalProperties: false
+      required: [allowed, denied]
+      properties:
+        allowed:
+          type: array
+          uniqueItems: true
+          items: { type: string, minLength: 1, maxLength: 256 }
+        denied:
+          type: array
+          uniqueItems: true
+          items: { type: string, minLength: 1, maxLength: 256 }
+    AgentDependencyV1:
+      type: object
+      additionalProperties: false
+      required: [agent_definition_id, agent_version_id]
+      properties:
+        agent_definition_id: { type: string, format: uuid }
+        agent_version_id: { type: string, format: uuid }
+    AgentRuntimeCompatibilityV1:
+      type: object
+      additionalProperties: false
+      required: [minimum_version]
+      properties:
+        minimum_version: { type: string, minLength: 1, maxLength: 64 }
+        maximum_version_exclusive: { type: string, minLength: 1, maxLength: 64 }
+    AgentVersionBundleV1:
+      type: object
+      additionalProperties: false
+      required: [assets]
+      properties:
+        assets:
+          type: array
+          maxItems: 128
+          items: { $ref: '#/components/schemas/AgentBundleAssetV1' }
+    AgentBundleAssetV1:
+      type: object
+      additionalProperties: false
+      required: [path, content]
+      properties:
+        path: { type: string, minLength: 1, maxLength: 512 }
+        content: { type: string, maxLength: 262144 }
+    SHA256Digest:
+      type: string
+      description: Lowercase hexadecimal SHA-256 digest.
+      pattern: '^[0-9a-f]{64}$'
+    OfficialDefinition:
+      type: object
+      additionalProperties: false
+      required: [definition_id, platform_id, display_name, status, created_by_admin_id, created_at, updated_at]
+      properties:
+        definition_id: { type: string, format: uuid }
+        platform_id: { type: string, format: uuid }
+        display_name: { type: string }
+        icon_media_type: { type: string }
+        icon_data: { type: string, format: byte }
+        status: { enum: [active, archived] }
+        latest_version_id: { type: string, format: uuid }
+        created_by_admin_id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        replayed: { type: boolean }
+    OfficialDefinitionPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/OfficialDefinition' } }
+        next_cursor: { type: string, format: uuid }
+    OfficialDraft:
+      type: object
+      additionalProperties: false
+      required:
+        - draft_id
+        - platform_id
+        - definition_id
+        - kind
+        - display_name
+        - manifest
+        - bundle
+        - manifest_digest
+        - bundle_digest
+        - content_digest
+        - revision
+        - status
+        - last_editor_admin_id
+        - last_editor_role
+        - created_at
+        - updated_at
+      properties:
+        draft_id: { type: string, format: uuid }
+        platform_id: { type: string, format: uuid }
+        definition_id: { type: string, format: uuid }
+        base_version_id: { type: string, format: uuid }
+        kind: { enum: [initial, next] }
+        display_name: { type: string, minLength: 1, maxLength: 100 }
+        icon_media_type: { enum: [image/png, image/webp] }
+        icon_data: { type: string, format: byte, maxLength: 699052 }
+        manifest: { $ref: '#/components/schemas/AgentManifestV1' }
+        bundle: { $ref: '#/components/schemas/AgentVersionBundleV1' }
+        manifest_digest: { $ref: '#/components/schemas/SHA256Digest' }
+        bundle_digest: { $ref: '#/components/schemas/SHA256Digest' }
+        content_digest: { $ref: '#/components/schemas/SHA256Digest' }
+        revision: { type: integer, minimum: 1 }
+        status: { enum: [active, archived] }
+        last_editor_admin_id: { type: string, format: uuid }
+        last_editor_role: { enum: [super_admin, developer, operator, support, finance, auditor] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        replayed: { type: boolean }
+    OfficialDraftPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/OfficialDraft' } }
+        next_cursor: { type: string, format: uuid }
+    OfficialDraftValidation:
+      type: object
+      additionalProperties: false
+      required: [draft_id, draft_revision, content_digest, dlp_version, valid, findings]
+      properties:
+        draft_id: { type: string, format: uuid }
+        draft_revision: { type: integer, minimum: 1 }
+        content_digest: { type: string, pattern: '^[a-f0-9]{64}$' }
+        dlp_version: { type: string }
+        valid: { type: boolean }
+        findings:
+          type: array
+          items: { $ref: '#/components/schemas/OfficialValidationFinding' }
+    OfficialValidationFinding:
+      type: object
+      additionalProperties: false
+      required: [code, path]
+      properties:
+        code: { type: string, minLength: 1, maxLength: 100 }
+        path: { type: string, minLength: 1, maxLength: 512 }
+        line: { type: integer, minimum: 1 }
+    OfficialReview:
+      type: object
+      additionalProperties: false
+      required:
+        - review_id
+        - reviewer_admin_id
+        - reviewer_role
+        - decision
+        - platform_policy_snapshot_id
+        - platform_policy_version
+        - reviewed_content_digest
+        - reviewed_at
+      properties:
+        review_id: { type: string, format: uuid }
+        reviewer_admin_id: { type: string, format: uuid }
+        reviewer_role: { enum: [super_admin] }
+        decision: { enum: [approve, reject] }
+        reason_code: { type: string, pattern: '^[a-z][a-z0-9_]{2,63}$' }
+        safe_note: { type: string, maxLength: 500 }
+        platform_policy_snapshot_id: { type: string, format: uuid }
+        platform_policy_version: { type: integer, minimum: 1 }
+        reviewed_content_digest: { $ref: '#/components/schemas/SHA256Digest' }
+        reviewed_at: { type: string, format: date-time }
+    OfficialSubmission:
+      type: object
+      additionalProperties: false
+      required:
+        - submission_id
+        - platform_id
+        - draft_id
+        - draft_revision
+        - definition_id
+        - kind
+        - display_name
+        - manifest
+        - bundle
+        - manifest_digest
+        - bundle_digest
+        - content_digest
+        - submitted_by_admin_id
+        - submitted_by_role
+        - status
+        - revision
+        - submitted_at
+        - updated_at
+      properties:
+        submission_id: { type: string, format: uuid }
+        platform_id: { type: string, format: uuid }
+        draft_id: { type: string, format: uuid }
+        draft_revision: { type: integer, minimum: 1 }
+        definition_id: { type: string, format: uuid }
+        base_version_id: { type: string, format: uuid }
+        kind: { enum: [initial, next] }
+        display_name: { type: string, minLength: 1, maxLength: 100 }
+        icon_media_type: { enum: [image/png, image/webp] }
+        icon_data: { type: string, format: byte, maxLength: 699052 }
+        manifest: { $ref: '#/components/schemas/AgentManifestV1' }
+        bundle: { $ref: '#/components/schemas/AgentVersionBundleV1' }
+        manifest_digest: { $ref: '#/components/schemas/SHA256Digest' }
+        bundle_digest: { $ref: '#/components/schemas/SHA256Digest' }
+        content_digest: { $ref: '#/components/schemas/SHA256Digest' }
+        submitted_by_admin_id: { type: string, format: uuid }
+        submitted_by_role: { enum: [developer] }
+        status: { enum: [pending, approved, rejected, withdrawn, superseded] }
+        revision: { type: integer, minimum: 1 }
+        submitted_at: { type: string, format: date-time }
+        terminal_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        review: { $ref: '#/components/schemas/OfficialReview' }
+        replayed: { type: boolean }
+    OfficialSubmissionPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/OfficialSubmission' } }
+        next_cursor: { type: string, format: uuid }
+    OfficialVersion:
+      type: object
+      additionalProperties: false
+      required:
+        - version_id
+        - definition_id
+        - version_number
+        - manifest
+        - bundle
+        - content_digest
+        - runtime_minimum_version
+        - published_at
+      properties:
+        version_id: { type: string, format: uuid }
+        definition_id: { type: string, format: uuid }
+        version_number: { type: integer, minimum: 1 }
+        manifest: { $ref: '#/components/schemas/AgentManifestV1' }
+        bundle: { $ref: '#/components/schemas/AgentVersionBundleV1' }
+        content_digest: { $ref: '#/components/schemas/SHA256Digest' }
+        runtime_minimum_version: { type: string, minLength: 1, maxLength: 64 }
+        runtime_maximum_version_exclusive: { type: string, minLength: 1, maxLength: 64 }
+        published_at: { type: string, format: date-time }
+    OfficialVersionPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/OfficialVersion' } }
+        next_cursor: { type: string, format: uuid }
+    OfficialRelease:
+      type: object
+      additionalProperties: false
+      required:
+        - release_id
+        - platform_id
+        - definition_id
+        - channel
+        - current_revision_id
+        - head_revision
+        - agent_version_id
+        - state
+        - rollout_basis_points
+        - minimum_desktop_version
+        - action
+        - actor_admin_id
+        - actor_admin_role
+        - reason_code
+        - audience_count
+        - created_at
+        - updated_at
+      properties:
+        release_id: { type: string, format: uuid }
+        platform_id: { type: string, format: uuid }
+        definition_id: { type: string, format: uuid }
+        channel: { enum: [internal, stable] }
+        current_revision_id: { type: string, format: uuid }
+        head_revision: { type: integer, minimum: 1 }
+        agent_version_id: { type: string, format: uuid }
+        state: { enum: [active, paused] }
+        rollout_basis_points: { type: integer, minimum: 0, maximum: 10000 }
+        minimum_desktop_version: { type: string, minLength: 1, maxLength: 64 }
+        action: { enum: [initial, activate, rollout_update, pause, resume, rollback] }
+        previous_revision_id: { type: string, format: uuid }
+        rollback_target_revision_id: { type: string, format: uuid }
+        actor_admin_id: { type: string, format: uuid }
+        actor_admin_role: { enum: [super_admin, developer, operator, support, finance, auditor] }
+        reason_code: { type: string, pattern: '^[a-z][a-z0-9_]{2,63}$' }
+        ticket_reference: { type: string, minLength: 1, maxLength: 128 }
+        audience_count: { type: integer, minimum: 0, maximum: 10000 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        replayed: { type: boolean }
+    OfficialReleasePage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/OfficialRelease' } }
+        next_cursor: { type: string, format: uuid }
+    OfficialAuditEvent:
+      type: object
+      additionalProperties: false
+      required: [event_id, event_type, object_type, object_id, outcome, request_id, actor_admin_id, actor_admin_role, created_at]
+      properties:
+        event_id: { type: string, format: uuid }
+        event_type: { type: string, pattern: '^official_' }
+        object_type: { type: string }
+        object_id: { type: string, format: uuid }
+        outcome: { enum: [success, denied] }
+        reason_code: { type: string }
+        request_id: { type: string }
+        actor_admin_id: { type: string, format: uuid }
+        actor_admin_role: { enum: [super_admin, developer, operator, support, finance, auditor] }
+        created_at: { type: string, format: date-time }
+    OfficialAuditPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/OfficialAuditEvent' } }
+        next_cursor: { type: string, maxLength: 512 }
     Operation:
       type: object
       additionalProperties: false
@@ -254,3 +1183,25 @@ components:
         error_code: { type: string, pattern: '^[A-Z][A-Z0-9_]{2,99}$' }
         administrative_revision: { type: integer, minimum: 1 }
         updated_at: { type: string, format: date-time }
+    ErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, request_id]
+          properties:
+            code:
+              enum:
+                - INVALID_REQUEST
+                - AUTHENTICATION_REQUIRED
+                - PERMISSION_DENIED
+                - OFFICIAL_AGENT_NOT_FOUND
+                - STATE_CONFLICT
+                - PUBLICATION_DLP_BLOCKED
+                - SERVICE_UNAVAILABLE
+                - NOT_FOUND
+                - METHOD_NOT_ALLOWED
+            request_id: { type: string, minLength: 1, maxLength: 128 }

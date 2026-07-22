@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -979,6 +980,52 @@ func (r *PostgresRepository) GetOfficialRelease(
 		return OfficialRelease{}, false, err
 	}
 	return value, true, nil
+}
+
+func (r *PostgresRepository) ListOfficialReleases(
+	ctx context.Context,
+	platformID uuid.UUID,
+	page PageRequest,
+) (OfficialReleasePage, error) {
+	if r == nil || r.postgres == nil || platformID == uuid.Nil || !validRepositoryPage(page) {
+		return OfficialReleasePage{}, ErrInvalidRepositoryCommand
+	}
+	rows, err := r.postgres.Query(ctx, `
+		SELECT id
+		FROM official_releases
+		WHERE platform_id = $1 AND ($2::uuid IS NULL OR id > $2)
+		ORDER BY id
+		LIMIT $3
+	`, platformID, nullUUID(page.After), page.Limit+1)
+	if err != nil {
+		return OfficialReleasePage{}, ErrServiceUnavailable
+	}
+	defer rows.Close()
+	ids := make([]uuid.UUID, 0, page.Limit+1)
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil || id == uuid.Nil {
+			return OfficialReleasePage{}, ErrServiceUnavailable
+		}
+		ids = append(ids, id)
+	}
+	if rows.Err() != nil {
+		return OfficialReleasePage{}, ErrServiceUnavailable
+	}
+	rows.Close()
+	result := OfficialReleasePage{Items: make([]OfficialRelease, 0, min(len(ids), page.Limit))}
+	if len(ids) > page.Limit {
+		result.Next = ids[page.Limit-1]
+		ids = ids[:page.Limit]
+	}
+	for _, id := range ids {
+		value, err := loadOfficialRelease(ctx, r.postgres, platformID, id, false)
+		if err != nil {
+			return OfficialReleasePage{}, err
+		}
+		result.Items = append(result.Items, value)
+	}
+	return result, nil
 }
 
 func (r *PostgresRepository) ListOfficialReleaseIDs(
@@ -2362,6 +2409,26 @@ func recordPlatformAudit(
 	for key, value := range metadata {
 		bounded[key] = value
 	}
+	reasonCode := ""
+	if actor.Operation != nil {
+		proof := actor.Operation
+		reasonCode = proof.ReasonCode
+		bounded["operation_id"] = proof.OperationID.String()
+		bounded["action"] = proof.Action
+		bounded["target_type"] = proof.TargetType
+		bounded["expected_revision"] = strconv.FormatInt(proof.ExpectedRevision, 10)
+		bounded["service_subject"] = proof.ServiceSubject
+		bounded["reason_code"] = proof.ReasonCode
+		if proof.TicketReference != "" {
+			bounded["ticket_reference"] = proof.TicketReference
+		}
+		if proof.ApprovalID != uuid.Nil {
+			bounded["approval_id"] = proof.ApprovalID.String()
+		}
+		if proof.RequesterAdminID != uuid.Nil {
+			bounded["requester_admin_id"] = proof.RequesterAdminID.String()
+		}
+	}
 	encoded, err := json.Marshal(bounded)
 	if err != nil {
 		return ErrServiceUnavailable
@@ -2370,12 +2437,130 @@ func recordPlatformAudit(
 		INSERT INTO audit_events (
 			id, event_type, actor_user_id, device_id, object_type, object_id,
 			outcome, reason_code, request_id, ip_hmac, metadata, created_at, organization_id
-		) VALUES ($1, $2, NULL, NULL, $3, $4, 'success', NULL, $5, NULL, $6::jsonb, $7, NULL)
-	`, evidence.EventID, eventType, objectType, objectID, evidence.RequestID,
+		) VALUES ($1, $2, NULL, NULL, $3, $4, 'success', NULLIF($5, ''), $6, NULL, $7::jsonb, $8, NULL)
+	`, evidence.EventID, eventType, objectType, objectID, reasonCode, evidence.RequestID,
 		string(encoded), occurredAt.UTC()); err != nil {
 		return ErrServiceUnavailable
 	}
+	return recordPlatformAdminOperation(
+		ctx, tx, actor, eventType, objectType, objectID, occurredAt, metadata,
+	)
+}
+
+func recordPlatformAdminOperation(
+	ctx context.Context,
+	tx pgx.Tx,
+	actor PlatformAdminActor,
+	eventType string,
+	objectType string,
+	objectID uuid.UUID,
+	occurredAt time.Time,
+	metadata map[string]string,
+) error {
+	proof := actor.Operation
+	if proof == nil {
+		return nil
+	}
+	action, targetType, ok := platformAdminOperationMapping(eventType)
+	if !ok || !validPlatformAdminOperationProof(proof) || proof.Action != action ||
+		proof.TargetType != targetType || objectType != targetType || proof.TargetID != objectID {
+		return ErrInvalidRepositoryCommand
+	}
+	resultRevision, err := platformAdminResultRevision(eventType, metadata)
+	if err != nil {
+		return ErrInvalidRepositoryCommand
+	}
+	if action == "official_release_rollback" {
+		if proof.ApprovalID == uuid.Nil || proof.RequesterAdminID == uuid.Nil ||
+			proof.RequesterAdminID == actor.AdminID {
+			return ErrInvalidRepositoryCommand
+		}
+	} else if proof.ApprovalID != uuid.Nil || proof.RequesterAdminID != uuid.Nil {
+		return ErrInvalidRepositoryCommand
+	}
+	var approvalID any
+	if proof.ApprovalID != uuid.Nil {
+		approvalID = proof.ApprovalID
+	}
+	var ticketReference any
+	if proof.TicketReference != "" {
+		ticketReference = proof.TicketReference
+	}
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO admin_operations (
+			operation_id, idempotency_key_id, idempotency_key_hmac, request_fingerprint,
+			service_subject, actor_admin_id, actor_admin_role, approval_id, request_id,
+			action, target_type, target_id, expected_revision, result_revision, status,
+			reason_code, ticket_reference, created_at, updated_at, completed_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9,
+			$10, $11, $12, $13, $14, 'succeeded', $15, $16, $17, $17, $17
+		)
+	`, proof.OperationID, proof.IdempotencyKeyID, proof.IdempotencyKeyHMAC,
+		proof.RequestFingerprint, proof.ServiceSubject, actor.AdminID, actor.Role,
+		approvalID, actor.RequestID, action, targetType, objectID, proof.ExpectedRevision,
+		resultRevision, proof.ReasonCode, ticketReference, occurredAt.UTC())
+	if err != nil || tag.RowsAffected() != 1 {
+		return ErrServiceUnavailable
+	}
 	return nil
+}
+
+func platformAdminOperationMapping(eventType string) (string, string, bool) {
+	switch eventType {
+	case "official_definition_reserved":
+		return "official_definition_reserve", "platform_definition", true
+	case "official_draft_created":
+		return "official_draft_create", "platform_draft", true
+	case "official_draft_updated":
+		return "official_draft_update", "platform_draft", true
+	case "official_draft_submitted":
+		return "official_draft_submit", "platform_submission", true
+	case "official_submission_withdrawn":
+		return "official_submission_withdraw", "platform_submission", true
+	case "official_submission_reviewed":
+		return "official_submission_review", "platform_submission", true
+	case "official_release_activate":
+		return "official_release_activate", "official_release", true
+	case "official_release_rollout_update":
+		return "official_release_rollout", "official_release", true
+	case "official_release_pause":
+		return "official_release_pause", "official_release", true
+	case "official_release_resume":
+		return "official_release_resume", "official_release", true
+	case "official_release_rollback":
+		return "official_release_rollback", "official_release", true
+	default:
+		return "", "", false
+	}
+}
+
+func platformAdminResultRevision(eventType string, metadata map[string]string) (int64, error) {
+	if eventType == "official_definition_reserved" {
+		return 1, nil
+	}
+	key := "revision"
+	if strings.HasPrefix(eventType, "official_release_") {
+		key = "release_revision"
+	}
+	value, ok := metadata[key]
+	if !ok {
+		return 0, ErrInvalidRepositoryCommand
+	}
+	revision, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || revision < 1 {
+		return 0, ErrInvalidRepositoryCommand
+	}
+	return revision, nil
+}
+
+func validPlatformAdminOperationProof(proof *PlatformAdminOperationProof) bool {
+	return proof != nil && proof.OperationID != uuid.Nil && proof.TargetID != uuid.Nil &&
+		proof.ExpectedRevision > 0 && platformServiceSubjectPattern.MatchString(proof.ServiceSubject) &&
+		platformRolloutKeyPattern.MatchString(proof.IdempotencyKeyID) &&
+		len(proof.IdempotencyKeyHMAC) == sha256.Size && len(proof.RequestFingerprint) == sha256.Size &&
+		platformReasonPattern.MatchString(proof.ReasonCode) &&
+		(proof.TicketReference == "" || validPlatformTicketReference(proof.TicketReference))
 }
 
 func validEnsurePlatformCommand(command EnsurePlatformCommand) bool {
@@ -2384,7 +2569,8 @@ func validEnsurePlatformCommand(command EnsurePlatformCommand) bool {
 }
 
 func validPlatformActor(actor PlatformAdminActor, action platformAction) bool {
-	return actor.AdminID != uuid.Nil && validRequestID(actor.RequestID) && platformRoleAllowed(actor.Role, action)
+	return actor.AdminID != uuid.Nil && validRequestID(actor.RequestID) && platformRoleAllowed(actor.Role, action) &&
+		(actor.Operation == nil || validPlatformAdminOperationProof(actor.Operation))
 }
 
 func validReservePlatformDefinitionCommand(command ReservePlatformDefinitionRepositoryCommand) bool {

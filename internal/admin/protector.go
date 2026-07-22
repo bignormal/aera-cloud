@@ -14,11 +14,12 @@ import (
 )
 
 const (
-	idempotencyDomain = "aera-cloud.admin.idempotency.v1"
-	requestDomain     = "aera-cloud.admin.request.v1"
-	cursorDomain      = "aera-cloud.admin.cursor.v1"
-	cursorVersion     = byte(1)
-	cursorMACSize     = sha256.Size
+	idempotencyDomain     = "aera-cloud.admin.idempotency.v1"
+	requestDomain         = "aera-cloud.admin.request.v1"
+	officialRequestDomain = "aera-cloud.admin.official-request.v1"
+	cursorDomain          = "aera-cloud.admin.cursor.v1"
+	cursorVersion         = byte(1)
+	cursorMACSize         = sha256.Size
 )
 
 var (
@@ -101,6 +102,41 @@ func (p *Protector) RequestFingerprint(keyID string, action Action, targetID uui
 		[]byte(command.Note),
 		revision,
 	)
+}
+
+func (p *Protector) ProtectOfficialOperation(
+	action Action,
+	targetID uuid.UUID,
+	command OfficialOperationCommand,
+) (Digest, []byte, error) {
+	if p == nil || ValidateOfficialOperationCommand(action, targetID, command) != nil {
+		return Digest{}, nil, ErrInvalidCommand
+	}
+	digests := p.IdempotencyCandidates(command.OperationID)
+	if len(digests) == 0 {
+		return Digest{}, nil, ErrUnavailable
+	}
+	active := digests[0]
+	key, ok := p.keys[active.KeyID]
+	if !ok {
+		return Digest{}, nil, ErrUnavailable
+	}
+	approval, requester := []byte(nil), []byte(nil)
+	if command.ApprovalID != nil {
+		approval = (*command.ApprovalID)[:]
+	}
+	if command.RequesterAdminID != nil {
+		requester = (*command.RequesterAdminID)[:]
+	}
+	revision := make([]byte, 8)
+	binary.BigEndian.PutUint64(revision, uint64(command.ExpectedRevision))
+	fingerprint := protectedDigest(
+		key, officialRequestDomain, []byte(action), targetID[:], command.OperationID[:],
+		command.ActorAdminID[:], []byte(command.ActorAdminRole), approval, requester,
+		[]byte(command.RequestID), []byte(command.ReasonCode), []byte(command.TicketReference),
+		revision, command.PayloadDigest,
+	)
+	return active, fingerprint, nil
 }
 
 func (p *Protector) EncodeCursor(resource string, position PagePosition) (string, error) {

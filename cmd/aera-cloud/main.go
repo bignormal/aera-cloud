@@ -103,7 +103,13 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 		return err
 	}
 	agentRepository := agentcontrol.NewPostgresRepository(postgres)
-	agentControlHandler, err := buildAgentControlHandler(cfg, postgres, redisStore.Client(), agentRepository)
+	agentService, platformService, err := buildAgentControlServices(startupCtx, cfg, agentRepository)
+	if err != nil {
+		return err
+	}
+	agentControlHandler, err := buildAgentControlHandlerWithServices(
+		cfg, postgres, redisStore.Client(), agentService, platformService,
+	)
 	if err != nil {
 		return err
 	}
@@ -137,7 +143,7 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 	var internalHandler http.Handler
 	var internalTLS *tls.Config
 	if cfg.InternalAdmin.Enabled {
-		internalHandler, internalTLS, err = buildInternalAdmin(cfg, postgres, redisStore)
+		internalHandler, internalTLS, err = buildInternalAdmin(cfg, postgres, redisStore, platformService)
 		if err != nil {
 			return err
 		}
@@ -429,25 +435,69 @@ func buildAgentControlHandler(
 	if repository == nil {
 		return nil, errors.New("Agent control repository is unavailable")
 	}
-	accessAuthenticator, err := buildAccessAuthenticator(cfg, postgres, redisClient)
+	service, platform, err := buildAgentControlServices(context.Background(), cfg, repository)
 	if err != nil {
 		return nil, err
+	}
+	return buildAgentControlHandlerWithServices(cfg, postgres, redisClient, service, platform)
+}
+
+func buildAgentControlServices(
+	ctx context.Context,
+	cfg config.Config,
+	repository *agentcontrol.PostgresRepository,
+) (*agentcontrol.Service, agentcontrol.PlatformService, error) {
+	if ctx == nil || repository == nil {
+		return nil, nil, errors.New("Agent control service dependencies are unavailable")
 	}
 	signer, err := agentcontrol.NewSigner(agentcontrol.SigningConfig{
 		Issuer: cfg.PublicURL, ActiveKeyID: cfg.AgentControlSigningKeyRing.ActiveKeyID,
 		SigningKeys: privateSigningKeys(cfg.AgentControlSigningKeyRing),
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	var platform agentcontrol.PlatformInitializer
+	if cfg.OfficialAgent.Enabled {
+		platform, err = agentcontrol.NewPlatformService(agentcontrol.PlatformServiceConfig{
+			Repository: repository, Signer: signer, PlatformID: cfg.OfficialAgent.PlatformID,
+			PlatformKey:         cfg.OfficialAgent.PlatformKey,
+			PlatformDisplayName: cfg.OfficialAgent.PlatformDisplayName,
+			RolloutKeyID:        cfg.OfficialAgent.RolloutHMACActiveKey,
+			RolloutKeys:         cfg.OfficialAgent.RolloutHMACKeys,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		if _, err := platform.Initialize(ctx); err != nil {
+			return nil, nil, err
+		}
 	}
 	service, err := agentcontrol.NewService(agentcontrol.ServiceConfig{
-		Repository: repository, Signer: signer,
+		Repository: repository, Signer: signer, OfficialEligibility: platform,
 	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return service, platform, nil
+}
+
+func buildAgentControlHandlerWithServices(
+	cfg config.Config,
+	postgres *pgxpool.Pool,
+	redisClient redis.UniversalClient,
+	service *agentcontrol.Service,
+	platform agentcontrol.PlatformService,
+) (http.Handler, error) {
+	if service == nil {
+		return nil, errors.New("Agent control service is unavailable")
+	}
+	accessAuthenticator, err := buildAccessAuthenticator(cfg, postgres, redisClient)
 	if err != nil {
 		return nil, err
 	}
 	return agentcontrol.NewHandler(agentcontrol.HTTPConfig{
-		Service: service, AccessTokens: accessAuthenticator,
+		Service: service, Official: platform, AccessTokens: accessAuthenticator,
 	}), nil
 }
 

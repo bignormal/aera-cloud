@@ -73,6 +73,72 @@ func TestControlServiceProducesNonNullPagesAndScopedCursors(t *testing.T) {
 	}
 }
 
+type officialAuditDataStub struct {
+	page  DataPage[OfficialAuditEvent]
+	query OfficialAuditQuery
+}
+
+func (s *officialAuditDataStub) ListOfficialAuditEvents(
+	_ context.Context,
+	query OfficialAuditQuery,
+) (DataPage[OfficialAuditEvent], error) {
+	s.query = query
+	return s.page, nil
+}
+
+func TestControlServiceReturnsSafeOfficialAuditPage(t *testing.T) {
+	next := &PagePosition{Time: time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC), ID: uuid.New()}
+	audits := &officialAuditDataStub{page: DataPage[OfficialAuditEvent]{Items: []OfficialAuditEvent{{
+		ID: uuid.New(), EventType: "official_release_pause", ObjectType: "official_release",
+		ObjectID: uuid.New(), Outcome: "success", RequestID: "req-audit", ActorAdminID: uuid.New(),
+		ActorAdminRole: "operator", CreatedAt: time.Date(2026, 7, 22, 11, 0, 0, 0, time.UTC),
+	}}, Next: next}}
+	service, err := NewControlService(ControlServiceConfig{
+		Queries: &controlRepositoryStub{}, OfficialAudit: audits,
+		Protector: testProtector(t), Clock: time.Now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := service.ListOfficialAuditEvents(context.Background(), PageRequest{Limit: 20})
+	if err != nil || len(page.Items) != 1 || page.NextCursor == "" || audits.query.Limit != 20 {
+		t.Fatalf("audit page = %+v / %v / %+v", page, err, audits.query)
+	}
+	if page.Items[0].ActorAdminRole != "operator" || page.Items[0].EventType != "official_release_pause" {
+		t.Fatalf("audit item = %+v", page.Items[0])
+	}
+}
+
+type operationCommandDataStub struct {
+	operation Operation
+}
+
+func (s *operationCommandDataStub) Execute(context.Context, Action, uuid.UUID, Command) (Operation, error) {
+	return Operation{}, errors.New("unexpected Execute call")
+}
+
+func (s *operationCommandDataStub) GetOperation(context.Context, uuid.UUID) (Operation, error) {
+	return s.operation, nil
+}
+
+func TestControlServiceRejectsMismatchedOperationIdentity(t *testing.T) {
+	requested := uuid.New()
+	commands := &operationCommandDataStub{operation: Operation{
+		ID: uuid.New(), Status: OperationSucceeded, AdministrativeRevision: 1,
+		UpdatedAt: time.Now().UTC(),
+	}}
+	service, err := NewControlService(ControlServiceConfig{
+		Queries: &controlRepositoryStub{}, Commands: commands,
+		Protector: testProtector(t), Clock: time.Now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.GetOperation(context.Background(), requested); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("mismatched operation error = %v", err)
+	}
+}
+
 func TestControlServiceRejectsInvalidReadRequestsBeforeStorage(t *testing.T) {
 	repository := &controlRepositoryStub{}
 	service, err := NewControlService(ControlServiceConfig{

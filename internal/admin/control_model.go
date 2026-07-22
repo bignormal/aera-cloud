@@ -49,10 +49,21 @@ func ServiceSubject(ctx context.Context) (string, bool) {
 type Action string
 
 const (
-	RevokeDevice  Action = "revoke_device"
-	RevokeSession Action = "revoke_session"
-	DisableUser   Action = "disable_user"
-	EnableUser    Action = "enable_user"
+	RevokeDevice               Action = "revoke_device"
+	RevokeSession              Action = "revoke_session"
+	DisableUser                Action = "disable_user"
+	EnableUser                 Action = "enable_user"
+	OfficialDefinitionReserve  Action = "official_definition_reserve"
+	OfficialDraftCreate        Action = "official_draft_create"
+	OfficialDraftUpdate        Action = "official_draft_update"
+	OfficialDraftSubmit        Action = "official_draft_submit"
+	OfficialSubmissionWithdraw Action = "official_submission_withdraw"
+	OfficialSubmissionReview   Action = "official_submission_review"
+	OfficialReleaseActivate    Action = "official_release_activate"
+	OfficialReleaseRollout     Action = "official_release_rollout"
+	OfficialReleasePause       Action = "official_release_pause"
+	OfficialReleaseResume      Action = "official_release_resume"
+	OfficialReleaseRollback    Action = "official_release_rollback"
 )
 
 type OperationStatus string
@@ -156,12 +167,42 @@ type Command struct {
 	ExpectedRevision int64      `json:"expected_revision"`
 }
 
+type OfficialOperationCommand struct {
+	OperationID      uuid.UUID
+	ActorAdminID     uuid.UUID
+	ActorAdminRole   string
+	ApprovalID       *uuid.UUID
+	RequesterAdminID *uuid.UUID
+	RequestID        string
+	ReasonCode       string
+	TicketReference  string
+	ExpectedRevision int64
+	PayloadDigest    []byte
+}
+
 type Operation struct {
 	ID                     uuid.UUID       `json:"operation_id"`
 	Status                 OperationStatus `json:"status"`
 	ErrorCode              string          `json:"error_code,omitempty"`
 	AdministrativeRevision int64           `json:"administrative_revision,omitempty"`
 	UpdatedAt              time.Time       `json:"updated_at"`
+}
+
+type OfficialAuditEvent struct {
+	ID             uuid.UUID `json:"event_id"`
+	EventType      string    `json:"event_type"`
+	ObjectType     string    `json:"object_type"`
+	ObjectID       uuid.UUID `json:"object_id"`
+	Outcome        string    `json:"outcome"`
+	ReasonCode     string    `json:"reason_code,omitempty"`
+	RequestID      string    `json:"request_id"`
+	ActorAdminID   uuid.UUID `json:"actor_admin_id"`
+	ActorAdminRole string    `json:"actor_admin_role"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+type OfficialAuditService interface {
+	ListOfficialAuditEvents(context.Context, PageRequest) (Page[OfficialAuditEvent], error)
 }
 
 type PagePosition struct {
@@ -210,6 +251,34 @@ func ValidateCommand(action Action, targetID uuid.UUID, command Command) error {
 	return validateControlCommand(action, targetID, command)
 }
 
+func ValidateOfficialOperationCommand(
+	action Action,
+	targetID uuid.UUID,
+	command OfficialOperationCommand,
+) error {
+	if !validOfficialAction(action) || targetID == uuid.Nil || command.OperationID == uuid.Nil ||
+		command.ActorAdminID == uuid.Nil || command.ExpectedRevision < 1 || len(command.PayloadDigest) != 32 ||
+		!validControlText(command.RequestID, 1, 128, false) ||
+		!controlReasonPattern.MatchString(command.ReasonCode) ||
+		!validControlText(command.TicketReference, 1, 128, true) ||
+		!officialRoleAllowed(command.ActorAdminRole, action) {
+		return ErrInvalidCommand
+	}
+	if command.ApprovalID != nil && *command.ApprovalID == uuid.Nil ||
+		command.RequesterAdminID != nil && *command.RequesterAdminID == uuid.Nil {
+		return ErrInvalidCommand
+	}
+	if action == OfficialReleaseRollback {
+		if command.ApprovalID == nil || command.RequesterAdminID == nil ||
+			*command.RequesterAdminID == command.ActorAdminID {
+			return ErrInvalidCommand
+		}
+	} else if command.ApprovalID != nil || command.RequesterAdminID != nil {
+		return ErrInvalidCommand
+	}
+	return nil
+}
+
 func validateOperation(operation Operation) error {
 	if operation.ID == uuid.Nil || operation.UpdatedAt.IsZero() {
 		return ErrUnavailable
@@ -235,6 +304,32 @@ func validateOperation(operation Operation) error {
 
 func validControlAction(action Action) bool {
 	return action == RevokeDevice || action == RevokeSession || action == DisableUser || action == EnableUser
+}
+
+func validOfficialAction(action Action) bool {
+	switch action {
+	case OfficialDefinitionReserve, OfficialDraftCreate, OfficialDraftUpdate,
+		OfficialDraftSubmit, OfficialSubmissionWithdraw, OfficialSubmissionReview,
+		OfficialReleaseActivate, OfficialReleaseRollout, OfficialReleasePause,
+		OfficialReleaseResume, OfficialReleaseRollback:
+		return true
+	default:
+		return false
+	}
+}
+
+func officialRoleAllowed(role string, action Action) bool {
+	switch action {
+	case OfficialDefinitionReserve, OfficialDraftCreate, OfficialDraftUpdate,
+		OfficialDraftSubmit, OfficialSubmissionWithdraw:
+		return role == "developer"
+	case OfficialSubmissionReview, OfficialReleaseRollback:
+		return role == "super_admin"
+	case OfficialReleaseActivate, OfficialReleaseRollout, OfficialReleasePause, OfficialReleaseResume:
+		return role == "operator"
+	default:
+		return false
+	}
 }
 
 func validControlText(value string, minimum, maximum int, optional bool) bool {

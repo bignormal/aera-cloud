@@ -415,6 +415,10 @@ func (s *stubPlatformRepository) GetOfficialRelease(context.Context, uuid.UUID, 
 	return OfficialRelease{}, false, errors.New("unexpected GetOfficialRelease call")
 }
 
+func (s *stubPlatformRepository) ListOfficialReleases(context.Context, uuid.UUID, PageRequest) (OfficialReleasePage, error) {
+	return OfficialReleasePage{}, errors.New("unexpected ListOfficialReleases call")
+}
+
 func (s *stubPlatformRepository) GetOfficialEligibility(ctx context.Context, platformID uuid.UUID, releaseID uuid.UUID, principal Principal, eligibilityContext OfficialEligibilityContext) (OfficialEligibilityRecord, bool, error) {
 	if s.eligibility == nil {
 		return OfficialEligibilityRecord{}, false, errors.New("unexpected GetOfficialEligibility call")

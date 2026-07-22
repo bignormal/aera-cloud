@@ -11,6 +11,23 @@ type PlatformAdminActor struct {
 	AdminID   uuid.UUID
 	Role      string
 	RequestID string
+	Operation *PlatformAdminOperationProof
+}
+
+type PlatformAdminOperationProof struct {
+	OperationID        uuid.UUID
+	Action             string
+	TargetType         string
+	TargetID           uuid.UUID
+	ExpectedRevision   int64
+	ApprovalID         uuid.UUID
+	RequesterAdminID   uuid.UUID
+	ServiceSubject     string
+	IdempotencyKeyID   string
+	IdempotencyKeyHMAC []byte
+	RequestFingerprint []byte
+	ReasonCode         string
+	TicketReference    string
 }
 
 type OfficialChannel string

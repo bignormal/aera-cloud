@@ -155,6 +155,35 @@ func TestRequestFingerprintCoversEveryCommandField(t *testing.T) {
 	}
 }
 
+func TestProtectOfficialOperationBindsActorRoleRequesterAndPayload(t *testing.T) {
+	protector, err := NewProtector("v1", map[string][]byte{"v1": bytes.Repeat([]byte{7}, 32)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetID := uuid.New()
+	command := OfficialOperationCommand{
+		OperationID: uuid.New(), ActorAdminID: uuid.New(), ActorAdminRole: "super_admin",
+		RequestID: "req-official-rollback", ReasonCode: "release_rollback", TicketReference: "OPS-901",
+		ExpectedRevision: 3, PayloadDigest: bytes.Repeat([]byte{5}, 32),
+	}
+	approvalID, requesterID := uuid.New(), uuid.New()
+	command.ApprovalID, command.RequesterAdminID = &approvalID, &requesterID
+	digest, fingerprint, err := protector.ProtectOfficialOperation(OfficialReleaseRollback, targetID, command)
+	if err != nil || digest.KeyID != "v1" || len(digest.Sum) != 32 || len(fingerprint) != 32 {
+		t.Fatalf("proof = %+v / %x / %v", digest, fingerprint, err)
+	}
+	variants := []OfficialOperationCommand{command, command, command}
+	variants[0].ActorAdminRole = "operator"
+	variants[1].RequesterAdminID = &command.ActorAdminID
+	variants[2].PayloadDigest = bytes.Repeat([]byte{6}, 32)
+	for index, variant := range variants {
+		_, changed, _ := protector.ProtectOfficialOperation(OfficialReleaseRollback, targetID, variant)
+		if bytes.Equal(fingerprint, changed) {
+			t.Fatalf("variant %d did not change fingerprint", index)
+		}
+	}
+}
+
 func TestNewProtectorRejectsInvalidKeyRings(t *testing.T) {
 	tests := []struct {
 		name   string

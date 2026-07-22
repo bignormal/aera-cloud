@@ -25,10 +25,11 @@ const (
 )
 
 var (
-	ErrPlatformForbidden      = errors.New("official platform operation forbidden")
-	platformReasonPattern     = regexp.MustCompile(`^[a-z][a-z0-9_]{2,63}$`)
-	platformKeyPattern        = regexp.MustCompile(`^[a-z][a-z0-9_-]{2,63}$`)
-	platformRolloutKeyPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+	ErrPlatformForbidden          = errors.New("official platform operation forbidden")
+	platformReasonPattern         = regexp.MustCompile(`^[a-z][a-z0-9_]{2,63}$`)
+	platformKeyPattern            = regexp.MustCompile(`^[a-z][a-z0-9_-]{2,63}$`)
+	platformRolloutKeyPattern     = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+	platformServiceSubjectPattern = regexp.MustCompile(`^[a-z][a-z0-9._-]{2,63}$`)
 )
 
 type platformAction string
@@ -329,6 +330,11 @@ type PlatformVersionPage struct {
 	Next  uuid.UUID
 }
 
+type OfficialReleasePage struct {
+	Items []OfficialRelease
+	Next  uuid.UUID
+}
+
 type ReservePlatformDefinitionCommand struct {
 	DisplayName    string
 	IconMediaType  string
@@ -492,6 +498,7 @@ type PlatformRepository interface {
 	GetPlatformVersion(context.Context, uuid.UUID, uuid.UUID) (Version, bool, error)
 	AppendOfficialReleaseRevision(context.Context, OfficialReleaseMutationRepositoryCommand) (OfficialRelease, error)
 	GetOfficialRelease(context.Context, uuid.UUID, uuid.UUID) (OfficialRelease, bool, error)
+	ListOfficialReleases(context.Context, uuid.UUID, PageRequest) (OfficialReleasePage, error)
 	ListOfficialReleaseIDs(context.Context, uuid.UUID, OfficialChannel) ([]uuid.UUID, error)
 	FindOfficialReleaseID(context.Context, uuid.UUID, uuid.UUID, OfficialChannel) (uuid.UUID, bool, error)
 	FindOfficialInstallation(context.Context, Principal, uuid.UUID) (Installation, bool, error)
@@ -515,6 +522,8 @@ type PlatformService interface {
 	GetSubmission(context.Context, PlatformAdminActor, uuid.UUID) (PlatformAgentSubmission, error)
 	ListVersions(context.Context, PlatformAdminActor, PageRequest) (PlatformVersionPage, error)
 	GetVersion(context.Context, PlatformAdminActor, uuid.UUID) (Version, error)
+	ListReleases(context.Context, PlatformAdminActor, PageRequest) (OfficialReleasePage, error)
+	GetRelease(context.Context, PlatformAdminActor, uuid.UUID) (OfficialRelease, error)
 	ActivateOfficialRelease(context.Context, PlatformAdminActor, ActivateOfficialReleaseCommand) (OfficialRelease, error)
 	UpdateOfficialRollout(context.Context, PlatformAdminActor, UpdateOfficialRolloutCommand) (OfficialRelease, error)
 	PauseOfficialRelease(context.Context, PlatformAdminActor, ChangeOfficialReleaseStateCommand) (OfficialRelease, error)
@@ -648,6 +657,12 @@ func (s *platformService) ReserveDefinition(
 	if !ok {
 		return PlatformDefinitionReservation{}, ErrServiceUnavailable
 	}
+	actor, ok = bindGeneratedPlatformOperationTarget(
+		actor, "official_definition_reserve", "platform_definition", ids[0],
+	)
+	if !ok {
+		return PlatformDefinitionReservation{}, ErrInvalidRequest
+	}
 	now := s.clock().UTC()
 	result, err := s.repository.ReservePlatformDefinition(ctx, ReservePlatformDefinitionRepositoryCommand{
 		DefinitionID: ids[0], PlatformID: s.platformID, Actor: actor,
@@ -688,6 +703,12 @@ func (s *platformService) CreateDraft(
 	ids, ok := s.ids(3)
 	if !ok {
 		return PlatformAgentDraft{}, ErrServiceUnavailable
+	}
+	actor, ok = bindGeneratedPlatformOperationTarget(
+		actor, "official_draft_create", "platform_draft", ids[0],
+	)
+	if !ok {
+		return PlatformAgentDraft{}, ErrInvalidRequest
 	}
 	now := s.clock().UTC()
 	result, err := s.repository.CreatePlatformDraft(ctx, CreatePlatformDraftRepositoryCommand{
@@ -807,6 +828,12 @@ func (s *platformService) SubmitDraft(
 	ids, ok := s.ids(3)
 	if !ok {
 		return PlatformAgentSubmission{}, ErrServiceUnavailable
+	}
+	actor, ok = bindGeneratedPlatformOperationTarget(
+		actor, "official_draft_submit", "platform_submission", ids[0],
+	)
+	if !ok {
+		return PlatformAgentSubmission{}, ErrInvalidRequest
 	}
 	now := s.clock().UTC()
 	result, err := s.repository.SubmitPlatformDraft(ctx, SubmitPlatformDraftRepositoryCommand{
@@ -1032,6 +1059,36 @@ func (s *platformService) GetVersion(ctx context.Context, actor PlatformAdminAct
 		return Version{}, ErrNotFound
 	}
 	return cloneVersion(value), nil
+}
+
+func (s *platformService) ListReleases(
+	ctx context.Context,
+	actor PlatformAdminActor,
+	page PageRequest,
+) (OfficialReleasePage, error) {
+	if !s.authorized(actor, platformActionApprovedRead) || !validPageRequest(page) {
+		return OfficialReleasePage{}, platformRequestError(actor, platformActionApprovedRead)
+	}
+	value, err := s.repository.ListOfficialReleases(ctx, s.platformID, normalizePageRequest(page))
+	return cloneOfficialReleasePage(value), err
+}
+
+func (s *platformService) GetRelease(
+	ctx context.Context,
+	actor PlatformAdminActor,
+	id uuid.UUID,
+) (OfficialRelease, error) {
+	if !s.authorized(actor, platformActionApprovedRead) || id == uuid.Nil {
+		return OfficialRelease{}, platformRequestError(actor, platformActionApprovedRead)
+	}
+	value, found, err := s.repository.GetOfficialRelease(ctx, s.platformID, id)
+	if err != nil {
+		return OfficialRelease{}, err
+	}
+	if !found {
+		return OfficialRelease{}, ErrNotFound
+	}
+	return cloneOfficialRelease(value), nil
 }
 
 func (s *platformService) ActivateOfficialRelease(
@@ -1399,6 +1456,26 @@ func (s *platformService) authorized(actor PlatformAdminActor, action platformAc
 	return s != nil && actor.AdminID != uuid.Nil && validRequestID(actor.RequestID) && platformRoleAllowed(actor.Role, action)
 }
 
+func bindGeneratedPlatformOperationTarget(
+	actor PlatformAdminActor,
+	action string,
+	targetType string,
+	targetID uuid.UUID,
+) (PlatformAdminActor, bool) {
+	if actor.Operation == nil {
+		return actor, true
+	}
+	if actor.Operation.Action != action || actor.Operation.TargetType != targetType || targetID == uuid.Nil {
+		return PlatformAdminActor{}, false
+	}
+	proof := *actor.Operation
+	proof.TargetID = targetID
+	proof.IdempotencyKeyHMAC = bytes.Clone(proof.IdempotencyKeyHMAC)
+	proof.RequestFingerprint = bytes.Clone(proof.RequestFingerprint)
+	actor.Operation = &proof
+	return actor, true
+}
+
 func platformRequestError(actor PlatformAdminActor, action platformAction) error {
 	if actor.AdminID != uuid.Nil && validRequestID(actor.RequestID) && !platformRoleAllowed(actor.Role, action) {
 		return ErrPlatformForbidden
@@ -1723,5 +1800,14 @@ func clonePlatformVersionPage(value PlatformVersionPage) PlatformVersionPage {
 	for index := range value.Items {
 		value.Items[index] = cloneVersion(value.Items[index])
 	}
+	return value
+}
+
+func cloneOfficialReleasePage(value OfficialReleasePage) OfficialReleasePage {
+	items := make([]OfficialRelease, len(value.Items))
+	for index := range value.Items {
+		items[index] = cloneOfficialRelease(value.Items[index])
+	}
+	value.Items = items
 	return value
 }

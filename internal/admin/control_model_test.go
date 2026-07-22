@@ -75,3 +75,47 @@ func TestOperationValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateOfficialOperationCommandEnforcesRoleAndApprovalSeparation(t *testing.T) {
+	targetID, operationID, actorID := uuid.New(), uuid.New(), uuid.New()
+	valid := OfficialOperationCommand{
+		OperationID: operationID, ActorAdminID: actorID, ActorAdminRole: "developer",
+		RequestID: "req-official-1", ReasonCode: "content_update", ExpectedRevision: 1,
+		PayloadDigest: make([]byte, 32),
+	}
+	tests := []struct {
+		name    string
+		action  Action
+		command OfficialOperationCommand
+		wantErr bool
+	}{
+		{name: "developer draft", action: OfficialDraftUpdate, command: valid},
+		{name: "wrong draft role", action: OfficialDraftUpdate, command: func() OfficialOperationCommand { c := valid; c.ActorAdminRole = "support"; return c }(), wantErr: true},
+		{name: "reviewer", action: OfficialSubmissionReview, command: func() OfficialOperationCommand { c := valid; c.ActorAdminRole = "super_admin"; return c }()},
+		{name: "operator release", action: OfficialReleasePause, command: func() OfficialOperationCommand { c := valid; c.ActorAdminRole = "operator"; return c }()},
+		{name: "rollback requires approval", action: OfficialReleaseRollback, command: func() OfficialOperationCommand { c := valid; c.ActorAdminRole = "super_admin"; return c }(), wantErr: true},
+		{name: "rollback separated", action: OfficialReleaseRollback, command: func() OfficialOperationCommand {
+			c := valid
+			c.ActorAdminRole = "super_admin"
+			approval, requester := uuid.New(), uuid.New()
+			c.ApprovalID, c.RequesterAdminID = &approval, &requester
+			return c
+		}()},
+		{name: "self rollback", action: OfficialReleaseRollback, command: func() OfficialOperationCommand {
+			c := valid
+			c.ActorAdminRole = "super_admin"
+			approval := uuid.New()
+			c.ApprovalID, c.RequesterAdminID = &approval, &c.ActorAdminID
+			return c
+		}(), wantErr: true},
+		{name: "bad payload digest", action: OfficialDraftUpdate, command: func() OfficialOperationCommand { c := valid; c.PayloadDigest = []byte{1}; return c }(), wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := ValidateOfficialOperationCommand(test.action, targetID, test.command)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("error = %v, wantErr = %t", err, test.wantErr)
+			}
+		})
+	}
+}

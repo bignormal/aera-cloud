@@ -1,6 +1,7 @@
 package adminapi
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/tls"
@@ -14,6 +15,14 @@ import (
 	"time"
 
 	"github.com/bignormal/aera-cloud/internal/admin"
+	"github.com/google/uuid"
+)
+
+var (
+	authAdminID     = uuid.MustParse("019f0000-0000-7000-8000-000000000201")
+	authOperationID = uuid.MustParse("019f0000-0000-7000-8000-000000000202")
+	authApprovalID  = uuid.MustParse("019f0000-0000-7000-8000-000000000203")
+	authRequesterID = uuid.MustParse("019f0000-0000-7000-8000-000000000204")
 )
 
 func TestRequireScopeJWTFailureMatrix(t *testing.T) {
@@ -210,6 +219,107 @@ func TestRequireScopeRejectsMissingPermissionAndAmbiguousAuthorization(t *testin
 	})
 }
 
+func TestRequireOfficialScopeBindsSignedActorAndOperationClaims(t *testing.T) {
+	auth, privateKey, now := newTestAuthenticator(t)
+	tests := []struct {
+		name      string
+		claims    func() map[string]any
+		mode      OfficialActorRequirement
+		want      int
+		wantActor bool
+	}{
+		{
+			name: "read actor", mode: OfficialActorRead, want: http.StatusNoContent, wantActor: true,
+			claims: func() map[string]any { return validOfficialServiceClaims(now, ScopeOfficialAgentsRead, false, false) },
+		},
+		{
+			name: "mutation actor", mode: OfficialActorMutation, want: http.StatusNoContent, wantActor: true,
+			claims: func() map[string]any { return validOfficialServiceClaims(now, ScopeOfficialDraftsWrite, true, false) },
+		},
+		{
+			name: "rollback actor", mode: OfficialActorRollback, want: http.StatusNoContent, wantActor: true,
+			claims: func() map[string]any { return validOfficialServiceClaims(now, ScopeOfficialReleaseWrite, true, true) },
+		},
+		{
+			name: "service only token", mode: OfficialActorRead, want: http.StatusUnauthorized,
+			claims: func() map[string]any {
+				claims := validServiceClaims(now)
+				claims["scope"] = []string{ScopeOfficialAgentsRead}
+				return claims
+			},
+		},
+		{
+			name: "missing mutation operation", mode: OfficialActorMutation, want: http.StatusUnauthorized,
+			claims: func() map[string]any { return validOfficialServiceClaims(now, ScopeOfficialDraftsWrite, false, false) },
+		},
+		{
+			name: "wrong official scope", mode: OfficialActorMutation, want: http.StatusForbidden,
+			claims: func() map[string]any { return validOfficialServiceClaims(now, ScopeOfficialAgentsRead, true, false) },
+		},
+		{
+			name: "missing rollback approval", mode: OfficialActorRollback, want: http.StatusUnauthorized,
+			claims: func() map[string]any { return validOfficialServiceClaims(now, ScopeOfficialReleaseWrite, true, false) },
+		},
+		{
+			name: "invalid role", mode: OfficialActorRead, want: http.StatusUnauthorized,
+			claims: func() map[string]any {
+				claims := validOfficialServiceClaims(now, ScopeOfficialAgentsRead, false, false)
+				claims["admin_role"] = "root"
+				return claims
+			},
+		},
+		{
+			name: "noncanonical admin uuid", mode: OfficialActorRead, want: http.StatusUnauthorized,
+			claims: func() map[string]any {
+				claims := validOfficialServiceClaims(now, ScopeOfficialAgentsRead, false, false)
+				claims["admin_id"] = strings.ToUpper(authAdminID.String())
+				return claims
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			called := false
+			scope := ScopeOfficialAgentsRead
+			if test.mode == OfficialActorMutation {
+				scope = ScopeOfficialDraftsWrite
+			}
+			if test.mode == OfficialActorRollback {
+				scope = ScopeOfficialReleaseWrite
+			}
+			handler := auth.RequireOfficialScope(scope, test.mode)(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				called = true
+				actor, ok := OfficialActorFromContext(request.Context())
+				if !ok || actor.AdminID != authAdminID || actor.Role != "developer" {
+					t.Fatalf("actor = %+v / %t", actor, ok)
+				}
+				if test.mode != OfficialActorRead && actor.OperationID != authOperationID {
+					t.Fatalf("operation = %s", actor.OperationID)
+				}
+				if test.mode == OfficialActorRollback && (actor.ApprovalID != authApprovalID || actor.RequesterAdminID != authRequesterID) {
+					t.Fatalf("rollback evidence = %+v", actor)
+				}
+				response.WriteHeader(http.StatusNoContent)
+			}))
+			request := httptest.NewRequest(http.MethodGet, "https://cloud.test/internal/admin/v1/official-agent-definitions", nil)
+			setVerifiedClientCertificate(request)
+			request.Header.Set("Authorization", "Bearer "+signServiceToken(t, privateKey, validServiceHeader(), test.claims()))
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != test.want || called != test.wantActor {
+				t.Fatalf("status/called = %d/%t, want %d/%t; body=%s", response.Code, called, test.want, test.wantActor, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestOfficialActorFromContextRejectsMissingOrPartialValues(t *testing.T) {
+	if _, ok := OfficialActorFromContext(context.Background()); ok {
+		t.Fatal("empty context returned an actor")
+	}
+}
+
 func TestNewAuthenticatorRejectsInvalidConfiguration(t *testing.T) {
 	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -255,6 +365,21 @@ func validServiceClaims(now time.Time) map[string]any {
 		"scope": []string{ScopeUsersRead}, "iat": now.Unix(), "nbf": now.Add(-5 * time.Second).Unix(),
 		"exp": now.Add(5 * time.Minute).Unix(), "jti": "019f0000000070008000000000000001",
 	}
+}
+
+func validOfficialServiceClaims(now time.Time, scope string, mutation, rollback bool) map[string]any {
+	claims := validServiceClaims(now)
+	claims["scope"] = []string{scope}
+	claims["admin_id"] = authAdminID.String()
+	claims["admin_role"] = "developer"
+	if mutation {
+		claims["operation_id"] = authOperationID.String()
+	}
+	if rollback {
+		claims["approval_id"] = authApprovalID.String()
+		claims["requester_admin_id"] = authRequesterID.String()
+	}
+	return claims
 }
 
 func signServiceToken(t *testing.T, privateKey ed25519.PrivateKey, header, claims any) string {

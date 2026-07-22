@@ -10,6 +10,7 @@ import (
 
 	"github.com/bignormal/aera-cloud/internal/admin"
 	"github.com/bignormal/aera-cloud/internal/adminapi"
+	"github.com/bignormal/aera-cloud/internal/agentcontrol"
 	"github.com/bignormal/aera-cloud/internal/config"
 	"github.com/bignormal/aera-cloud/internal/secure"
 	"github.com/bignormal/aera-cloud/internal/store"
@@ -27,6 +28,7 @@ func buildInternalAdmin(
 	cfg config.Config,
 	postgres *pgxpool.Pool,
 	redisStore *store.RedisStore,
+	platformServices ...agentcontrol.PlatformService,
 ) (http.Handler, *tls.Config, error) {
 	if !cfg.InternalAdmin.Enabled {
 		return nil, nil, errors.New("internal admin is disabled")
@@ -53,7 +55,8 @@ func buildInternalAdmin(
 		return nil, nil, err
 	}
 	service, err := admin.NewControlService(admin.ControlServiceConfig{
-		Queries: repository, Commands: repository, Protector: protector, Clock: time.Now,
+		Queries: repository, Commands: repository, OfficialAudit: repository,
+		Protector: protector, Clock: time.Now,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -69,9 +72,25 @@ func buildInternalAdmin(
 	if err != nil {
 		return nil, nil, err
 	}
-	handler, err := adminapi.NewHandler(adminapi.HandlerConfig{
+	var platform agentcontrol.PlatformService
+	if len(platformServices) > 1 {
+		return nil, nil, errors.New("one official platform service is allowed")
+	}
+	if len(platformServices) == 1 {
+		platform = platformServices[0]
+	}
+	if cfg.OfficialAgent.Enabled && platform == nil {
+		return nil, nil, errors.New("official platform service is unavailable")
+	}
+	handlerConfig := adminapi.HandlerConfig{
 		Service: service, Auth: authenticator, PostgreSQL: postgres, Redis: redisStore, Clock: time.Now,
-	})
+	}
+	if platform != nil {
+		handlerConfig.OfficialAgents = platform
+		handlerConfig.OfficialAudit = service
+		handlerConfig.OperationProtector = protector
+	}
+	handler, err := adminapi.NewHandler(handlerConfig)
 	if err != nil {
 		return nil, nil, err
 	}

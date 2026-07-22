@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bignormal/aera-cloud/internal/admin"
+	"github.com/bignormal/aera-cloud/internal/agentcontrol"
 	"github.com/bignormal/aera-cloud/internal/secure"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -41,17 +42,23 @@ type HealthChecker interface {
 }
 
 type HandlerConfig struct {
-	Service    admin.Service
-	Auth       *Authenticator
-	PostgreSQL HealthChecker
-	Redis      HealthChecker
-	Clock      func() time.Time
+	Service            admin.Service
+	OfficialAgents     agentcontrol.PlatformService
+	OfficialAudit      admin.OfficialAuditService
+	OperationProtector *admin.Protector
+	Auth               *Authenticator
+	PostgreSQL         HealthChecker
+	Redis              HealthChecker
+	Clock              func() time.Time
 }
 
 type handler struct {
-	service    admin.Service
-	postgresql HealthChecker
-	redis      HealthChecker
+	service            admin.Service
+	officialAgents     agentcontrol.PlatformService
+	officialAudit      admin.OfficialAuditService
+	operationProtector *admin.Protector
+	postgresql         HealthChecker
+	redis              HealthChecker
 }
 
 func NewHandler(config HandlerConfig) (http.Handler, error) {
@@ -59,8 +66,18 @@ func NewHandler(config HandlerConfig) (http.Handler, error) {
 		dependencyMissing(config.Redis) || config.Clock == nil {
 		return nil, errors.New("internal admin handler dependencies are required")
 	}
+	hasOfficialAgents := !dependencyMissing(config.OfficialAgents)
+	hasOfficialAudit := !dependencyMissing(config.OfficialAudit)
+	hasOperationProtector := config.OperationProtector != nil
+	if hasOfficialAgents != hasOfficialAudit || hasOfficialAgents != hasOperationProtector {
+		return nil, errors.New("official agent admin dependencies must be configured together")
+	}
 
-	h := &handler{service: config.Service, postgresql: config.PostgreSQL, redis: config.Redis}
+	h := &handler{
+		service: config.Service, officialAgents: config.OfficialAgents,
+		officialAudit: config.OfficialAudit, operationProtector: config.OperationProtector,
+		postgresql: config.PostgreSQL, redis: config.Redis,
+	}
 	router := chi.NewRouter()
 	router.Use(requestIDMiddleware(config.Clock))
 	router.Use(jsonResponseMiddleware)
@@ -93,6 +110,9 @@ func NewHandler(config HandlerConfig) (http.Handler, error) {
 			operations.Use(config.Auth.RequireScope(ScopeOperationsRead))
 			operations.Get("/operations/{operationID}", h.getOperation)
 		})
+		if !dependencyMissing(config.OfficialAgents) {
+			registerOfficialAgentRoutes(router, config.Auth, h)
+		}
 	})
 	router.NotFound(func(response http.ResponseWriter, request *http.Request) {
 		writeErrorResponse(response, request, http.StatusNotFound, "NOT_FOUND")

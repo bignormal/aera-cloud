@@ -91,6 +91,90 @@ func TestPlatformRepositoryPublicationCreatesImmutableVersionAndLeavesExistingRe
 	}
 }
 
+func TestPlatformRepositoryPersistsOfficialAdminOperationAtomically(t *testing.T) {
+	fixture := newPlatformRepositoryFixture(t)
+	definitionID, operationID := uuid.New(), uuid.New()
+	operationDigest := sha256.Sum256(operationID[:])
+	requestDigest := sha256.Sum256(definitionID[:])
+	actor := fixture.developer
+	actor.Operation = &PlatformAdminOperationProof{
+		OperationID: operationID, Action: "official_definition_reserve",
+		TargetType: "platform_definition", TargetID: definitionID,
+		ExpectedRevision: 1, ServiceSubject: "aera-admin-e2e",
+		IdempotencyKeyID: "v1", IdempotencyKeyHMAC: operationDigest[:],
+		RequestFingerprint: requestDigest[:], ReasonCode: "definition_create",
+	}
+	command := ReservePlatformDefinitionRepositoryCommand{
+		DefinitionID: definitionID, PlatformID: fixture.platformID, Actor: actor,
+		DisplayName: "Official Atomic", Idempotency: fixture.idempotency(0x09),
+		Audit: fixture.auditEvidence(0x09), CreatedAt: fixture.now.Add(9 * time.Second),
+	}
+	created, err := fixture.repository.ReservePlatformDefinition(fixture.ctx, command)
+	if err != nil || created.ID != definitionID {
+		t.Fatalf("ReservePlatformDefinition() = %+v / %v", created, err)
+	}
+	var action, targetType, status, actorRole, subject string
+	var targetID uuid.UUID
+	var expectedRevision, resultRevision int64
+	if err := fixture.postgres.QueryRow(fixture.ctx, `
+		SELECT action, target_type, target_id, status, actor_admin_role, service_subject,
+		       expected_revision, result_revision
+		FROM admin_operations WHERE operation_id = $1
+	`, operationID).Scan(&action, &targetType, &targetID, &status, &actorRole, &subject, &expectedRevision, &resultRevision); err != nil {
+		t.Fatalf("read official admin operation: %v", err)
+	}
+	if action != "official_definition_reserve" || targetType != "platform_definition" || targetID != definitionID ||
+		status != "succeeded" || actorRole != "developer" || subject != "aera-admin-e2e" ||
+		expectedRevision != 1 || resultRevision != 1 {
+		t.Fatalf("operation = %s %s %s %s %s %s %d %d", action, targetType, targetID, status, actorRole, subject, expectedRevision, resultRevision)
+	}
+	replayed, err := fixture.repository.ReservePlatformDefinition(fixture.ctx, command)
+	if err != nil || replayed.ID != definitionID || !replayed.Replayed {
+		t.Fatalf("official operation replay = %+v / %v", replayed, err)
+	}
+	var operationCount, auditCount int64
+	if err := fixture.postgres.QueryRow(fixture.ctx, `
+		SELECT count(*) FROM admin_operations WHERE operation_id = $1
+	`, operationID).Scan(&operationCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.postgres.QueryRow(fixture.ctx, `
+		SELECT count(*) FROM audit_events
+		WHERE id = $1 AND reason_code = 'definition_create'
+		  AND metadata->>'operation_id' = $2
+		  AND metadata->>'action' = 'official_definition_reserve'
+		  AND metadata->>'service_subject' = 'aera-admin-e2e'
+	`, command.Audit.EventID, operationID.String()).Scan(&auditCount); err != nil {
+		t.Fatal(err)
+	}
+	if operationCount != 1 || auditCount != 1 {
+		t.Fatalf("replayed operation/audit counts = %d/%d, want 1/1", operationCount, auditCount)
+	}
+
+	badDefinitionID := uuid.New()
+	badOperationID := uuid.New()
+	badOperationDigest := sha256.Sum256(badOperationID[:])
+	badRequestDigest := sha256.Sum256(badDefinitionID[:])
+	badActor := fixture.developer
+	badActor.Operation = &PlatformAdminOperationProof{
+		OperationID: badOperationID, Action: "official_definition_reserve",
+		TargetType: "platform_definition", TargetID: uuid.New(), ExpectedRevision: 1,
+		ServiceSubject: "aera-admin-e2e", IdempotencyKeyID: "v1",
+		IdempotencyKeyHMAC: badOperationDigest[:], RequestFingerprint: badRequestDigest[:],
+		ReasonCode: "definition_create",
+	}
+	badCommand := command
+	badCommand.DefinitionID, badCommand.Actor = badDefinitionID, badActor
+	badCommand.Idempotency, badCommand.Audit = fixture.idempotency(0x0a), fixture.auditEvidence(0x0a)
+	if _, err := fixture.repository.ReservePlatformDefinition(fixture.ctx, badCommand); !errors.Is(err, ErrInvalidRepositoryCommand) {
+		t.Fatalf("mismatched operation proof error = %v", err)
+	}
+	var count int64
+	if err := fixture.postgres.QueryRow(fixture.ctx, `SELECT count(*) FROM agent_definitions WHERE id = $1`, badDefinitionID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("rolled back definition count = %d / %v", count, err)
+	}
+}
+
 func TestPlatformRepositorySupersedesPendingAndEnforcesRevisionAndActorSeparation(t *testing.T) {
 	fixture := newPlatformRepositoryFixture(t)
 	reservation := fixture.reserveDefinition(t, 0x21)

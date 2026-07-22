@@ -2,6 +2,7 @@ package adminapi
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
@@ -13,14 +14,20 @@ import (
 	"time"
 
 	"github.com/bignormal/aera-cloud/internal/admin"
+	"github.com/google/uuid"
 )
 
 const (
-	ScopeUsersRead      = "users:read"
-	ScopeDevicesWrite   = "devices:write"
-	ScopeSessionsWrite  = "sessions:write"
-	ScopeAccountsWrite  = "accounts:write"
-	ScopeOperationsRead = "operations:read"
+	ScopeUsersRead            = "users:read"
+	ScopeDevicesWrite         = "devices:write"
+	ScopeSessionsWrite        = "sessions:write"
+	ScopeAccountsWrite        = "accounts:write"
+	ScopeOperationsRead       = "operations:read"
+	ScopeOfficialAgentsRead   = "official_agents:read"
+	ScopeOfficialDraftsWrite  = "official_agent_drafts:write"
+	ScopeOfficialReviewsWrite = "official_agent_reviews:write"
+	ScopeOfficialReleaseWrite = "official_agent_releases:write"
+	ScopeOfficialAuditRead    = "official_agent_audit:read"
 
 	serviceJWTAudience       = "aera-cloud-admin"
 	maximumServiceTokenBytes = 8192
@@ -32,14 +39,41 @@ var (
 	serviceIdentityPattern = regexp.MustCompile(`^[a-z][a-z0-9._-]{2,63}$`)
 	serviceJWTIDPattern    = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
 	allowedServiceScopes   = map[string]struct{}{
-		ScopeUsersRead:      {},
-		ScopeDevicesWrite:   {},
-		ScopeSessionsWrite:  {},
-		ScopeAccountsWrite:  {},
-		ScopeOperationsRead: {},
+		ScopeUsersRead:            {},
+		ScopeDevicesWrite:         {},
+		ScopeSessionsWrite:        {},
+		ScopeAccountsWrite:        {},
+		ScopeOperationsRead:       {},
+		ScopeOfficialAgentsRead:   {},
+		ScopeOfficialDraftsWrite:  {},
+		ScopeOfficialReviewsWrite: {},
+		ScopeOfficialReleaseWrite: {},
+		ScopeOfficialAuditRead:    {},
+	}
+	allowedOfficialRoles = map[string]struct{}{
+		"super_admin": {}, "developer": {}, "operator": {},
+		"support": {}, "finance": {}, "auditor": {},
 	}
 	errInvalidServiceAuthentication = errors.New("internal service authentication failed")
 )
+
+type officialActorContextKey struct{}
+
+type OfficialActorRequirement uint8
+
+const (
+	OfficialActorRead OfficialActorRequirement = iota + 1
+	OfficialActorMutation
+	OfficialActorRollback
+)
+
+type VerifiedOfficialActor struct {
+	AdminID          uuid.UUID
+	Role             string
+	OperationID      uuid.UUID
+	ApprovalID       uuid.UUID
+	RequesterAdminID uuid.UUID
+}
 
 type AuthenticatorConfig struct {
 	PublicKey ed25519.PublicKey
@@ -69,6 +103,15 @@ type serviceJWTClaims struct {
 	NotBefore int64    `json:"nbf"`
 	ExpiresAt int64    `json:"exp"`
 	JWTID     string   `json:"jti"`
+	ServiceActorClaims
+}
+
+type ServiceActorClaims struct {
+	AdminID          string `json:"admin_id,omitempty"`
+	Role             string `json:"admin_role,omitempty"`
+	OperationID      string `json:"operation_id,omitempty"`
+	ApprovalID       string `json:"approval_id,omitempty"`
+	RequesterAdminID string `json:"requester_admin_id,omitempty"`
 }
 
 func NewAuthenticator(config AuthenticatorConfig) (*Authenticator, error) {
@@ -85,15 +128,24 @@ func NewAuthenticator(config AuthenticatorConfig) (*Authenticator, error) {
 
 func (a *Authenticator) RequireScope(scope string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
-		return a.require(next, scope)
+		return a.require(next, scope, 0)
+	}
+}
+
+func (a *Authenticator) RequireOfficialScope(
+	scope string,
+	requirement OfficialActorRequirement,
+) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return a.require(next, scope, requirement)
 	}
 }
 
 func (a *Authenticator) RequireAuthentication(next http.Handler) http.Handler {
-	return a.require(next, "")
+	return a.require(next, "", 0)
 }
 
-func (a *Authenticator) require(next http.Handler, scope string) http.Handler {
+func (a *Authenticator) require(next http.Handler, scope string, requirement OfficialActorRequirement) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if a == nil || next == nil || !verifiedClientCertificate(request) {
 			writeAuthenticationError(response, request, http.StatusUnauthorized, "AUTHENTICATION_REQUIRED")
@@ -110,7 +162,15 @@ func (a *Authenticator) require(next http.Handler, scope string) http.Handler {
 				return
 			}
 		}
+		actor, hasActor := officialActorFromClaims(claims)
+		if requirement != 0 && (!hasActor || !actorSatisfies(actor, requirement)) {
+			writeAuthenticationError(response, request, http.StatusUnauthorized, "AUTHENTICATION_REQUIRED")
+			return
+		}
 		ctx := admin.WithServiceSubject(request.Context(), claims.Subject)
+		if hasActor {
+			ctx = contextWithOfficialActor(ctx, actor)
+		}
 		next.ServeHTTP(response, request.WithContext(ctx))
 	})
 }
@@ -174,6 +234,9 @@ func (a *Authenticator) validClaims(claims serviceJWTClaims) bool {
 		}
 		seen[scope] = struct{}{}
 	}
+	if !validOptionalOfficialActorClaims(claims) {
+		return false
+	}
 
 	maximumLifetimeSeconds := int64(maximumServiceTokenLife / time.Second)
 	maximumSkewSeconds := int64(maximumServiceClockSkew / time.Second)
@@ -189,6 +252,83 @@ func (a *Authenticator) validClaims(claims serviceJWTClaims) bool {
 		return false
 	}
 	return true
+}
+
+func validOptionalOfficialActorClaims(claims serviceJWTClaims) bool {
+	hasAny := claims.AdminID != "" || claims.Role != "" || claims.OperationID != "" ||
+		claims.ApprovalID != "" || claims.RequesterAdminID != ""
+	if !hasAny {
+		return true
+	}
+	actor, ok := officialActorFromClaims(claims)
+	if !ok {
+		return false
+	}
+	if actor.OperationID == uuid.Nil {
+		return actor.ApprovalID == uuid.Nil && actor.RequesterAdminID == uuid.Nil
+	}
+	return (actor.ApprovalID == uuid.Nil) == (actor.RequesterAdminID == uuid.Nil)
+}
+
+func officialActorFromClaims(claims serviceJWTClaims) (VerifiedOfficialActor, bool) {
+	adminID, ok := parseCanonicalUUID(claims.AdminID)
+	if !ok {
+		return VerifiedOfficialActor{}, false
+	}
+	if _, ok := allowedOfficialRoles[claims.Role]; !ok {
+		return VerifiedOfficialActor{}, false
+	}
+	actor := VerifiedOfficialActor{AdminID: adminID, Role: claims.Role}
+	values := []struct {
+		value  string
+		target *uuid.UUID
+	}{
+		{claims.OperationID, &actor.OperationID},
+		{claims.ApprovalID, &actor.ApprovalID},
+		{claims.RequesterAdminID, &actor.RequesterAdminID},
+	}
+	for _, candidate := range values {
+		if candidate.value == "" {
+			continue
+		}
+		parsed, valid := parseCanonicalUUID(candidate.value)
+		if !valid {
+			return VerifiedOfficialActor{}, false
+		}
+		*candidate.target = parsed
+	}
+	return actor, true
+}
+
+func actorSatisfies(actor VerifiedOfficialActor, requirement OfficialActorRequirement) bool {
+	switch requirement {
+	case OfficialActorRead:
+		return actor.OperationID == uuid.Nil && actor.ApprovalID == uuid.Nil && actor.RequesterAdminID == uuid.Nil
+	case OfficialActorMutation:
+		return actor.OperationID != uuid.Nil && actor.ApprovalID == uuid.Nil && actor.RequesterAdminID == uuid.Nil
+	case OfficialActorRollback:
+		return actor.OperationID != uuid.Nil && actor.ApprovalID != uuid.Nil && actor.RequesterAdminID != uuid.Nil &&
+			actor.AdminID != actor.RequesterAdminID
+	default:
+		return false
+	}
+}
+
+func parseCanonicalUUID(value string) (uuid.UUID, bool) {
+	parsed, err := uuid.Parse(value)
+	return parsed, err == nil && parsed != uuid.Nil && parsed.String() == value
+}
+
+func contextWithOfficialActor(ctx context.Context, actor VerifiedOfficialActor) context.Context {
+	return context.WithValue(ctx, officialActorContextKey{}, actor)
+}
+
+func OfficialActorFromContext(ctx context.Context) (VerifiedOfficialActor, bool) {
+	if ctx == nil {
+		return VerifiedOfficialActor{}, false
+	}
+	actor, ok := ctx.Value(officialActorContextKey{}).(VerifiedOfficialActor)
+	return actor, ok && actor.AdminID != uuid.Nil
 }
 
 func verifiedClientCertificate(request *http.Request) bool {
