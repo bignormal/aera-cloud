@@ -766,7 +766,8 @@ func (r *PostgresRepository) FindVersion(
 		return Version{}, false, ErrServiceUnavailable
 	}
 	var version Version
-	if OwnerScope(ownerScope) == OwnerScopeOrganization {
+	switch OwnerScope(ownerScope) {
+	case OwnerScopeOrganization:
 		if !organizationValue.Valid {
 			return Version{}, false, ErrServiceUnavailable
 		}
@@ -780,7 +781,12 @@ func (r *PostgresRepository) FindVersion(
 			return Version{}, false, err
 		}
 		version, err = loadOrganizationVersion(ctx, tx, organizationID, versionID)
-	} else {
+	case OwnerScopePlatform:
+		version, err = scanVersion(tx.QueryRow(
+			ctx, installedPlatformVersionQuery,
+			principal.PersonalSpaceID, principal.UserID, principal.DeviceID, versionID,
+		))
+	default:
 		version, err = scanVersion(tx.QueryRow(
 			ctx, versionQuery, principal.PersonalSpaceID, principal.UserID, versionID,
 		))
@@ -1979,6 +1985,31 @@ const versionQuery = `
 			AND organization_member.status = 'active'
 		)
 	)
+`
+
+const installedPlatformVersionQuery = `
+	SELECT version.id, version.definition_id, version.version_number,
+		version.canonical_manifest::text, version.bundle::text, version.content_digest,
+		version.signing_key_id, version.signature, version.runtime_minimum_version,
+		COALESCE(version.runtime_maximum_version_exclusive, ''), version.published_at
+	FROM agent_versions version
+	JOIN installations installation
+		ON installation.selected_version_id = version.id
+	JOIN devices device
+		ON device.id = installation.device_id
+	WHERE installation.tenant_id = $1
+	  AND installation.owner_scope = 'USER'
+	  AND installation.owner_id = $2
+	  AND installation.device_id = $3
+	  AND installation.update_policy = 'managed'
+	  AND installation.official_release_id IS NOT NULL
+	  AND installation.selected_release_revision_id IS NOT NULL
+	  AND installation.status IN ('pending', 'active')
+	  AND device.user_id = $2
+	  AND device.status = 'active'
+	  AND version.id = $4
+	  AND version.owner_scope = 'PLATFORM'
+	LIMIT 1
 `
 
 const workspaceDefinitionQuery = `

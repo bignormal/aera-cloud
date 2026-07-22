@@ -59,6 +59,12 @@ func TestOfficialInstallationRepositoryRemainsUserOwnedAndBindsRuntimeProvenance
 		created.Installation.SelectedVersionID != versionID {
 		t.Fatalf("managed Installation = %+v", created.Installation)
 	}
+	downloaded, err := service.GetVersion(
+		fixture.ctx, principal, versionID, "official-installation-selected-version",
+	)
+	if err != nil || downloaded.ID != versionID || downloaded.DefinitionID != release.DefinitionID {
+		t.Fatalf("selected official Installation version = %+v, %v", downloaded, err)
+	}
 	var ownerScope string
 	var tenantID, ownerID uuid.UUID
 	if err := fixture.postgres.QueryRow(fixture.ctx, `
