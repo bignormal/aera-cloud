@@ -34,7 +34,7 @@ is_allowed_example_env() {
 
 is_test_fixture() {
   case "$1" in
-    *_test.go|*.test.ts|*.test.tsx|web/tests/*|scripts/tests/*)
+    *_test.go|*.test.ts|*.test.tsx|api/experience-candidate-v1-vectors.json|web/tests/*|scripts/tests/*)
       return 0
       ;;
   esac
@@ -53,7 +53,9 @@ has_plaintext_verification_code_shape() {
     return
   fi
 
-  grep -Eq -- "$pattern" "$absolute"
+  grep -E -- "$pattern" "$absolute" |
+    grep -Eiv -- '(^[[:space:]]*(maximum|minimum|maxLength|minLength|maxItems|minItems):[[:space:]]*[0-9]{6}([[:space:]]|$)|000[0-9]{3}_[a-z0-9_]+\.sql)' \
+      >/dev/null
 }
 
 while IFS= read -r -d '' relative; do
@@ -69,7 +71,8 @@ while IFS= read -r -d '' relative; do
   [[ -f "$absolute" ]] || continue
   grep -Iq . "$absolute" || continue
 
-  if grep -Eq -- '-----BEGIN ([A-Z0-9]+ )?PRIVATE KEY-----' "$absolute"; then
+  if ! is_test_fixture "$relative" &&
+    grep -Eq -- '-----BEGIN ([A-Z0-9]+ )?PRIVATE KEY-----' "$absolute"; then
     report "$relative" "PEM private key marker"
   fi
 

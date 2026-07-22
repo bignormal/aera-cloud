@@ -41,11 +41,14 @@ expect_fail() {
 }
 
 safe=$(new_repo safe)
-mkdir -p "$safe/internal" "$safe/migrations"
+mkdir -p "$safe/api" "$safe/docs/runbooks" "$safe/internal" "$safe/migrations"
 printf 'AGENTERA_CLOUD_ENVIRONMENT=development\n' > "$safe/.env.example"
 printf 'package internal\nvar testCode = "123456"\n' > "$safe/internal/provider_test.go"
 printf 'var fakeProviderFixture = map[string]string{"AGENTERA_CLOUD_SMTP_HOST": "smtp.agentera.invalid"}\n' >> "$safe/internal/provider_test.go"
 printf 'CHECK (octet_length(icon_data) <= 524288);\n' > "$safe/migrations/000001_size_limit.sql"
+printf 'maxLength: 262144\n' > "$safe/api/openapi.yaml"
+printf 'Apply migration 000015_internal_admin_api.sql before enabling.\n' > "$safe/docs/runbooks/private-staging.md"
+printf '%s%s\ntoken=eyJfixture.fixture.fixture\n' '-----BEGIN ' 'PRIVATE KEY-----' > "$safe/api/experience-candidate-v1-vectors.json"
 track "$safe"
 expect_pass "$safe"
 
