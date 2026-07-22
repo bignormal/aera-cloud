@@ -101,6 +101,7 @@ type KeyRing struct {
 type Config struct {
 	Environment                    string
 	ListenAddr                     string
+	InternalAdmin                  InternalAdminConfig
 	PublicURL                      string
 	DatabaseURL                    string
 	RedisAddr                      string
@@ -175,6 +176,10 @@ func Load(lookup LookupEnv) (Config, error) {
 	}
 
 	listenAddr, err := required(lookup, envListenAddr)
+	if err != nil {
+		return Config{}, err
+	}
+	internalAdmin, err := loadInternalAdmin(lookup, listenAddr)
 	if err != nil {
 		return Config{}, err
 	}
@@ -509,6 +514,7 @@ func Load(lookup LookupEnv) (Config, error) {
 	return Config{
 		Environment:                    environment,
 		ListenAddr:                     listenAddr,
+		InternalAdmin:                  internalAdmin,
 		PublicURL:                      publicURL,
 		DatabaseURL:                    databaseURL,
 		RedisAddr:                      redisAddr,
