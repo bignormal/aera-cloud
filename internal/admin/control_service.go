@@ -172,7 +172,13 @@ func (s *ControlService) Execute(
 	}
 	operation, err := s.commands.Execute(ctx, action, targetID, command)
 	if err != nil {
-		return operation, mapControlDataError(err)
+		mapped := mapControlDataError(err)
+		if errors.Is(mapped, ErrNotFound) || errors.Is(mapped, ErrStateConflict) {
+			if validateOperation(operation) != nil {
+				return Operation{}, ErrUnavailable
+			}
+		}
+		return operation, mapped
 	}
 	if err := validateOperation(operation); err != nil {
 		return Operation{}, ErrUnavailable

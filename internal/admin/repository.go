@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -39,32 +40,7 @@ func (r *PostgresRepository) DisableAccount(ctx context.Context, mutation Mutati
 	if status != "active" {
 		return ErrNotFound
 	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE users SET status = 'disabled', administratively_disabled = TRUE, updated_at = $2 WHERE id = $1
-	`, mutation.TargetUserID, mutation.OccurredAt); err != nil {
-		return ErrUnavailable
-	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE personal_spaces SET status = 'disabled', updated_at = $2 WHERE owner_user_id = $1
-	`, mutation.TargetUserID, mutation.OccurredAt); err != nil {
-		return ErrUnavailable
-	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE devices SET status = 'revoked', revoked_at = COALESCE(revoked_at, $2), updated_at = $2
-		WHERE user_id = $1
-	`, mutation.TargetUserID, mutation.OccurredAt); err != nil {
-		return ErrUnavailable
-	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE sessions SET revoked_at = COALESCE(revoked_at, $2),
-			revoked_reason = COALESCE(revoked_reason, 'account_admin_disabled')
-		WHERE user_id = $1
-	`, mutation.TargetUserID, mutation.OccurredAt); err != nil {
-		return ErrUnavailable
-	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE offline_entitlement_issuances SET revoked_at = COALESCE(revoked_at, $2) WHERE user_id = $1
-	`, mutation.TargetUserID, mutation.OccurredAt); err != nil {
+	if _, err := disableUserLifecycle(ctx, tx, mutation.TargetUserID, mutation.OccurredAt); err != nil {
 		return ErrUnavailable
 	}
 	if err := insertOperatorAudit(ctx, tx, mutation, "account_disabled", "user", mutation.TargetUserID); err != nil {
@@ -102,14 +78,7 @@ func (r *PostgresRepository) EnableAccount(ctx context.Context, mutation Mutatio
 	if status != "disabled" || !administrativelyDisabled || deletionFinalized {
 		return ErrNotFound
 	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE users SET status = 'active', administratively_disabled = FALSE, updated_at = $2 WHERE id = $1
-	`, mutation.TargetUserID, mutation.OccurredAt); err != nil {
-		return ErrUnavailable
-	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE personal_spaces SET status = 'active', updated_at = $2 WHERE owner_user_id = $1
-	`, mutation.TargetUserID, mutation.OccurredAt); err != nil {
+	if _, err := enableUserLifecycle(ctx, tx, mutation.TargetUserID, mutation.OccurredAt); err != nil {
 		return ErrUnavailable
 	}
 	if err := insertOperatorAudit(ctx, tx, mutation, "account_enabled", "user", mutation.TargetUserID); err != nil {
@@ -150,11 +119,7 @@ func (r *PostgresRepository) RevokeSession(ctx context.Context, mutation Mutatio
 	if lockedUserID != userID {
 		return ErrNotFound
 	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE sessions SET revoked_at = COALESCE(revoked_at, $2),
-			revoked_reason = COALESCE(revoked_reason, 'admin_revoked')
-		WHERE family_id = $1
-	`, familyID, mutation.OccurredAt); err != nil {
+	if _, err := revokeSessionFamilyLifecycle(ctx, tx, userID, familyID, mutation.OccurredAt); err != nil {
 		return ErrUnavailable
 	}
 	mutation.TargetUserID = userID
@@ -269,4 +234,139 @@ func lockTargetUser(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
 		return ErrUnavailable
 	}
 	return nil
+}
+
+func disableUserLifecycle(
+	ctx context.Context,
+	tx pgx.Tx,
+	userID uuid.UUID,
+	now time.Time,
+) (int64, error) {
+	var revision int64
+	if err := tx.QueryRow(ctx, `
+		UPDATE users
+		SET status = 'disabled', administratively_disabled = TRUE,
+			administrative_revision = administrative_revision + 1, updated_at = $2
+		WHERE id = $1
+		RETURNING administrative_revision
+	`, userID, now).Scan(&revision); err != nil {
+		return 0, ErrUnavailable
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE personal_spaces SET status = 'disabled', updated_at = $2 WHERE owner_user_id = $1
+	`, userID, now)
+	if err != nil || tag.RowsAffected() != 1 {
+		return 0, ErrUnavailable
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE devices SET status = 'revoked', revoked_at = COALESCE(revoked_at, $2), updated_at = $2
+		WHERE user_id = $1
+	`, userID, now); err != nil {
+		return 0, ErrUnavailable
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE sessions SET revoked_at = COALESCE(revoked_at, $2),
+			revoked_reason = COALESCE(revoked_reason, 'account_admin_disabled')
+		WHERE user_id = $1
+	`, userID, now); err != nil {
+		return 0, ErrUnavailable
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE offline_entitlement_issuances SET revoked_at = COALESCE(revoked_at, $2) WHERE user_id = $1
+	`, userID, now); err != nil {
+		return 0, ErrUnavailable
+	}
+	return revision, nil
+}
+
+func enableUserLifecycle(
+	ctx context.Context,
+	tx pgx.Tx,
+	userID uuid.UUID,
+	now time.Time,
+) (int64, error) {
+	var revision int64
+	if err := tx.QueryRow(ctx, `
+		UPDATE users
+		SET status = 'active', administratively_disabled = FALSE,
+			administrative_revision = administrative_revision + 1, updated_at = $2
+		WHERE id = $1
+		RETURNING administrative_revision
+	`, userID, now).Scan(&revision); err != nil {
+		return 0, ErrUnavailable
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE personal_spaces SET status = 'active', updated_at = $2 WHERE owner_user_id = $1
+	`, userID, now)
+	if err != nil || tag.RowsAffected() != 1 {
+		return 0, ErrUnavailable
+	}
+	return revision, nil
+}
+
+func revokeDeviceLifecycle(
+	ctx context.Context,
+	tx pgx.Tx,
+	userID uuid.UUID,
+	deviceID uuid.UUID,
+	now time.Time,
+) (int64, error) {
+	tag, err := tx.Exec(ctx, `
+		UPDATE devices
+		SET status = 'revoked', revoked_at = COALESCE(revoked_at, $3), updated_at = $3
+		WHERE id = $1 AND user_id = $2
+	`, deviceID, userID, now)
+	if err != nil || tag.RowsAffected() != 1 {
+		return 0, ErrUnavailable
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE sessions SET revoked_at = COALESCE(revoked_at, $2),
+			revoked_reason = COALESCE(revoked_reason, 'device_admin_revoked')
+		WHERE device_id = $1
+	`, deviceID, now); err != nil {
+		return 0, ErrUnavailable
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE offline_entitlement_issuances SET revoked_at = COALESCE(revoked_at, $2)
+		WHERE device_id = $1
+	`, deviceID, now); err != nil {
+		return 0, ErrUnavailable
+	}
+	return incrementAdministrativeRevision(ctx, tx, userID, now)
+}
+
+func revokeSessionFamilyLifecycle(
+	ctx context.Context,
+	tx pgx.Tx,
+	userID uuid.UUID,
+	familyID uuid.UUID,
+	now time.Time,
+) (int64, error) {
+	tag, err := tx.Exec(ctx, `
+		UPDATE sessions SET revoked_at = COALESCE(revoked_at, $3),
+			revoked_reason = COALESCE(revoked_reason, 'admin_revoked')
+		WHERE family_id = $1 AND user_id = $2
+	`, familyID, userID, now)
+	if err != nil || tag.RowsAffected() < 1 {
+		return 0, ErrUnavailable
+	}
+	return incrementAdministrativeRevision(ctx, tx, userID, now)
+}
+
+func incrementAdministrativeRevision(
+	ctx context.Context,
+	tx pgx.Tx,
+	userID uuid.UUID,
+	now time.Time,
+) (int64, error) {
+	var revision int64
+	if err := tx.QueryRow(ctx, `
+		UPDATE users
+		SET administrative_revision = administrative_revision + 1, updated_at = $2
+		WHERE id = $1
+		RETURNING administrative_revision
+	`, userID, now).Scan(&revision); err != nil {
+		return 0, ErrUnavailable
+	}
+	return revision, nil
 }

@@ -2,6 +2,8 @@ package admin
 
 import (
 	"context"
+	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -425,4 +427,566 @@ func mapControlRepositoryError(err error) error {
 		return ErrUnavailable
 	}
 	return ErrUnavailable
+}
+
+type storedOperation struct {
+	KeyID       string
+	Fingerprint []byte
+	Operation   Operation
+}
+
+type mutationResult struct {
+	UserID         uuid.UUID
+	BeforeRevision int64
+	AfterRevision  int64
+	ErrorCode      string
+}
+
+type controlDomainFailure struct {
+	cause error
+	code  string
+}
+
+func (e *controlDomainFailure) Error() string {
+	return e.code
+}
+
+func (e *controlDomainFailure) Unwrap() error {
+	return e.cause
+}
+
+func (r *ControlRepository) Execute(
+	ctx context.Context,
+	action Action,
+	targetID uuid.UUID,
+	command Command,
+) (Operation, error) {
+	if r == nil || validateControlCommand(action, targetID, command) != nil {
+		return Operation{}, ErrInvalidCommand
+	}
+	if _, ok := serviceSubjectFromContext(ctx); !ok {
+		return Operation{}, ErrInvalidCommand
+	}
+	digests := r.protector.IdempotencyCandidates(command.OperationID)
+	if len(digests) == 0 {
+		return Operation{}, ErrUnavailable
+	}
+
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return Operation{}, ErrUnavailable
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	existing, found, err := r.findOperation(ctx, tx, command.OperationID, digests)
+	if err != nil {
+		return Operation{}, err
+	}
+	if found {
+		return r.replayOperation(existing, action, targetID, command)
+	}
+
+	active := digests[0]
+	fingerprint := r.protector.RequestFingerprint(active.KeyID, action, targetID, command)
+	if len(fingerprint) != 32 {
+		return Operation{}, ErrUnavailable
+	}
+	inserted, err := r.insertExecuting(ctx, tx, action, targetID, command, active, fingerprint)
+	if err != nil {
+		return Operation{}, err
+	}
+	if !inserted {
+		existing, found, err = r.findOperation(ctx, tx, command.OperationID, digests)
+		if err != nil || !found {
+			return Operation{}, ErrUnavailable
+		}
+		return r.replayOperation(existing, action, targetID, command)
+	}
+
+	mutation, domainErr := r.applyAction(ctx, tx, action, targetID, command)
+	if domainErr != nil {
+		if !durableDomainFailure(domainErr) {
+			return Operation{}, ErrUnavailable
+		}
+		operation, finishErr := r.finishRejected(ctx, tx, action, targetID, command, mutation, domainErr)
+		if finishErr != nil {
+			return Operation{}, finishErr
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return Operation{}, ErrUnavailable
+		}
+		return operation, domainErr
+	}
+
+	operation, err := r.finishSucceeded(ctx, tx, action, targetID, command, mutation)
+	if err != nil {
+		return Operation{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Operation{}, ErrUnavailable
+	}
+	return operation, nil
+}
+
+func (r *ControlRepository) GetOperation(ctx context.Context, operationID uuid.UUID) (Operation, error) {
+	if r == nil || operationID == uuid.Nil {
+		return Operation{}, ErrInvalidCommand
+	}
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return Operation{}, ErrUnavailable
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	stored, found, err := r.findOperation(ctx, tx, operationID, nil)
+	if err != nil {
+		return Operation{}, err
+	}
+	if !found {
+		return Operation{}, ErrNotFound
+	}
+	return stored.Operation, nil
+}
+
+func (r *ControlRepository) findOperation(
+	ctx context.Context,
+	tx pgx.Tx,
+	operationID uuid.UUID,
+	digests []Digest,
+) (storedOperation, bool, error) {
+	stored, err := scanStoredOperation(tx.QueryRow(ctx, `
+		SELECT idempotency_key_id, request_fingerprint, operation_id, status,
+		       COALESCE(error_code, ''), COALESCE(result_revision, 0), updated_at
+		FROM admin_operations
+		WHERE operation_id = $1
+	`, operationID))
+	if err == nil {
+		return stored, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return storedOperation{}, false, ErrUnavailable
+	}
+	for _, digest := range digests {
+		stored, err = scanStoredOperation(tx.QueryRow(ctx, `
+			SELECT idempotency_key_id, request_fingerprint, operation_id, status,
+			       COALESCE(error_code, ''), COALESCE(result_revision, 0), updated_at
+			FROM admin_operations
+			WHERE idempotency_key_id = $1 AND idempotency_key_hmac = $2
+		`, digest.KeyID, digest.Sum))
+		if err == nil {
+			return stored, true, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return storedOperation{}, false, ErrUnavailable
+		}
+	}
+	return storedOperation{}, false, nil
+}
+
+func (r *ControlRepository) insertExecuting(
+	ctx context.Context,
+	tx pgx.Tx,
+	action Action,
+	targetID uuid.UUID,
+	command Command,
+	digest Digest,
+	fingerprint []byte,
+) (bool, error) {
+	serviceSubject, ok := serviceSubjectFromContext(ctx)
+	targetType, targetOK := controlTargetType(action)
+	if !ok || !targetOK || len(digest.Sum) != 32 || len(fingerprint) != 32 {
+		return false, ErrInvalidCommand
+	}
+	var approvalID any
+	if command.ApprovalID != nil {
+		approvalID = *command.ApprovalID
+	}
+	var ticketReference any
+	if command.TicketReference != "" {
+		ticketReference = command.TicketReference
+	}
+	now := r.clock().UTC()
+	if now.IsZero() {
+		return false, ErrUnavailable
+	}
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO admin_operations (
+			operation_id, idempotency_key_id, idempotency_key_hmac, request_fingerprint,
+			service_subject, actor_admin_id, approval_id, request_id, action, target_type,
+			target_id, expected_revision, status, reason_code, ticket_reference,
+			created_at, updated_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+			$11, $12, 'executing', $13, $14, $15, $15
+		)
+		ON CONFLICT DO NOTHING
+	`, command.OperationID, digest.KeyID, digest.Sum, fingerprint, serviceSubject,
+		command.ActorAdminID, approvalID, command.RequestID, action, targetType, targetID,
+		command.ExpectedRevision, command.ReasonCode, ticketReference, now)
+	if err != nil {
+		return false, ErrUnavailable
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+func (r *ControlRepository) applyAction(
+	ctx context.Context,
+	tx pgx.Tx,
+	action Action,
+	targetID uuid.UUID,
+	command Command,
+) (mutationResult, error) {
+	userID, err := resolveControlTargetUser(ctx, tx, action, targetID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		code := controlNotFoundCode(action)
+		return mutationResult{ErrorCode: code}, controlFailure(ErrNotFound, code)
+	}
+	if err != nil {
+		return mutationResult{}, ErrUnavailable
+	}
+	if err := lockTargetUser(ctx, tx, userID); err != nil {
+		return mutationResult{}, ErrUnavailable
+	}
+	var status string
+	var administrativelyDisabled bool
+	var deletionFinalizedAt pgtype.Timestamptz
+	var revision int64
+	if err := tx.QueryRow(ctx, `
+		SELECT status, administratively_disabled, deletion_finalized_at, administrative_revision
+		FROM users WHERE id = $1 FOR UPDATE
+	`, userID).Scan(&status, &administrativelyDisabled, &deletionFinalizedAt, &revision); errors.Is(err, pgx.ErrNoRows) {
+		code := controlNotFoundCode(action)
+		return mutationResult{ErrorCode: code}, controlFailure(ErrNotFound, code)
+	} else if err != nil || revision < 1 {
+		return mutationResult{}, ErrUnavailable
+	}
+	mutation := mutationResult{UserID: userID, BeforeRevision: revision}
+	if revision != command.ExpectedRevision {
+		mutation.ErrorCode = "USER_STATE_CONFLICT"
+		return mutation, controlFailure(ErrStateConflict, mutation.ErrorCode)
+	}
+
+	now := r.clock().UTC()
+	if now.IsZero() {
+		return mutationResult{}, ErrUnavailable
+	}
+	var afterRevision int64
+	switch action {
+	case RevokeDevice:
+		var lockedUserID uuid.UUID
+		var deviceStatus string
+		if err := tx.QueryRow(ctx, `
+			SELECT user_id, status FROM devices WHERE id = $1 FOR UPDATE
+		`, targetID).Scan(&lockedUserID, &deviceStatus); errors.Is(err, pgx.ErrNoRows) {
+			mutation.ErrorCode = "DEVICE_NOT_FOUND"
+			return mutation, controlFailure(ErrNotFound, mutation.ErrorCode)
+		} else if err != nil || lockedUserID != userID {
+			return mutationResult{}, ErrUnavailable
+		}
+		if deviceStatus == "revoked" {
+			mutation.ErrorCode = "DEVICE_ALREADY_REVOKED"
+			return mutation, controlFailure(ErrStateConflict, mutation.ErrorCode)
+		}
+		if deviceStatus != "active" && deviceStatus != "inactive" {
+			return mutationResult{}, ErrUnavailable
+		}
+		afterRevision, err = revokeDeviceLifecycle(ctx, tx, userID, targetID, now)
+	case RevokeSession:
+		var lockedUserID, familyID uuid.UUID
+		var revokedAt pgtype.Timestamptz
+		if err := tx.QueryRow(ctx, `
+			SELECT user_id, family_id, revoked_at FROM sessions WHERE id = $1 FOR UPDATE
+		`, targetID).Scan(&lockedUserID, &familyID, &revokedAt); errors.Is(err, pgx.ErrNoRows) {
+			mutation.ErrorCode = "SESSION_NOT_FOUND"
+			return mutation, controlFailure(ErrNotFound, mutation.ErrorCode)
+		} else if err != nil || lockedUserID != userID {
+			return mutationResult{}, ErrUnavailable
+		}
+		if revokedAt.Valid {
+			mutation.ErrorCode = "SESSION_ALREADY_REVOKED"
+			return mutation, controlFailure(ErrStateConflict, mutation.ErrorCode)
+		}
+		afterRevision, err = revokeSessionFamilyLifecycle(ctx, tx, userID, familyID, now)
+	case DisableUser:
+		if status != "active" || administrativelyDisabled || deletionFinalizedAt.Valid {
+			mutation.ErrorCode = "USER_STATE_CONFLICT"
+			return mutation, controlFailure(ErrStateConflict, mutation.ErrorCode)
+		}
+		afterRevision, err = disableUserLifecycle(ctx, tx, userID, now)
+	case EnableUser:
+		if status != "disabled" || !administrativelyDisabled || deletionFinalizedAt.Valid {
+			mutation.ErrorCode = "USER_STATE_CONFLICT"
+			return mutation, controlFailure(ErrStateConflict, mutation.ErrorCode)
+		}
+		afterRevision, err = enableUserLifecycle(ctx, tx, userID, now)
+	default:
+		return mutationResult{}, ErrInvalidCommand
+	}
+	if err != nil || afterRevision != revision+1 {
+		return mutationResult{}, ErrUnavailable
+	}
+	mutation.AfterRevision = afterRevision
+	return mutation, nil
+}
+
+func (r *ControlRepository) finishRejected(
+	ctx context.Context,
+	tx pgx.Tx,
+	action Action,
+	targetID uuid.UUID,
+	command Command,
+	mutation mutationResult,
+	domainErr error,
+) (Operation, error) {
+	code, ok := controlFailureCode(domainErr)
+	if !ok {
+		return Operation{}, ErrUnavailable
+	}
+	status := OperationConflict
+	if errors.Is(domainErr, ErrNotFound) {
+		status = OperationFailed
+	}
+	mutation.ErrorCode = code
+	now := r.clock().UTC()
+	if now.IsZero() {
+		return Operation{}, ErrUnavailable
+	}
+	operation := Operation{ID: command.OperationID, Status: status, ErrorCode: code, UpdatedAt: now}
+	if err := r.insertControlAudit(ctx, tx, action, targetID, command, mutation, "denied", now); err != nil {
+		return Operation{}, err
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE admin_operations
+		SET status = $2, error_code = $3, updated_at = $4, completed_at = $4
+		WHERE operation_id = $1 AND status = 'executing'
+	`, command.OperationID, status, code, now)
+	if err != nil || tag.RowsAffected() != 1 {
+		return Operation{}, ErrUnavailable
+	}
+	return operation, nil
+}
+
+func (r *ControlRepository) finishSucceeded(
+	ctx context.Context,
+	tx pgx.Tx,
+	action Action,
+	targetID uuid.UUID,
+	command Command,
+	mutation mutationResult,
+) (Operation, error) {
+	if mutation.UserID == uuid.Nil || mutation.AfterRevision < 1 {
+		return Operation{}, ErrUnavailable
+	}
+	now := r.clock().UTC()
+	if now.IsZero() {
+		return Operation{}, ErrUnavailable
+	}
+	operation := Operation{
+		ID: command.OperationID, Status: OperationSucceeded,
+		AdministrativeRevision: mutation.AfterRevision, UpdatedAt: now,
+	}
+	if err := r.insertControlAudit(ctx, tx, action, targetID, command, mutation, "success", now); err != nil {
+		return Operation{}, err
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE admin_operations
+		SET status = 'succeeded', result_revision = $2, updated_at = $3, completed_at = $3
+		WHERE operation_id = $1 AND status = 'executing'
+	`, command.OperationID, mutation.AfterRevision, now)
+	if err != nil || tag.RowsAffected() != 1 {
+		return Operation{}, ErrUnavailable
+	}
+	return operation, nil
+}
+
+func (r *ControlRepository) insertControlAudit(
+	ctx context.Context,
+	tx pgx.Tx,
+	action Action,
+	targetID uuid.UUID,
+	command Command,
+	mutation mutationResult,
+	outcome string,
+	now time.Time,
+) error {
+	serviceSubject, ok := serviceSubjectFromContext(ctx)
+	eventType, eventOK := controlEventType(action)
+	targetType, targetOK := controlTargetType(action)
+	if !ok || !eventOK || !targetOK || (outcome != "success" && outcome != "denied") {
+		return ErrUnavailable
+	}
+	metadata, err := json.Marshal(struct {
+		OperationID      uuid.UUID  `json:"operation_id"`
+		ActorAdminID     uuid.UUID  `json:"actor_admin_id"`
+		ApprovalID       *uuid.UUID `json:"approval_id,omitempty"`
+		ExpectedRevision int64      `json:"expected_revision"`
+		ResultRevision   int64      `json:"result_revision,omitempty"`
+		TicketReference  string     `json:"ticket_reference,omitempty"`
+	}{
+		OperationID: command.OperationID, ActorAdminID: command.ActorAdminID,
+		ApprovalID: command.ApprovalID, ExpectedRevision: command.ExpectedRevision,
+		ResultRevision: mutation.AfterRevision, TicketReference: command.TicketReference,
+	})
+	if err != nil {
+		return ErrUnavailable
+	}
+	var subjectUserID any
+	if mutation.UserID != uuid.Nil {
+		subjectUserID = mutation.UserID
+	}
+	auditID, err := uuid.NewRandom()
+	if err != nil {
+		return ErrUnavailable
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO audit_events (
+			id, event_type, operator_identity, subject_user_id, object_type, object_id,
+			outcome, reason_code, request_id, metadata, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)
+	`, auditID, eventType, serviceSubject, subjectUserID, targetType, targetID,
+		outcome, command.ReasonCode, command.RequestID, string(metadata), now)
+	if err != nil {
+		return ErrUnavailable
+	}
+	return nil
+}
+
+func (r *ControlRepository) replayOperation(
+	existing storedOperation,
+	action Action,
+	targetID uuid.UUID,
+	command Command,
+) (Operation, error) {
+	fingerprint := r.protector.RequestFingerprint(existing.KeyID, action, targetID, command)
+	if len(fingerprint) != 32 {
+		return Operation{}, ErrUnavailable
+	}
+	if subtle.ConstantTimeCompare(existing.Fingerprint, fingerprint) != 1 {
+		return Operation{}, ErrIdempotencyKeyReused
+	}
+	return operationReplayResult(existing.Operation)
+}
+
+func operationReplayResult(operation Operation) (Operation, error) {
+	if err := validateOperation(operation); err != nil {
+		return Operation{}, ErrUnavailable
+	}
+	switch operation.Status {
+	case OperationExecuting, OperationSucceeded:
+		return operation, nil
+	case OperationFailed:
+		return operation, controlFailure(ErrNotFound, operation.ErrorCode)
+	case OperationConflict:
+		return operation, controlFailure(ErrStateConflict, operation.ErrorCode)
+	default:
+		return Operation{}, ErrUnavailable
+	}
+}
+
+func durableDomainFailure(err error) bool {
+	var failure *controlDomainFailure
+	return errors.As(err, &failure) &&
+		(errors.Is(err, ErrNotFound) || errors.Is(err, ErrStateConflict)) &&
+		operationErrorPattern.MatchString(failure.code)
+}
+
+func controlFailure(cause error, code string) error {
+	return &controlDomainFailure{cause: cause, code: code}
+}
+
+func controlFailureCode(err error) (string, bool) {
+	var failure *controlDomainFailure
+	if !errors.As(err, &failure) || !operationErrorPattern.MatchString(failure.code) {
+		return "", false
+	}
+	return failure.code, true
+}
+
+func scanStoredOperation(scanner controlRowScanner) (storedOperation, error) {
+	var stored storedOperation
+	var status string
+	if err := scanner.Scan(
+		&stored.KeyID,
+		&stored.Fingerprint,
+		&stored.Operation.ID,
+		&status,
+		&stored.Operation.ErrorCode,
+		&stored.Operation.AdministrativeRevision,
+		&stored.Operation.UpdatedAt,
+	); err != nil {
+		return storedOperation{}, err
+	}
+	stored.Operation.Status = OperationStatus(status)
+	stored.Operation.UpdatedAt = stored.Operation.UpdatedAt.UTC()
+	if len(stored.Fingerprint) != 32 || !protectorKeyIDPattern.MatchString(stored.KeyID) ||
+		validateOperation(stored.Operation) != nil {
+		return storedOperation{}, ErrUnavailable
+	}
+	return stored, nil
+}
+
+func resolveControlTargetUser(ctx context.Context, tx pgx.Tx, action Action, targetID uuid.UUID) (uuid.UUID, error) {
+	if action == DisableUser || action == EnableUser {
+		var userID uuid.UUID
+		if err := tx.QueryRow(ctx, `SELECT id FROM users WHERE id = $1`, targetID).Scan(&userID); err != nil {
+			return uuid.Nil, err
+		}
+		return userID, nil
+	}
+	table := "devices"
+	if action == RevokeSession {
+		table = "sessions"
+	}
+	if action != RevokeDevice && action != RevokeSession {
+		return uuid.Nil, ErrInvalidCommand
+	}
+	var userID uuid.UUID
+	query := `SELECT user_id FROM devices WHERE id = $1`
+	if table == "sessions" {
+		query = `SELECT user_id FROM sessions WHERE id = $1`
+	}
+	if err := tx.QueryRow(ctx, query, targetID).Scan(&userID); err != nil {
+		return uuid.Nil, err
+	}
+	return userID, nil
+}
+
+func controlNotFoundCode(action Action) string {
+	switch action {
+	case RevokeDevice:
+		return "DEVICE_NOT_FOUND"
+	case RevokeSession:
+		return "SESSION_NOT_FOUND"
+	case DisableUser, EnableUser:
+		return "USER_NOT_FOUND"
+	default:
+		return "TARGET_NOT_FOUND"
+	}
+}
+
+func controlTargetType(action Action) (string, bool) {
+	switch action {
+	case RevokeDevice:
+		return "device", true
+	case RevokeSession:
+		return "session", true
+	case DisableUser, EnableUser:
+		return "user", true
+	default:
+		return "", false
+	}
+}
+
+func controlEventType(action Action) (string, bool) {
+	switch action {
+	case RevokeDevice:
+		return "device_admin_revoked", true
+	case RevokeSession:
+		return "session_admin_revoked", true
+	case DisableUser:
+		return "account_disabled", true
+	case EnableUser:
+		return "account_enabled", true
+	default:
+		return "", false
+	}
 }

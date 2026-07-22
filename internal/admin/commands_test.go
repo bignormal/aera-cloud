@@ -138,9 +138,10 @@ func TestPostgresRestrictedCommandsDisableEnableRevokeAndAudit(t *testing.T) {
 		t.Fatalf("DisableAccount() error = %v", err)
 	}
 	var status, spaceStatus, deviceStatus string
+	var administrativeRevision int64
 	var administrativelyDisabled bool
 	var sessionRevoked, entitlementRevoked pgtype.Timestamptz
-	if err := postgres.QueryRow(ctx, `SELECT status, administratively_disabled FROM users WHERE id = $1`, userID).Scan(&status, &administrativelyDisabled); err != nil {
+	if err := postgres.QueryRow(ctx, `SELECT status, administratively_disabled, administrative_revision FROM users WHERE id = $1`, userID).Scan(&status, &administrativelyDisabled, &administrativeRevision); err != nil {
 		t.Fatalf("read disabled user: %v", err)
 	}
 	if err := postgres.QueryRow(ctx, `SELECT status FROM personal_spaces WHERE id = $1`, spaceID).Scan(&spaceStatus); err != nil {
@@ -155,20 +156,20 @@ func TestPostgresRestrictedCommandsDisableEnableRevokeAndAudit(t *testing.T) {
 	if err := postgres.QueryRow(ctx, `SELECT revoked_at FROM offline_entitlement_issuances WHERE device_id = $1`, deviceID).Scan(&entitlementRevoked); err != nil {
 		t.Fatalf("read disabled entitlement: %v", err)
 	}
-	if status != "disabled" || !administrativelyDisabled || spaceStatus != "disabled" || deviceStatus != "revoked" || !sessionRevoked.Valid || !entitlementRevoked.Valid {
-		t.Fatalf("disabled state user=%s/%v space=%s device=%s session=%v entitlement=%v", status, administrativelyDisabled, spaceStatus, deviceStatus, sessionRevoked.Valid, entitlementRevoked.Valid)
+	if status != "disabled" || !administrativelyDisabled || administrativeRevision != 2 || spaceStatus != "disabled" || deviceStatus != "revoked" || !sessionRevoked.Valid || !entitlementRevoked.Valid {
+		t.Fatalf("disabled state user=%s/%v/%d space=%s device=%s session=%v entitlement=%v", status, administrativelyDisabled, administrativeRevision, spaceStatus, deviceStatus, sessionRevoked.Valid, entitlementRevoked.Valid)
 	}
 	if err := commands.EnableAccount(ctx, "operator-01", userID); err != nil {
 		t.Fatalf("EnableAccount() error = %v", err)
 	}
-	if err := postgres.QueryRow(ctx, `SELECT status, administratively_disabled FROM users WHERE id = $1`, userID).Scan(&status, &administrativelyDisabled); err != nil {
+	if err := postgres.QueryRow(ctx, `SELECT status, administratively_disabled, administrative_revision FROM users WHERE id = $1`, userID).Scan(&status, &administrativelyDisabled, &administrativeRevision); err != nil {
 		t.Fatalf("read enabled user: %v", err)
 	}
 	if err := postgres.QueryRow(ctx, `SELECT status FROM personal_spaces WHERE id = $1`, spaceID).Scan(&spaceStatus); err != nil {
 		t.Fatalf("read enabled space: %v", err)
 	}
-	if status != "active" || administrativelyDisabled || spaceStatus != "active" {
-		t.Fatalf("enabled state user=%s/%v space=%s", status, administrativelyDisabled, spaceStatus)
+	if status != "active" || administrativelyDisabled || administrativeRevision != 3 || spaceStatus != "active" {
+		t.Fatalf("enabled state user=%s/%v/%d space=%s", status, administrativelyDisabled, administrativeRevision, spaceStatus)
 	}
 
 	secondDeviceID, secondSessionID := uuid.New(), uuid.New()
@@ -189,6 +190,9 @@ func TestPostgresRestrictedCommandsDisableEnableRevokeAndAudit(t *testing.T) {
 	}
 	if err := postgres.QueryRow(ctx, `SELECT revoked_at FROM sessions WHERE id = $1`, secondSessionID).Scan(&sessionRevoked); err != nil || !sessionRevoked.Valid {
 		t.Fatalf("revoked admin session = %v, %v", sessionRevoked.Valid, err)
+	}
+	if err := postgres.QueryRow(ctx, `SELECT administrative_revision FROM users WHERE id = $1`, userID).Scan(&administrativeRevision); err != nil || administrativeRevision != 4 {
+		t.Fatalf("session revoke revision = %d, %v; want 4", administrativeRevision, err)
 	}
 	events, err := commands.Audit(ctx, "operator-01", userID, 50)
 	if err != nil || len(events) < 3 {

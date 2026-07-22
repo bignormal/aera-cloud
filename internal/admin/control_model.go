@@ -22,7 +22,25 @@ var (
 var (
 	controlReasonPattern  = regexp.MustCompile(`^[a-z][a-z0-9_]{2,63}$`)
 	operationErrorPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]{2,99}$`)
+	serviceSubjectPattern = regexp.MustCompile(`^[a-z][a-z0-9._-]{2,63}$`)
 )
+
+type serviceSubjectContextKey struct{}
+
+func WithServiceSubject(ctx context.Context, subject string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, serviceSubjectContextKey{}, subject)
+}
+
+func serviceSubjectFromContext(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	subject, ok := ctx.Value(serviceSubjectContextKey{}).(string)
+	return subject, ok && serviceSubjectPattern.MatchString(subject)
+}
 
 type Action string
 
