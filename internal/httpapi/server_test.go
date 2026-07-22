@@ -416,7 +416,7 @@ func TestWebAccountCenterHandlesOnlyUnmatchedNonServiceRoutes(t *testing.T) {
 		t.Fatalf("web page = %d %q", page.Code, page.Body.String())
 	}
 
-	for _, path := range []string{"/api/v1/missing", "/health/missing", "/oauth/missing", "/.well-known/missing"} {
+	for _, path := range []string{"/api/v1/missing", "/health/missing", "/oauth/missing", "/.well-known/missing", "/internal/admin/v1/health"} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
 		if response.Code != http.StatusNotFound || strings.Contains(response.Body.String(), "account center") {

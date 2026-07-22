@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/tls"
 	"errors"
 	"log/slog"
 	"net"
@@ -121,15 +122,7 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 		return err
 	}
 
-	listener, err := net.Listen("tcp", cfg.ListenAddr)
-	if err != nil {
-		return errors.New("HTTP listener could not be opened")
-	}
-	slog.Info("AgentEra cloud started", "address", cfg.ListenAddr, "environment", cfg.Environment)
-	maintenanceCtx, stopMaintenance := context.WithCancel(ctx)
-	defer stopMaintenance()
-	go maintenanceRunner.Run(maintenanceCtx)
-	return serve(ctx, listener, httpapi.New(httpapi.Dependencies{
+	publicHandler := httpapi.New(httpapi.Dependencies{
 		PostgreSQL:   postgres,
 		Redis:        redisStore,
 		Verification: verificationHandler,
@@ -140,7 +133,22 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 		Workspace:    workspaceHandler,
 		Organization: organizationHandler,
 		Web:          webui.New(),
-	}))
+	})
+	var internalHandler http.Handler
+	var internalTLS *tls.Config
+	if cfg.InternalAdmin.Enabled {
+		internalHandler, internalTLS, err = buildInternalAdmin(cfg, postgres, redisStore)
+		if err != nil {
+			return err
+		}
+	}
+	maintenanceCtx, stopMaintenance := context.WithCancel(ctx)
+	defer stopMaintenance()
+	return runHTTPServersWithReady(ctx, cfg, publicHandler, internalHandler, internalTLS, net.Listen, func() {
+		slog.Info("AgentEra cloud started", "address", cfg.ListenAddr, "environment", cfg.Environment,
+			"internal_admin_enabled", cfg.InternalAdmin.Enabled)
+		go maintenanceRunner.Run(maintenanceCtx)
+	})
 }
 
 func buildMaintenanceRunner(

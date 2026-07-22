@@ -106,7 +106,7 @@ func New(dependencies Dependencies) http.Handler {
 func servicePath(raw string) bool {
 	trimmed := strings.TrimPrefix(raw, "/")
 	first, _, _ := strings.Cut(trimmed, "/")
-	return first == "api" || first == "health" || first == "oauth" || first == ".well-known"
+	return first == "api" || first == "health" || first == "oauth" || first == ".well-known" || first == "internal"
 }
 
 func writeStatus(response http.ResponseWriter, statusCode int, status string) {
