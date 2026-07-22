@@ -39,9 +39,15 @@ jobs:
 
       - name: Test and build Go services
         run: |
+          go test -count=1 ./api -run '^TestInternalAdminOpenAPI'
+          go test -count=1 ./internal/admin ./internal/adminapi
           go test -count=1 ./...
-          go test -race ./internal/secure ./internal/verification ./internal/account ./internal/oauth ./internal/device ./internal/session ./internal/entitlement ./internal/jobs
+          go test -race ./internal/secure ./internal/verification ./internal/account ./internal/oauth ./internal/device ./internal/session ./internal/entitlement ./internal/jobs ./internal/admin ./internal/adminapi
           go vet ./...
+          if go list ./... | grep -q '/cmd/aera-cloud-e2e$'; then
+            echo 'e2e fixture command leaked into the default release package set' >&2
+            exit 1
+          fi
           CGO_ENABLED=0 go build -trimpath -o /tmp/aera-cloud ./cmd/aera-cloud
           CGO_ENABLED=0 go build -trimpath -o /tmp/aera-cloud-admin ./cmd/aera-cloud-admin
 
@@ -64,6 +70,7 @@ jobs:
           source .env.example
           set +a
           AERA_INTEGRATION_TESTS=1 go test -count=1 -p 1 ./...
+          AERA_INTEGRATION_TESTS=1 go test -count=1 -tags e2e ./cmd/aera-cloud-e2e
           AERA_SMOKE_USE_EXISTING_STACK=1 AERA_SMOKE_ALLOW_DATABASE_RESET=1 ./scripts/smoke-auth.sh
 
       - name: Verify encrypted backup and disposable restore

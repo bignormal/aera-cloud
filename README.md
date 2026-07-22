@@ -32,6 +32,14 @@ POST /api/v1/verification/challenges/verify
 
 Challenge creation requires `Idempotency-Key` and `X-AgentEra-Installation-ID` headers. The provider values in `.env.example` deliberately use the reserved `.invalid` domain, so local requests exercise failure handling without sending email or SMS. Configure real SMTP, SMS, and CAPTCHA providers through the deployment environment before delivery testing.
 
+## Internal Admin API
+
+The Internal Admin API is disabled by default. When explicitly enabled, the same Cloud process starts a separate TLS 1.3 Internal Admin listener; none of its `/internal/admin/v1` routes are registered on the public HTTP listener. The listener must remain on a private network or loopback interface and requires both mTLS and a short-lived Ed25519 service JWT on every request.
+
+The API provides masked exact-identity lookup plus bounded user, device, session, account, and operation controls for the separate `aera-admin` service. Full email or phone input is accepted only in the lookup POST body and is never returned, logged, audited, cached, or stored by this interface. PostgreSQL commits each successful mutation, administrative revision, operation record, and Cloud audit event atomically; Redis cannot make a revoked principal active again.
+
+Do not add certificate paths, key material, or service identities to `.env.example`. Supply all enabled-listener settings through the deployment secret manager and follow the [private staging runbook](docs/runbooks/private-staging.md) for configuration, deployment order, rollback, and verification.
+
 Run unit tests without services:
 
 ```bash
