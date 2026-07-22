@@ -102,6 +102,7 @@ type Config struct {
 	Environment                    string
 	ListenAddr                     string
 	InternalAdmin                  InternalAdminConfig
+	OfficialAgent                  OfficialAgentConfig
 	PublicURL                      string
 	DatabaseURL                    string
 	RedisAddr                      string
@@ -305,6 +306,10 @@ func Load(lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	officialAgent, err := loadOfficialAgent(lookup)
+	if err != nil {
+		return Config{}, err
+	}
 	offlinePolicyVersion, err := requiredInteger(lookup, envOfflinePolicyVersion, 1, 1_000_000)
 	if err != nil {
 		return Config{}, err
@@ -313,21 +318,31 @@ func Load(lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	if err := requireIndependentKeys(map[string][]byte{
-		"identity encryption":    identityEncryptionKeyRing.Keys[identityEncryptionKeyRing.ActiveKeyID],
-		"identity lookup":        identityLookupKeyRing.Keys[identityLookupKeyRing.ActiveKeyID],
-		"verification code":      verificationCodeKeyRing.Keys[verificationCodeKeyRing.ActiveKeyID],
-		"verification receipt":   verificationReceiptKeyRing.Keys[verificationReceiptKeyRing.ActiveKeyID],
-		"verification request":   verificationRequestHMACKey,
-		"browser session":        browserSessionHMACKey,
-		"login rate":             loginRateHMACKey,
-		"OAuth state encryption": oauthStateEncryptionKeyRing.Keys[oauthStateEncryptionKeyRing.ActiveKeyID],
-		"OAuth state HMAC":       oauthStateHMACKey,
-		"refresh token HMAC":     refreshTokenHMACKey,
-		"access signing":         accessSigningKeyRing.Keys[accessSigningKeyRing.ActiveKeyID],
-		"offline signing":        offlineSigningKeyRing.Keys[offlineSigningKeyRing.ActiveKeyID],
-		"Agent control signing":  agentControlSigningKeyRing.Keys[agentControlSigningKeyRing.ActiveKeyID],
-	}); err != nil {
+	independentKeyMaterials := map[string][]byte{
+		"verification request": verificationRequestHMACKey,
+		"browser session":      browserSessionHMACKey,
+		"login rate":           loginRateHMACKey,
+		"OAuth state HMAC":     oauthStateHMACKey,
+		"refresh token HMAC":   refreshTokenHMACKey,
+	}
+	addKeyRingMaterials(independentKeyMaterials, "identity encryption", identityEncryptionKeyRing)
+	addKeyRingMaterials(independentKeyMaterials, "identity lookup", identityLookupKeyRing)
+	addKeyRingMaterials(independentKeyMaterials, "verification code", verificationCodeKeyRing)
+	addKeyRingMaterials(independentKeyMaterials, "verification receipt", verificationReceiptKeyRing)
+	addKeyRingMaterials(independentKeyMaterials, "OAuth state encryption", oauthStateEncryptionKeyRing)
+	addKeyRingMaterials(independentKeyMaterials, "access signing", accessSigningKeyRing)
+	addKeyRingMaterials(independentKeyMaterials, "offline signing", offlineSigningKeyRing)
+	addKeyRingMaterials(independentKeyMaterials, "Agent control signing", agentControlSigningKeyRing)
+	if internalAdmin.Enabled {
+		addKeyRingMaterials(independentKeyMaterials, "Internal Admin HMAC", internalAdmin.HMACKeys)
+	}
+	if officialAgent.Enabled {
+		addKeyRingMaterials(independentKeyMaterials, "official rollout", KeyRing{
+			ActiveKeyID: officialAgent.RolloutHMACActiveKey,
+			Keys:        officialAgent.RolloutHMACKeys,
+		})
+	}
+	if err := requireIndependentKeys(independentKeyMaterials); err != nil {
 		return Config{}, err
 	}
 	browserCookieName, err := required(lookup, envBrowserCookieName)
@@ -515,6 +530,7 @@ func Load(lookup LookupEnv) (Config, error) {
 		Environment:                    environment,
 		ListenAddr:                     listenAddr,
 		InternalAdmin:                  internalAdmin,
+		OfficialAgent:                  officialAgent,
 		PublicURL:                      publicURL,
 		DatabaseURL:                    databaseURL,
 		RedisAddr:                      redisAddr,

@@ -487,7 +487,7 @@ func TestEnvironmentExamplePreservesKeyRingJSONWhenSourced(t *testing.T) {
 	command := exec.Command(
 		"sh",
 		"-c",
-		`. "$1"; printf '%s\n%s\n%s\n%s\n' "$AGENTERA_CLOUD_IDENTITY_ENCRYPTION_KEYS" "$AGENTERA_CLOUD_IDENTITY_LOOKUP_KEYS" "$AGENTERA_CLOUD_VERIFICATION_CODE_KEYS" "$AGENTERA_CLOUD_VERIFICATION_RECEIPT_KEYS"`,
+		`. "$1"; printf '%s\n%s\n%s\n%s\n%s\n' "$AGENTERA_CLOUD_IDENTITY_ENCRYPTION_KEYS" "$AGENTERA_CLOUD_IDENTITY_LOOKUP_KEYS" "$AGENTERA_CLOUD_VERIFICATION_CODE_KEYS" "$AGENTERA_CLOUD_VERIFICATION_RECEIPT_KEYS" "$AGENTERA_CLOUD_OFFICIAL_AGENTS_ENABLED"`,
 		"sh",
 		environmentFile,
 	)
@@ -496,10 +496,10 @@ func TestEnvironmentExamplePreservesKeyRingJSONWhenSourced(t *testing.T) {
 		t.Fatalf("source .env.example: %v", err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	if len(lines) != 4 {
-		t.Fatalf("sourced key ring lines = %d, want 4", len(lines))
+	if len(lines) != 5 {
+		t.Fatalf("sourced configuration lines = %d, want 5", len(lines))
 	}
-	for index, line := range lines {
+	for index, line := range lines[:4] {
 		var keys map[string]string
 		if err := json.Unmarshal([]byte(line), &keys); err != nil {
 			t.Fatalf("sourced key ring %d is not JSON: %q: %v", index, line, err)
@@ -507,6 +507,9 @@ func TestEnvironmentExamplePreservesKeyRingJSONWhenSourced(t *testing.T) {
 		if len(keys) != 1 {
 			t.Fatalf("sourced key ring %d contains %d keys, want 1", index, len(keys))
 		}
+	}
+	if lines[4] != "false" {
+		t.Fatalf("sourced official-Agent flag = %q, want false", lines[4])
 	}
 }
 
