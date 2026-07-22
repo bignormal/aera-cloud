@@ -31,4 +31,5 @@ var (
 	ErrOfficialVersionIntegrityFailed    = errors.New("official_version_integrity_failed")
 	ErrOfficialManagedUpdateConflict     = errors.New("official_managed_update_conflict")
 	ErrCloudUnavailable                  = errors.New("cloud_unavailable")
+	ErrPlatformPublicationDLPBlocked     = errors.New("official platform publication dlp blocked")
 )

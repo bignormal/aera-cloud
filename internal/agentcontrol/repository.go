@@ -2082,6 +2082,7 @@ func insertPolicy(ctx context.Context, tx pgx.Tx, principal Principal, policy Po
 
 type idempotencyResponse struct {
 	DefinitionID     uuid.UUID `json:"definition_id,omitempty"`
+	DraftID          uuid.UUID `json:"draft_id,omitempty"`
 	VersionID        uuid.UUID `json:"version_id,omitempty"`
 	InstallationID   uuid.UUID `json:"installation_id,omitempty"`
 	PolicySnapshotID uuid.UUID `json:"policy_snapshot_id,omitempty"`
