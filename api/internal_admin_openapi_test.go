@@ -12,16 +12,16 @@ func TestInternalAdminOpenAPIRequiresDualAuthenticationAndOfficialAgentRoutes(t 
 		t.Fatalf("read Internal Admin OpenAPI: %v", err)
 	}
 	document := string(raw)
-	if !strings.Contains(document, "version: 1.1.0") ||
+	if !strings.Contains(document, "version: 1.2.0") ||
 		!strings.Contains(document, "mutualTLS: { type: mutualTLS }") ||
 		!strings.Contains(document, "serviceJWT: { type: http, scheme: bearer, bearerFormat: JWT }") {
 		t.Fatal("Internal Admin OpenAPI does not require the approved dual authentication")
 	}
-	if got := strings.Count(document, "  /internal/admin/v1/"); got != 31 {
-		t.Fatalf("Internal Admin route count = %d, want 31", got)
+	if got := strings.Count(document, "  /internal/admin/v1/"); got != 37 {
+		t.Fatalf("Internal Admin route count = %d, want 37", got)
 	}
-	if got := strings.Count(document, "'200': { $ref: '#/components/responses/Operation' }"); got != 16 {
-		t.Fatalf("operation response count = %d, want 16 including all official mutations", got)
+	if got := strings.Count(document, "'200': { $ref: '#/components/responses/Operation' }"); got != 20 {
+		t.Fatalf("operation response count = %d, want 20 including quality mutations", got)
 	}
 	for _, path := range []string{
 		"/official-agent-definitions:", "/official-agent-drafts:",
@@ -90,6 +90,104 @@ func TestInternalAdminOpenAPIRequiresDualAuthenticationAndOfficialAgentRoutes(t 
 	if strings.Contains(string(publicRaw), "/internal/admin/") {
 		t.Fatal("public OpenAPI exposes an Internal Admin path")
 	}
+}
+
+func TestInternalAdminOpenAPIContainsStrictOfficialQualityGovernanceContract(t *testing.T) {
+	raw, err := os.ReadFile("openapi/internal-admin.yaml")
+	if err != nil {
+		t.Fatalf("read Internal Admin OpenAPI: %v", err)
+	}
+	document := string(raw)
+	for _, path := range []string{
+		"/official-quality/aggregates:",
+		"/official-quality/proposals:",
+		"/official-quality/proposals/{proposalID}:",
+		"/official-quality/proposals/{proposalID}/submit:",
+		"/official-quality/proposals/{proposalID}/reviews:",
+		"/official-quality/proposals/{proposalID}/clone:",
+	} {
+		if !strings.Contains(document, path) {
+			t.Fatalf("Internal Admin contract is missing %q", path)
+		}
+	}
+	for _, scope := range []string{
+		"official_quality:read", "official_quality:propose",
+		"official_quality:review", "official_quality:clone",
+	} {
+		if !strings.Contains(document, scope) {
+			t.Fatalf("Internal Admin contract is missing exact scope %q", scope)
+		}
+	}
+	for _, schema := range []string{
+		"OfficialQualityAggregate", "OfficialQualityAggregatePage",
+		"OfficialQualityProposal", "OfficialQualityProposalPage", "OfficialQualityProposalReview",
+		"OfficialQualityProposalCreateMutation", "OfficialQualityProposalSubmitMutation",
+		"OfficialQualityProposalReviewMutation", "OfficialQualityProposalCloneMutation",
+	} {
+		block := internalAdminSchemaBlock(t, document, schema)
+		if !strings.Contains(block, "additionalProperties: false") && !strings.Contains(block, "unevaluatedProperties: false") {
+			t.Fatalf("%s schema is not closed:\n%s", schema, block)
+		}
+	}
+	aggregate := internalAdminSchemaBlock(t, document, "OfficialQualityAggregate")
+	for _, required := range []string{
+		"id", "platform_id", "definition_id", "version_id", "release_id",
+		"release_revision_id", "aggregate_day", "event_kind", "result_code",
+		"latency_bucket", "total_token_bucket", "event_count", "distinct_subject_count",
+	} {
+		if !strings.Contains(aggregate, required+":") {
+			t.Fatalf("quality aggregate is missing %q:\n%s", required, aggregate)
+		}
+	}
+	for _, forbidden := range []string{"subject_pseudonym", "binding_proof", "user_id", "device_id", "raw_event"} {
+		if strings.Contains(aggregate, forbidden) {
+			t.Fatalf("quality aggregate exposes forbidden field %q:\n%s", forbidden, aggregate)
+		}
+	}
+	proposal := internalAdminSchemaBlock(t, document, "OfficialQualityProposal")
+	for _, arrayField := range []string{"aggregate_ids", "problem_categories"} {
+		if !strings.Contains(proposal, arrayField+":") || !strings.Contains(proposal, "required:") {
+			t.Fatalf("quality proposal does not require non-null %s:\n%s", arrayField, proposal)
+		}
+	}
+	for _, mutation := range []string{
+		"OfficialQualityProposalCreateMutation", "OfficialQualityProposalSubmitMutation",
+		"OfficialQualityProposalReviewMutation", "OfficialQualityProposalCloneMutation",
+	} {
+		block := internalAdminSchemaBlock(t, document, mutation)
+		for _, evidence := range []string{"operation_id", "actor_admin_id", "actor_admin_role", "expected_revision", "reason_code", "payload"} {
+			if !strings.Contains(block, evidence) && !strings.Contains(block, "OfficialQualityMutationEvidence") {
+				t.Fatalf("%s is missing mutation evidence %q:\n%s", mutation, evidence, block)
+			}
+		}
+	}
+	for _, path := range []string{
+		"/internal/admin/v1/official-quality/proposals:\n",
+		"/internal/admin/v1/official-quality/proposals/{proposalID}/submit:\n",
+		"/internal/admin/v1/official-quality/proposals/{proposalID}/reviews:\n",
+		"/internal/admin/v1/official-quality/proposals/{proposalID}/clone:\n",
+	} {
+		block := internalAdminPathBlock(t, document, path)
+		if !strings.Contains(block, "#/components/parameters/IdempotencyKey") {
+			t.Fatalf("quality mutation path lacks Idempotency-Key: %s", path)
+		}
+	}
+}
+
+func internalAdminPathBlock(t *testing.T, document, marker string) string {
+	t.Helper()
+	start := strings.Index(document, "  "+marker)
+	if start < 0 {
+		t.Fatalf("path %s is missing", strings.TrimSpace(marker))
+	}
+	remainder := document[start+2:]
+	if next := strings.Index(remainder[1:], "\n  /"); next >= 0 {
+		return remainder[:next+1]
+	}
+	if next := strings.Index(remainder, "\ncomponents:\n"); next >= 0 {
+		return remainder[:next]
+	}
+	return remainder
 }
 
 func internalAdminSchemaBlock(t *testing.T, document, name string) string {

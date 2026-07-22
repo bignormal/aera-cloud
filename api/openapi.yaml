@@ -1,8 +1,8 @@
 openapi: 3.0.3
 info:
   title: AgentEra App Cloud API
-  version: 0.8.0
-  description: Account, device authorization, USER, Workspace, Organization, and Official Managed Agent control-plane contract for AgentEra Studio.
+  version: 0.9.0
+  description: Account, device authorization, USER, Workspace, Organization, Official Managed Agent, and opt-in content-free quality contracts for AgentEra Studio.
 servers:
   - url: https://accounts.agentera.example
 paths:
@@ -2628,6 +2628,77 @@ paths:
           $ref: '#/components/responses/OfficialAgentError'
         '503':
           $ref: '#/components/responses/OfficialAgentError'
+  /api/v1/official-agent-quality/events:
+    post:
+      operationId: submitOfficialAgentQualityEvent
+      description: Accepts one signed, content-free quality envelope for an eligible fixed official RuntimeBinding. Account and device identifiers are never accepted in the body; the server derives a rotating purpose-specific pseudonym after authentication. The maximum request body is 16384 bytes.
+      security:
+        - desktopAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OfficialQualityEventRequest'
+      responses:
+        '202':
+          description: The sanitized event was accepted or exactly replayed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OfficialQualityEventReceipt'
+        '400':
+          $ref: '#/components/responses/OfficialQualityInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OfficialQualitySessionRevoked'
+        '403':
+          $ref: '#/components/responses/OfficialQualityForbidden'
+        '409':
+          $ref: '#/components/responses/OfficialQualityConflict'
+        '413':
+          $ref: '#/components/responses/OfficialQualityInvalidRequest'
+        '429':
+          $ref: '#/components/responses/OfficialQualityRateLimited'
+        '503':
+          $ref: '#/components/responses/OfficialQualityServiceUnavailable'
+  /api/v1/official-agent-quality/consents/{purpose}/{action}:
+    post:
+      operationId: setOfficialAgentQualityConsent
+      description: Grants or revokes one independently versioned quality purpose. Revocation stops future collection and schedules bounded retained-subject purging; it never changes local Agent execution or learning.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - name: purpose
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [official_quality_metrics, official_explicit_feedback]
+        - name: action
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [grant, revoke]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OfficialQualityConsentRequest'
+      responses:
+        '200':
+          description: Durable consent receipt for the exact purpose.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OfficialQualityConsentReceipt'
+        '400':
+          $ref: '#/components/responses/OfficialQualityInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OfficialQualitySessionRevoked'
+        '503':
+          $ref: '#/components/responses/OfficialQualityServiceUnavailable'
   /api/v1/agent-installations:
     post:
       operationId: createUserAgentInstallation
@@ -4551,6 +4622,143 @@ components:
           format: date-time
         replayed:
           type: boolean
+    OfficialQualityEventRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - protocol_version
+        - consent_version
+        - event_id
+        - platform_id
+        - definition_id
+        - version_id
+        - release_id
+        - release_revision_id
+        - desktop_version
+        - runtime_version
+        - event_day
+        - kind
+        - result
+        - latency_bucket
+        - total_token_bucket
+        - crash_code
+        - feedback_rating
+        - feedback_reason_codes
+        - binding_proof
+        - device_signature
+      properties:
+        protocol_version:
+          type: integer
+          enum: [1]
+        consent_version:
+          type: integer
+          format: int64
+          minimum: 1
+        event_id:
+          type: string
+          format: uuid
+          description: Client-generated canonical UUIDv7 used for exact replay handling.
+          pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+        platform_id: { type: string, format: uuid }
+        definition_id: { type: string, format: uuid }
+        version_id: { type: string, format: uuid }
+        release_id: { type: string, format: uuid }
+        release_revision_id: { type: string, format: uuid }
+        desktop_version:
+          type: string
+          minLength: 1
+          maxLength: 128
+        runtime_version:
+          type: string
+          minLength: 1
+          maxLength: 128
+        event_day:
+          type: string
+          format: date
+          description: UTC day no more than 30 days old and never in the future.
+        kind:
+          type: string
+          enum: [metric, explicit_feedback]
+        result:
+          type: string
+          enum: [success, user_cancelled, model_error, tool_error, runtime_crash, timeout]
+        latency_bucket:
+          type: string
+          enum: [lt_1s, 1s_5s, 5s_15s, 15s_60s, 60s_180s, gte_180s]
+        total_token_bucket:
+          type: string
+          enum: ['0', 1_1k, 1k_4k, 4k_16k, 16k_64k, gte_64k]
+        crash_code:
+          type: string
+          nullable: true
+          enum: [gateway_unavailable, runtime_process_exit, runtime_protocol_failure, unclassified_runtime_failure]
+          description: Required as null unless result is runtime_crash.
+        feedback_rating:
+          type: string
+          nullable: true
+          enum: [helpful, not_helpful]
+          description: Required as null for metric events.
+        feedback_reason_codes:
+          type: array
+          maxItems: 6
+          uniqueItems: true
+          items:
+            type: string
+            enum: [incorrect, incomplete, tool_failed, too_slow, unsafe_or_inappropriate, other_without_text]
+          description: Non-null fixed-code list; metric events require an empty list.
+        binding_proof:
+          type: string
+          format: uuid
+          description: Opaque proof of the fixed official RuntimeBinding; not a session identifier.
+        device_signature:
+          type: string
+          minLength: 86
+          maxLength: 86
+          pattern: '^[A-Za-z0-9_-]{86}$'
+          description: Raw-base64url Ed25519 signature over the canonical content-free envelope.
+    OfficialQualityEventReceipt:
+      type: object
+      additionalProperties: false
+      required: [event_id, status]
+      properties:
+        event_id: { type: string, format: uuid }
+        status: { type: string, enum: [accepted, replayed] }
+    OfficialQualityConsentRequest:
+      type: object
+      additionalProperties: false
+      required: [consent_version]
+      properties:
+        consent_version:
+          type: integer
+          format: int64
+          minimum: 1
+    OfficialQualityConsentReceipt:
+      type: object
+      additionalProperties: false
+      required: [purpose, consent_version, state, revision, recorded_at, replayed]
+      properties:
+        purpose: { type: string, enum: [official_quality_metrics, official_explicit_feedback] }
+        consent_version: { type: integer, format: int64, minimum: 1 }
+        state: { type: string, enum: [granted, revoked] }
+        revision: { type: integer, format: int64, minimum: 1 }
+        recorded_at: { type: string, format: date-time }
+        replayed: { type: boolean }
+    OfficialQualityErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string
+          enum:
+            - invalid_request
+            - session_revoked
+            - consent_required
+            - not_eligible
+            - rate_limited
+            - privacy_rejected
+            - event_conflict
+            - service_unavailable
     OfficialAgentSummary:
       type: object
       additionalProperties: false
@@ -5981,6 +6189,42 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorEnvelope'
+    OfficialQualityInvalidRequest:
+      description: The bounded event, consent body, content type, signature encoding, or request size is invalid or privacy-rejected.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OfficialQualityErrorEnvelope'
+    OfficialQualitySessionRevoked:
+      description: The desktop access token is absent, malformed, expired, or revoked.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OfficialQualityErrorEnvelope'
+    OfficialQualityForbidden:
+      description: Consent is missing or the supplied official release provenance or device signature is ineligible.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OfficialQualityErrorEnvelope'
+    OfficialQualityConflict:
+      description: The event identifier or fixed RuntimeBinding proof conflicts with a previously accepted envelope.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OfficialQualityErrorEnvelope'
+    OfficialQualityRateLimited:
+      description: The independent purpose-specific request or rotating-subject limit was exceeded.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OfficialQualityErrorEnvelope'
+    OfficialQualityServiceUnavailable:
+      description: Quality collection could not prove a safe result; Agent execution remains independent.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OfficialQualityErrorEnvelope'
     ExperienceCandidateError:
       description: Candidate validation, DLP, visibility, Workspace lifecycle, terminal review, idempotency, or service failure without private evidence text.
       content:

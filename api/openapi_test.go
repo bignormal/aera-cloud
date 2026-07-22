@@ -121,8 +121,8 @@ func TestOpenAPIContainsStrictUserAgentControlPlaneContract(t *testing.T) {
 		t.Fatalf("read openapi.yaml: %v", err)
 	}
 	document := string(contents)
-	if !strings.Contains(document, "version: 0.8.0") {
-		t.Fatal("OpenAPI version was not advanced for Official Managed Agent V1")
+	if !strings.Contains(document, "version: 0.9.0") {
+		t.Fatal("OpenAPI version does not include the Official Managed Agent baseline and Official Quality V1")
 	}
 	for _, path := range []string{
 		"/api/v1/agent-definitions:",
@@ -347,6 +347,99 @@ func TestOpenAPIContainsStrictOfficialManagedAgentPublicContract(t *testing.T) {
 	}
 }
 
+func TestOpenAPIContainsStrictOfficialQualityPublicContract(t *testing.T) {
+	contents, err := os.ReadFile("openapi.yaml")
+	if err != nil {
+		t.Fatalf("read openapi.yaml: %v", err)
+	}
+	document := string(contents)
+	if !strings.Contains(document, "version: 0.9.0") {
+		t.Fatal("OpenAPI version was not advanced for Official Quality V1")
+	}
+	for _, path := range []string{
+		"/api/v1/official-agent-quality/events:",
+		"/api/v1/official-agent-quality/consents/{purpose}/{action}:",
+	} {
+		if !strings.Contains(document, path) {
+			t.Fatalf("OpenAPI is missing %s", path)
+		}
+	}
+	for _, schema := range []string{
+		"OfficialQualityEventRequest", "OfficialQualityEventReceipt",
+		"OfficialQualityConsentRequest", "OfficialQualityConsentReceipt",
+		"OfficialQualityErrorEnvelope",
+	} {
+		block := openAPISchemaBlock(t, document, schema)
+		if !strings.Contains(block, "additionalProperties: false") {
+			t.Fatalf("%s schema is not closed:\n%s", schema, block)
+		}
+	}
+	event := openAPISchemaBlock(t, document, "OfficialQualityEventRequest")
+	for _, required := range []string{
+		"protocol_version", "consent_version", "event_id", "platform_id", "definition_id",
+		"version_id", "release_id", "release_revision_id", "desktop_version", "runtime_version",
+		"event_day", "kind", "result", "latency_bucket", "total_token_bucket", "crash_code",
+		"feedback_rating", "feedback_reason_codes", "binding_proof", "device_signature",
+	} {
+		if !strings.Contains(event, required+":") {
+			t.Fatalf("official quality event is missing %q:\n%s", required, event)
+		}
+	}
+	for _, fixed := range []string{
+		"enum: [metric, explicit_feedback]",
+		"enum: [success, user_cancelled, model_error, tool_error, runtime_crash, timeout]",
+		"enum: [lt_1s, 1s_5s, 5s_15s, 15s_60s, 60s_180s, gte_180s]",
+		"enum: ['0', 1_1k, 1k_4k, 4k_16k, 16k_64k, gte_64k]",
+		"enum: [helpful, not_helpful]",
+		"uniqueItems: true",
+	} {
+		if !strings.Contains(event, fixed) {
+			t.Fatalf("official quality event is missing fixed contract %q:\n%s", fixed, event)
+		}
+	}
+	for _, forbidden := range []string{
+		"free_text", "feedback_text", "conversation", "message", "prompt", "user_id",
+		"device_id", "session_id", "memory", "profile", "skill", "attachment", "api_key",
+	} {
+		if strings.Contains(strings.ToLower(event), forbidden) {
+			t.Fatalf("official quality event exposes forbidden property %q:\n%s", forbidden, event)
+		}
+	}
+	consent := openAPISchemaBlock(t, document, "OfficialQualityConsentRequest")
+	if !strings.Contains(consent, "required: [consent_version]") ||
+		!strings.Contains(consent, "minimum: 1") {
+		t.Fatalf("official quality consent request is not revision-bound:\n%s", consent)
+	}
+}
+
+func openAPISchemaBlock(t *testing.T, document, name string) string {
+	t.Helper()
+	schemas := strings.Index(document, "\n  schemas:\n")
+	if schemas < 0 {
+		t.Fatal("components.schemas is missing")
+	}
+	document = document[schemas:]
+	marker := "\n    " + name + ":\n"
+	start := strings.Index(document, marker)
+	if start < 0 {
+		t.Fatalf("schema %s is missing", name)
+	}
+	remainder := document[start+len(marker):]
+	for offset := 0; offset < len(remainder); {
+		next := strings.Index(remainder[offset:], "\n    ")
+		if next < 0 {
+			return remainder
+		}
+		end := offset + next
+		afterIndent := end + len("\n    ")
+		if afterIndent < len(remainder) && remainder[afterIndent] != ' ' {
+			return remainder[:end]
+		}
+		offset = afterIndent
+	}
+	return remainder
+}
+
 func TestOpenAPIContainsStrictExperienceCandidateContract(t *testing.T) {
 	contents, err := os.ReadFile("openapi.yaml")
 	if err != nil {
@@ -487,8 +580,8 @@ func TestOpenAPIContainsStrictOrganizationFoundationContract(t *testing.T) {
 		t.Fatalf("read openapi.yaml: %v", err)
 	}
 	document := string(contents)
-	if !strings.HasPrefix(document, "openapi: 3.0.3\n") || !strings.Contains(document, "version: 0.8.0") {
-		t.Fatal("OpenAPI did not preserve Organization Foundation in the Official Managed Agent 0.8.0 contract")
+	if !strings.HasPrefix(document, "openapi: 3.0.3\n") || !strings.Contains(document, "version: 0.9.0") {
+		t.Fatal("OpenAPI did not preserve Organization Foundation in the Official Quality 0.9.0 contract")
 	}
 	for _, path := range []string{
 		"/api/v1/organizations:",
