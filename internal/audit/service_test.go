@@ -58,8 +58,8 @@ func TestPostgresRecorderPersistsOrganizationScopeAndBoundedMetadataDeterministi
 	if err != nil {
 		t.Fatalf("NewRecorder() error = %v", err)
 	}
-	organizationID := uuid.New()
-	policyID := uuid.New()
+	organizationID := uuid.MustParse("019f9999-0000-7000-8000-000000000001")
+	policyID := uuid.MustParse("019f0000-9999-7000-8000-000000000002")
 	metadata := map[string]string{
 		"organization_id":    organizationID.String(),
 		"policy_snapshot_id": policyID.String(),
@@ -85,8 +85,12 @@ func TestPostgresRecorderPersistsOrganizationScopeAndBoundedMetadataDeterministi
 		t.Fatalf("Organization metadata JSON = %s, want %s", encoded, want)
 	}
 	metadata["policy_version"] = "999"
-	if strings.Contains(encoded, "999") {
-		t.Fatal("recorded Organization metadata aliases the caller map")
+	var recorded map[string]string
+	if err := json.Unmarshal([]byte(encoded), &recorded); err != nil {
+		t.Fatalf("decode recorded Organization metadata: %v", err)
+	}
+	if recorded["policy_version"] != "2" {
+		t.Fatalf("recorded Organization metadata aliases the caller map: %+v", recorded)
 	}
 }
 
