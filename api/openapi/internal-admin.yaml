@@ -1,0 +1,256 @@
+openapi: 3.1.0
+info:
+  title: Aera Cloud Internal Admin API
+  version: 1.0.0
+  description: |
+    Shared provider/consumer contract for the Aera Cloud Internal Admin API.
+    Exact identity lookup accepts a full email or phone only in the request body;
+    every identity field in every response remains masked.
+servers:
+  - url: https://aera-cloud-admin.invalid
+security:
+  - mutualTLS: []
+    serviceJWT: []
+paths:
+  /internal/admin/v1/health:
+    get:
+      operationId: getCloudAdminHealth
+      responses:
+        '200':
+          description: Internal Admin API is ready
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+  /internal/admin/v1/users:
+    get:
+      operationId: listCloudUsers
+      parameters:
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/UserStatus' }
+      responses:
+        '200':
+          description: Masked Cloud user page
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserPage' }
+  /internal/admin/v1/users/lookup:
+    post:
+      operationId: lookupCloudUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LookupRequest' }
+      responses:
+        '200':
+          description: One masked Cloud user
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+  /internal/admin/v1/users/{userID}:
+    get:
+      operationId: getCloudUser
+      parameters: [{ $ref: '#/components/parameters/UserID' }]
+      responses:
+        '200':
+          description: One masked Cloud user
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+  /internal/admin/v1/users/{userID}/devices:
+    get:
+      operationId: listCloudUserDevices
+      parameters:
+        - { $ref: '#/components/parameters/UserID' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200':
+          description: Device page
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DevicePage' }
+  /internal/admin/v1/users/{userID}/sessions:
+    get:
+      operationId: listCloudUserSessions
+      parameters:
+        - { $ref: '#/components/parameters/UserID' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200':
+          description: Session page
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionPage' }
+  /internal/admin/v1/devices/{deviceID}/revoke:
+    post:
+      operationId: revokeCloudDevice
+      parameters:
+        - { $ref: '#/components/parameters/DeviceID' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody: { $ref: '#/components/requestBodies/Command' }
+      responses: { '200': { $ref: '#/components/responses/Operation' } }
+  /internal/admin/v1/sessions/{sessionID}/revoke:
+    post:
+      operationId: revokeCloudSession
+      parameters:
+        - { $ref: '#/components/parameters/SessionID' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody: { $ref: '#/components/requestBodies/Command' }
+      responses: { '200': { $ref: '#/components/responses/Operation' } }
+  /internal/admin/v1/users/{userID}/disable:
+    post:
+      operationId: disableCloudUser
+      parameters:
+        - { $ref: '#/components/parameters/UserID' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody: { $ref: '#/components/requestBodies/Command' }
+      responses: { '200': { $ref: '#/components/responses/Operation' } }
+  /internal/admin/v1/users/{userID}/enable:
+    post:
+      operationId: enableCloudUser
+      parameters:
+        - { $ref: '#/components/parameters/UserID' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody: { $ref: '#/components/requestBodies/Command' }
+      responses: { '200': { $ref: '#/components/responses/Operation' } }
+  /internal/admin/v1/operations/{operationID}:
+    get:
+      operationId: getCloudAdminOperation
+      parameters: [{ $ref: '#/components/parameters/OperationID' }]
+      responses: { '200': { $ref: '#/components/responses/Operation' } }
+components:
+  securitySchemes:
+    mutualTLS: { type: mutualTLS }
+    serviceJWT: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    Cursor: { name: cursor, in: query, schema: { type: string, maxLength: 512 } }
+    Limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100 } }
+    UserID: { name: userID, in: path, required: true, schema: { type: string, format: uuid } }
+    DeviceID: { name: deviceID, in: path, required: true, schema: { type: string, format: uuid } }
+    SessionID: { name: sessionID, in: path, required: true, schema: { type: string, format: uuid } }
+    OperationID: { name: operationID, in: path, required: true, schema: { type: string, format: uuid } }
+    IdempotencyKey: { name: Idempotency-Key, in: header, required: true, schema: { type: string, format: uuid } }
+  requestBodies:
+    Command:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Command' }
+  responses:
+    Operation:
+      description: Idempotent operation state
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Operation' }
+  schemas:
+    Health:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties: { status: { const: ok } }
+    LookupRequest:
+      type: object
+      additionalProperties: false
+      required: [type, value]
+      properties:
+        type: { enum: [email, phone] }
+        value: { type: string, minLength: 3, maxLength: 320 }
+    UserStatus: { enum: [active, pending_deletion, disabled] }
+    User:
+      type: object
+      additionalProperties: false
+      required:
+        - user_id
+        - status
+        - administratively_disabled
+        - administrative_revision
+        - device_count
+        - active_device_count
+        - active_session_count
+        - created_at
+      properties:
+        user_id: { type: string, format: uuid }
+        masked_email: { type: string, pattern: '^[^@* ]\*{3}@[A-Za-z0-9.-]+$' }
+        masked_phone: { type: string, pattern: '^[0-9]{3}\*{4}[0-9]{4}$' }
+        status: { $ref: '#/components/schemas/UserStatus' }
+        administratively_disabled: { type: boolean }
+        deletion_finalized_at: { type: string, format: date-time }
+        administrative_revision: { type: integer, minimum: 1 }
+        device_count: { type: integer, minimum: 0 }
+        active_device_count: { type: integer, minimum: 0 }
+        active_session_count: { type: integer, minimum: 0 }
+        created_at: { type: string, format: date-time }
+        last_cloud_activity_at: { type: string, format: date-time }
+    UserPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/User' } }
+        next_cursor: { type: string, maxLength: 512 }
+    DevicePage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Device' } }
+        next_cursor: { type: string, maxLength: 512 }
+    SessionPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Session' } }
+        next_cursor: { type: string, maxLength: 512 }
+    Device:
+      type: object
+      additionalProperties: false
+      required: [device_id, user_id, display_name, platform, client_version, status]
+      properties:
+        device_id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        display_name: { type: string, minLength: 1, maxLength: 100 }
+        platform: { type: string, minLength: 1, maxLength: 32 }
+        client_version: { type: string, minLength: 1, maxLength: 64 }
+        status: { enum: [active, inactive, revoked] }
+        last_seen_at: { type: string, format: date-time }
+    Session:
+      type: object
+      additionalProperties: false
+      required: [session_id, user_id, device_id, status, issued_at, expires_at]
+      properties:
+        session_id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        device_id: { type: string, format: uuid }
+        status: { enum: [active, rotated, expired, revoked, replay_detected] }
+        issued_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        revoked_at: { type: string, format: date-time }
+    Command:
+      type: object
+      additionalProperties: false
+      required: [operation_id, actor_admin_id, request_id, reason_code, expected_revision]
+      properties:
+        operation_id: { type: string, format: uuid }
+        actor_admin_id: { type: string, format: uuid }
+        approval_id: { type: string, format: uuid }
+        request_id: { type: string, minLength: 1, maxLength: 128 }
+        reason_code: { type: string, pattern: '^[a-z][a-z0-9_]{2,63}$' }
+        ticket_reference: { type: string, minLength: 1, maxLength: 128 }
+        note: { type: string, minLength: 1, maxLength: 500 }
+        expected_revision: { type: integer, minimum: 1 }
+    Operation:
+      type: object
+      additionalProperties: false
+      required: [operation_id, status, updated_at]
+      properties:
+        operation_id: { type: string, format: uuid }
+        status: { enum: [queued, executing, succeeded, failed, conflict] }
+        error_code: { type: string, pattern: '^[A-Z][A-Z0-9_]{2,99}$' }
+        administrative_revision: { type: integer, minimum: 1 }
+        updated_at: { type: string, format: date-time }
