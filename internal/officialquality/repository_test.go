@@ -28,6 +28,18 @@ func qualitySchema(t *testing.T) (context.Context, *pgxpool.Pool) {
 	if err := store.ApplyMigrations(ctx, postgres); err != nil {
 		t.Fatalf("ApplyMigrations() error = %v", err)
 	}
+	if _, err := postgres.Exec(ctx, `
+		TRUNCATE
+			official_quality_proposal_reviews,
+			official_quality_proposal_aggregates,
+			official_quality_proposals,
+			official_quality_daily_aggregates,
+			official_quality_events,
+			official_quality_purge_requests,
+			official_quality_consent_receipts
+	`); err != nil {
+		t.Fatalf("truncate official quality test fixtures: %v", err)
+	}
 	return ctx, postgres
 }
 

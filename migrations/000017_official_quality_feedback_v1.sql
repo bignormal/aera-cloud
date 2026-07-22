@@ -403,9 +403,10 @@ CREATE TABLE official_quality_proposal_aggregates (
     CONSTRAINT official_quality_proposal_aggregates_proposal_fk
         FOREIGN KEY (proposal_id)
         REFERENCES official_quality_proposals(id) ON DELETE RESTRICT,
-    CONSTRAINT official_quality_proposal_aggregates_aggregate_fk
-        FOREIGN KEY (aggregate_id)
-        REFERENCES official_quality_daily_aggregates(id) ON DELETE RESTRICT,
+    -- aggregate_id is validated against the live aggregate by the constraint
+    -- trigger below, but intentionally has no permanent FK: aggregate rows have
+    -- a hard 180-day retention bound while this immutable source ID remains as
+    -- proposal provenance after the aggregate expires.
     CONSTRAINT official_quality_proposal_aggregates_position_check CHECK (
         position BETWEEN 1 AND 100
     ),

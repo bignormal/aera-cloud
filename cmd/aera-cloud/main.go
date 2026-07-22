@@ -220,11 +220,34 @@ func buildMaintenanceRunner(
 	if err != nil {
 		return nil, err
 	}
-	maintenance, err := jobs.NewPostgresMaintenance(
+	securityMaintenance, err := jobs.NewPostgresMaintenance(
 		postgres, account.NewPostgresRepository(postgres, identityCodec),
 	)
 	if err != nil {
 		return nil, err
+	}
+	var maintenance jobs.Maintenance = securityMaintenance
+	if cfg.OfficialQuality.Enabled {
+		pseudonyms, err := officialquality.NewPseudonymizer(
+			cfg.OfficialQuality.PseudonymHMACActiveKey,
+			cfg.OfficialQuality.PseudonymHMACKeys,
+		)
+		if err != nil {
+			return nil, err
+		}
+		qualityMaintenance, err := officialquality.NewPostgresMaintenance(officialquality.MaintenanceConfig{
+			Postgres: postgres, Pseudonymizer: pseudonyms,
+			RawRetentionDays:       cfg.OfficialQuality.RawRetentionDays,
+			AggregateRetentionDays: cfg.OfficialQuality.AggregateRetentionDays,
+			MinimumSubjects:        cfg.OfficialQuality.MinimumSubjects,
+		})
+		if err != nil {
+			return nil, err
+		}
+		maintenance, err = jobs.NewSequentialMaintenance(securityMaintenance, qualityMaintenance)
+		if err != nil {
+			return nil, err
+		}
 	}
 	owner, err := secure.RandomUUID()
 	if err != nil {

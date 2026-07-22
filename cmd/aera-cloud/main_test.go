@@ -405,6 +405,57 @@ func TestBuildMaintenanceRunnerUsesConfiguredStores(t *testing.T) {
 	}
 }
 
+func TestBuildMaintenanceRunnerIncludesOfficialQualityWhenEnabled(t *testing.T) {
+	services := testkit.IntegrationServices(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	postgres, err := store.OpenPostgres(ctx, services.DatabaseURL)
+	if err != nil {
+		t.Fatalf("OpenPostgres() error = %v", err)
+	}
+	defer postgres.Close()
+	if err := store.ApplyMigrations(ctx, postgres); err != nil {
+		t.Fatalf("ApplyMigrations() error = %v", err)
+	}
+	redisStore, err := store.OpenRedis(ctx, store.RedisOptions{
+		Addr: services.RedisAddr, Username: services.RedisUsername, Password: services.RedisPassword, DB: services.RedisDB,
+	})
+	if err != nil {
+		t.Fatalf("OpenRedis() error = %v", err)
+	}
+	defer func() { _ = redisStore.Close() }()
+	cfg, err := config.Load(integrationLookup(services))
+	if err != nil {
+		t.Fatalf("config.Load() error = %v", err)
+	}
+	cfg.OfficialQuality = config.OfficialQualityConfig{
+		Enabled: true, PseudonymHMACActiveKey: "quality-v1",
+		PseudonymHMACKeys: map[string][]byte{"quality-v1": bytes.Repeat([]byte{0x71}, 32)},
+		RawRetentionDays:  30, AggregateRetentionDays: 180, MinimumSubjects: 10,
+	}
+	if _, err := postgres.Exec(ctx, `DELETE FROM audit_events WHERE event_type = 'official_quality_retention_completed'`); err != nil {
+		t.Fatalf("clear official quality maintenance audits: %v", err)
+	}
+
+	runner, err := buildMaintenanceRunner(cfg, postgres, redisStore.Client())
+	if err != nil {
+		t.Fatalf("buildMaintenanceRunner() error = %v", err)
+	}
+	if err := runner.RunOnce(ctx); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	var auditCount int
+	if err := postgres.QueryRow(ctx, `
+		SELECT count(*) FROM audit_events
+		WHERE event_type = 'official_quality_retention_completed'
+	`).Scan(&auditCount); err != nil {
+		t.Fatalf("count official quality maintenance audits: %v", err)
+	}
+	if auditCount != 1 {
+		t.Fatalf("official quality maintenance audit count = %d, want 1", auditCount)
+	}
+}
+
 func integrationLookup(services testkit.Services) config.LookupEnv {
 	agentControlPrivateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{13}, ed25519.SeedSize))
 	values := map[string]string{
