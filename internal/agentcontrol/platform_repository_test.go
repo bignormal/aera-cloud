@@ -2,13 +2,33 @@ package agentcontrol
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
+
+type failingOfficialCommitTx struct {
+	pgx.Tx
+}
+
+func (failingOfficialCommitTx) Commit(context.Context) error {
+	return errors.New("injected database commit failure")
+}
+
+func TestOfficialRepositoryCommitFailuresFailClosed(t *testing.T) {
+	tx := failingOfficialCommitTx{}
+	if _, err := commitPlatformPolicy(context.Background(), tx, PlatformPolicySnapshot{ID: uuid.New()}); !errors.Is(err, ErrServiceUnavailable) {
+		t.Fatalf("platform policy commit error = %v", err)
+	}
+	if err := commitOfficialRelease(context.Background(), tx, OfficialRelease{ID: uuid.New()}); !errors.Is(err, ErrServiceUnavailable) {
+		t.Fatalf("official release commit error = %v", err)
+	}
+}
 
 func TestPlatformRepositoryPublicationCreatesImmutableVersionAndLeavesExistingReleaseHead(t *testing.T) {
 	fixture := newPlatformRepositoryFixture(t)
