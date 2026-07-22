@@ -132,6 +132,7 @@ type qualityProvenanceFixture struct {
 	releaseID         uuid.UUID
 	releaseRevisionID uuid.UUID
 	bindingID         uuid.UUID
+	platformDraftID   uuid.UUID
 }
 
 func (f qualityProvenanceFixture) envelope(t *testing.T) PublicEnvelope {
@@ -183,6 +184,7 @@ func seedOfficialQualityProvenance(
 
 	adminID := uuid.New()
 	draftID := uuid.New()
+	fixture.platformDraftID = draftID
 	submissionID := uuid.New()
 	platformPolicyID := uuid.New()
 	digest := bytes.Repeat([]byte{0x21}, 32)

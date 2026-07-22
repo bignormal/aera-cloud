@@ -18,16 +18,20 @@ import (
 )
 
 const (
-	ScopeUsersRead            = "users:read"
-	ScopeDevicesWrite         = "devices:write"
-	ScopeSessionsWrite        = "sessions:write"
-	ScopeAccountsWrite        = "accounts:write"
-	ScopeOperationsRead       = "operations:read"
-	ScopeOfficialAgentsRead   = "official_agents:read"
-	ScopeOfficialDraftsWrite  = "official_agent_drafts:write"
-	ScopeOfficialReviewsWrite = "official_agent_reviews:write"
-	ScopeOfficialReleaseWrite = "official_agent_releases:write"
-	ScopeOfficialAuditRead    = "official_agent_audit:read"
+	ScopeUsersRead              = "users:read"
+	ScopeDevicesWrite           = "devices:write"
+	ScopeSessionsWrite          = "sessions:write"
+	ScopeAccountsWrite          = "accounts:write"
+	ScopeOperationsRead         = "operations:read"
+	ScopeOfficialAgentsRead     = "official_agents:read"
+	ScopeOfficialDraftsWrite    = "official_agent_drafts:write"
+	ScopeOfficialReviewsWrite   = "official_agent_reviews:write"
+	ScopeOfficialReleaseWrite   = "official_agent_releases:write"
+	ScopeOfficialAuditRead      = "official_agent_audit:read"
+	ScopeOfficialQualityRead    = "official_quality:read"
+	ScopeOfficialQualityPropose = "official_quality:propose"
+	ScopeOfficialQualityReview  = "official_quality:review"
+	ScopeOfficialQualityClone   = "official_quality:clone"
 
 	serviceJWTAudience       = "aera-cloud-admin"
 	maximumServiceTokenBytes = 8192
@@ -39,16 +43,20 @@ var (
 	serviceIdentityPattern = regexp.MustCompile(`^[a-z][a-z0-9._-]{2,63}$`)
 	serviceJWTIDPattern    = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
 	allowedServiceScopes   = map[string]struct{}{
-		ScopeUsersRead:            {},
-		ScopeDevicesWrite:         {},
-		ScopeSessionsWrite:        {},
-		ScopeAccountsWrite:        {},
-		ScopeOperationsRead:       {},
-		ScopeOfficialAgentsRead:   {},
-		ScopeOfficialDraftsWrite:  {},
-		ScopeOfficialReviewsWrite: {},
-		ScopeOfficialReleaseWrite: {},
-		ScopeOfficialAuditRead:    {},
+		ScopeUsersRead:              {},
+		ScopeDevicesWrite:           {},
+		ScopeSessionsWrite:          {},
+		ScopeAccountsWrite:          {},
+		ScopeOperationsRead:         {},
+		ScopeOfficialAgentsRead:     {},
+		ScopeOfficialDraftsWrite:    {},
+		ScopeOfficialReviewsWrite:   {},
+		ScopeOfficialReleaseWrite:   {},
+		ScopeOfficialAuditRead:      {},
+		ScopeOfficialQualityRead:    {},
+		ScopeOfficialQualityPropose: {},
+		ScopeOfficialQualityReview:  {},
+		ScopeOfficialQualityClone:   {},
 	}
 	allowedOfficialRoles = map[string]struct{}{
 		"super_admin": {}, "developer": {}, "operator": {},

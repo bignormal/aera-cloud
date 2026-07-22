@@ -488,6 +488,71 @@ CREATE TRIGGER official_quality_proposal_aggregate_immutable_trigger
     BEFORE UPDATE OR DELETE ON official_quality_proposal_aggregates
     FOR EACH ROW EXECUTE FUNCTION reject_official_quality_immutable_mutation();
 
+CREATE FUNCTION guard_official_quality_proposal_mutation()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    transition_allowed BOOLEAN;
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        RAISE EXCEPTION 'Official quality proposal cannot be deleted'
+            USING ERRCODE = '55000';
+    END IF;
+
+    transition_allowed := (
+        OLD.status = 'open'
+        AND NEW.status = 'submitted'
+        AND OLD.terminal_at IS NULL
+        AND NEW.terminal_at IS NULL
+        AND NEW.linked_draft_id IS NULL
+    ) OR (
+        OLD.status = 'submitted'
+        AND NEW.status IN ('approved', 'rejected')
+        AND OLD.terminal_at IS NULL
+        AND NEW.terminal_at = NEW.updated_at
+        AND NEW.linked_draft_id IS NULL
+    ) OR (
+        OLD.status = 'approved'
+        AND NEW.status = 'draft_linked'
+        AND OLD.terminal_at IS NOT NULL
+        AND NEW.terminal_at = OLD.terminal_at
+        AND OLD.linked_draft_id IS NULL
+        AND NEW.linked_draft_id IS NOT NULL
+    ) OR (
+        OLD.status = 'draft_linked'
+        AND NEW.status = 'closed'
+        AND NEW.terminal_at = OLD.terminal_at
+        AND NEW.linked_draft_id = OLD.linked_draft_id
+    );
+
+    IF NOT transition_allowed
+       OR NEW.id IS DISTINCT FROM OLD.id
+       OR NEW.platform_id IS DISTINCT FROM OLD.platform_id
+       OR NEW.definition_id IS DISTINCT FROM OLD.definition_id
+       OR NEW.version_id IS DISTINCT FROM OLD.version_id
+       OR NEW.release_id IS DISTINCT FROM OLD.release_id
+       OR NEW.release_revision_id IS DISTINCT FROM OLD.release_revision_id
+       OR NEW.problem_categories IS DISTINCT FROM OLD.problem_categories
+       OR NEW.improvement_objective IS DISTINCT FROM OLD.improvement_objective
+       OR NEW.created_by_admin_id IS DISTINCT FROM OLD.created_by_admin_id
+       OR NEW.created_by_role IS DISTINCT FROM OLD.created_by_role
+       OR NEW.reason_code IS DISTINCT FROM OLD.reason_code
+       OR NEW.ticket_reference IS DISTINCT FROM OLD.ticket_reference
+       OR NEW.created_at IS DISTINCT FROM OLD.created_at
+       OR NEW.revision <> OLD.revision + 1
+       OR NEW.updated_at < OLD.updated_at THEN
+        RAISE EXCEPTION 'Official quality proposal mutation is invalid'
+            USING ERRCODE = '55000';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER official_quality_proposal_mutation_trigger
+    BEFORE UPDATE OR DELETE ON official_quality_proposals
+    FOR EACH ROW EXECUTE FUNCTION guard_official_quality_proposal_mutation();
+
 CREATE FUNCTION enforce_official_quality_proposal_aggregate_source()
 RETURNS TRIGGER
 LANGUAGE plpgsql
