@@ -103,6 +103,7 @@ type Config struct {
 	ListenAddr                     string
 	InternalAdmin                  InternalAdminConfig
 	OfficialAgent                  OfficialAgentConfig
+	OfficialQuality                OfficialQualityConfig
 	PublicURL                      string
 	DatabaseURL                    string
 	RedisAddr                      string
@@ -310,6 +311,10 @@ func Load(lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	officialQuality, err := loadOfficialQuality(lookup, officialAgent.Enabled)
+	if err != nil {
+		return Config{}, err
+	}
 	offlinePolicyVersion, err := requiredInteger(lookup, envOfflinePolicyVersion, 1, 1_000_000)
 	if err != nil {
 		return Config{}, err
@@ -340,6 +345,12 @@ func Load(lookup LookupEnv) (Config, error) {
 		addKeyRingMaterials(independentKeyMaterials, "official rollout", KeyRing{
 			ActiveKeyID: officialAgent.RolloutHMACActiveKey,
 			Keys:        officialAgent.RolloutHMACKeys,
+		})
+	}
+	if officialQuality.Enabled {
+		addKeyRingMaterials(independentKeyMaterials, "official quality pseudonym", KeyRing{
+			ActiveKeyID: officialQuality.PseudonymHMACActiveKey,
+			Keys:        officialQuality.PseudonymHMACKeys,
 		})
 	}
 	if err := requireIndependentKeys(independentKeyMaterials); err != nil {
@@ -531,6 +542,7 @@ func Load(lookup LookupEnv) (Config, error) {
 		ListenAddr:                     listenAddr,
 		InternalAdmin:                  internalAdmin,
 		OfficialAgent:                  officialAgent,
+		OfficialQuality:                officialQuality,
 		PublicURL:                      publicURL,
 		DatabaseURL:                    databaseURL,
 		RedisAddr:                      redisAddr,

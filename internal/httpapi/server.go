@@ -17,16 +17,17 @@ type HealthChecker interface {
 }
 
 type Dependencies struct {
-	PostgreSQL   HealthChecker
-	Redis        HealthChecker
-	Verification http.Handler
-	Accounts     http.Handler
-	OAuth        http.Handler
-	Devices      http.Handler
-	AgentControl http.Handler
-	Workspace    http.Handler
-	Organization http.Handler
-	Web          http.Handler
+	PostgreSQL      HealthChecker
+	Redis           HealthChecker
+	Verification    http.Handler
+	Accounts        http.Handler
+	OAuth           http.Handler
+	Devices         http.Handler
+	AgentControl    http.Handler
+	OfficialQuality http.Handler
+	Workspace       http.Handler
+	Organization    http.Handler
+	Web             http.Handler
 }
 
 func New(dependencies Dependencies) http.Handler {
@@ -83,6 +84,9 @@ func New(dependencies Dependencies) http.Handler {
 		router.Handle("/api/v1/organizations/{organizationID}/agent-definitions/*", dependencies.AgentControl)
 		router.Handle("/api/v1/organizations/{organizationID}/agent-publication-submissions", dependencies.AgentControl)
 		router.Handle("/api/v1/organizations/{organizationID}/agent-publication-submissions/*", dependencies.AgentControl)
+	}
+	if dependencies.OfficialQuality != nil {
+		router.Handle("/api/v1/official-agent-quality/*", dependencies.OfficialQuality)
 	}
 	if dependencies.Workspace != nil {
 		router.Handle("/api/v1/workspaces", dependencies.Workspace)

@@ -27,6 +27,7 @@ import (
 	"github.com/bignormal/aera-cloud/internal/legal"
 	"github.com/bignormal/aera-cloud/internal/notification"
 	"github.com/bignormal/aera-cloud/internal/oauth"
+	"github.com/bignormal/aera-cloud/internal/officialquality"
 	"github.com/bignormal/aera-cloud/internal/organization"
 	"github.com/bignormal/aera-cloud/internal/secure"
 	"github.com/bignormal/aera-cloud/internal/session"
@@ -113,6 +114,10 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 	if err != nil {
 		return err
 	}
+	officialQualityHandler, err := buildOfficialQualityHandler(cfg, postgres, redisStore.Client())
+	if err != nil {
+		return err
+	}
 	workspaceHandler, err := buildWorkspaceHandler(cfg, postgres, redisStore.Client())
 	if err != nil {
 		return err
@@ -129,16 +134,17 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 	}
 
 	publicHandler := httpapi.New(httpapi.Dependencies{
-		PostgreSQL:   postgres,
-		Redis:        redisStore,
-		Verification: verificationHandler,
-		Accounts:     accountHandler,
-		OAuth:        oauthHandler,
-		Devices:      deviceHandler,
-		AgentControl: agentControlHandler,
-		Workspace:    workspaceHandler,
-		Organization: organizationHandler,
-		Web:          webui.New(),
+		PostgreSQL:      postgres,
+		Redis:           redisStore,
+		Verification:    verificationHandler,
+		Accounts:        accountHandler,
+		OAuth:           oauthHandler,
+		Devices:         deviceHandler,
+		AgentControl:    agentControlHandler,
+		OfficialQuality: officialQualityHandler,
+		Workspace:       workspaceHandler,
+		Organization:    organizationHandler,
+		Web:             webui.New(),
 	})
 	var internalHandler http.Handler
 	var internalTLS *tls.Config
@@ -155,6 +161,54 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 			"internal_admin_enabled", cfg.InternalAdmin.Enabled)
 		go maintenanceRunner.Run(maintenanceCtx)
 	})
+}
+
+func buildOfficialQualityHandler(
+	cfg config.Config,
+	postgres *pgxpool.Pool,
+	redisClient redis.UniversalClient,
+) (http.Handler, error) {
+	if !cfg.OfficialQuality.Enabled {
+		return nil, nil
+	}
+	if postgres == nil || redisClient == nil {
+		return nil, errors.New("official quality dependencies are unavailable")
+	}
+	pseudonyms, err := officialquality.NewPseudonymizer(
+		cfg.OfficialQuality.PseudonymHMACActiveKey,
+		cfg.OfficialQuality.PseudonymHMACKeys,
+	)
+	if err != nil {
+		return nil, err
+	}
+	limiter, err := officialquality.NewRedisQualityLimiter(
+		redisClient,
+		officialquality.DefaultQualityLimitPolicies(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	repository := officialquality.NewPostgresRepository(postgres)
+	service, err := officialquality.NewService(officialquality.ServiceConfig{
+		Repository: repository, Pseudonymizer: pseudonyms,
+		Limiter: limiter, Scanner: officialquality.MinimizedScanner{},
+	})
+	if err != nil {
+		return nil, err
+	}
+	consent, err := officialquality.NewConsentService(officialquality.ConsentServiceConfig{
+		Repository: repository,
+	})
+	if err != nil {
+		return nil, err
+	}
+	accessTokens, err := buildAccessAuthenticator(cfg, postgres, redisClient)
+	if err != nil {
+		return nil, err
+	}
+	return officialquality.NewHandler(officialquality.HTTPConfig{
+		Submitter: service, Consent: consent, AccessTokens: accessTokens,
+	}), nil
 }
 
 func buildMaintenanceRunner(

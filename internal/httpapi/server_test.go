@@ -205,6 +205,34 @@ func TestDeviceRoutesAreMountedWithoutChangingHealthContract(t *testing.T) {
 	}
 }
 
+func TestOfficialQualityRoutesAreMountedWithoutCapturingOtherAPIRoutes(t *testing.T) {
+	qualityHandler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if !strings.HasPrefix(request.URL.Path, "/api/v1/official-agent-quality/") {
+			t.Errorf("official quality path = %q", request.URL.Path)
+		}
+		response.WriteHeader(http.StatusTeapot)
+	})
+	handler := New(Dependencies{
+		PostgreSQL: &stubHealthChecker{}, Redis: &stubHealthChecker{}, OfficialQuality: qualityHandler,
+	})
+	for _, path := range []string{
+		"/api/v1/official-agent-quality/events",
+		"/api/v1/official-agent-quality/consents/official_quality_metrics/grant",
+		"/api/v1/official-agent-quality/consents/official_explicit_feedback/revoke",
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, nil))
+		if response.Code != http.StatusTeapot {
+			t.Fatalf("path %s status = %d, want %d", path, response.Code, http.StatusTeapot)
+		}
+	}
+	unrelated := httptest.NewRecorder()
+	handler.ServeHTTP(unrelated, httptest.NewRequest(http.MethodPost, "/api/v1/official-agents", nil))
+	if unrelated.Code != http.StatusNotFound {
+		t.Fatalf("unrelated API status = %d, want %d", unrelated.Code, http.StatusNotFound)
+	}
+}
+
 func TestAgentControlRoutesAreMountedWithoutCapturingOtherAPIRoutes(t *testing.T) {
 	routes := []struct {
 		method string
