@@ -16,16 +16,16 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func TestEmbeddedMigrationsIncludeOfficialManagedAgentV1(t *testing.T) {
+func TestEmbeddedMigrationsIncludeOfficialQualityFeedbackV1(t *testing.T) {
 	loaded, err := loadMigrations(migrations.FS)
 	if err != nil {
 		t.Fatalf("loadMigrations() error = %v", err)
 	}
-	if len(loaded) != 16 {
-		t.Fatalf("embedded migration count = %d, want 16", len(loaded))
+	if len(loaded) != 17 {
+		t.Fatalf("embedded migration count = %d, want 17", len(loaded))
 	}
 	last := loaded[len(loaded)-1]
-	if last.version != 16 || last.name != "000016_official_managed_agent_v1.sql" {
+	if last.version != 17 || last.name != "000017_official_quality_feedback_v1.sql" {
 		t.Fatalf("last embedded migration = %d/%s", last.version, last.name)
 	}
 }
@@ -91,6 +91,13 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 		"official_releases",
 		"official_release_revisions",
 		"official_release_audience_accounts",
+		"official_quality_consent_receipts",
+		"official_quality_purge_requests",
+		"official_quality_events",
+		"official_quality_daily_aggregates",
+		"official_quality_proposals",
+		"official_quality_proposal_aggregates",
+		"official_quality_proposal_reviews",
 	}
 	for _, table := range tables {
 		var exists bool
@@ -117,7 +124,11 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	assertUniqueConstraint(t, ctx, postgres, "organization_agent_reviews", "organization_agent_reviews_submission_key", []string{"submission_id"})
 	assertUniqueConstraint(t, ctx, postgres, "platform_agent_reviews", "platform_agent_reviews_submission_key", []string{"submission_id"})
 	assertUniqueConstraint(t, ctx, postgres, "official_releases", "official_releases_platform_definition_channel_key", []string{"platform_id", "definition_id", "channel"})
+	assertUniqueConstraint(t, ctx, postgres, "official_releases", "official_releases_id_platform_definition_key", []string{"id", "platform_id", "definition_id"})
 	assertUniqueConstraint(t, ctx, postgres, "official_release_revisions", "official_release_revisions_release_revision_key", []string{"release_id", "revision_number"})
+	assertUniqueConstraint(t, ctx, postgres, "official_quality_consent_receipts", "official_quality_consent_receipts_user_purpose_revision_key", []string{"user_id", "purpose", "revision"})
+	assertUniqueConstraint(t, ctx, postgres, "official_quality_proposals", "official_quality_proposals_platform_id_id_key", []string{"platform_id", "id"})
+	assertUniqueConstraint(t, ctx, postgres, "official_quality_proposal_reviews", "official_quality_proposal_reviews_proposal_key", []string{"proposal_id"})
 	assertCheckConstraintContains(t, ctx, postgres, "agent_versions", "agent_versions_content_digest_length_check", "octet_length(content_digest) = 32")
 	assertCheckConstraintContains(t, ctx, postgres, "agent_versions", "agent_versions_signature_length_check", "octet_length(signature) = 64")
 	assertCheckConstraintContains(t, ctx, postgres, "policy_snapshots", "policy_snapshots_content_digest_length_check", "octet_length(content_digest) = 32")
@@ -126,6 +137,15 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	assertCheckConstraintContains(t, ctx, postgres, "agent_control_idempotency_keys", "agent_control_idempotency_key_hash_length_check", "octet_length(key_hash) = 32")
 	assertCheckConstraintContains(t, ctx, postgres, "agent_control_idempotency_keys", "agent_control_idempotency_request_hash_length_check", "octet_length(request_hash) = 32")
 	assertCheckConstraintContains(t, ctx, postgres, "installations", "installations_lifecycle_check", "runtime_profile_id")
+	assertCheckConstraintContains(t, ctx, postgres, "official_quality_events", "official_quality_events_result_check", "runtime_crash")
+	assertCheckConstraintContains(t, ctx, postgres, "official_quality_events", "official_quality_events_latency_check", "gte_180s")
+	assertCheckConstraintContains(t, ctx, postgres, "official_quality_events", "official_quality_events_token_check", "gte_64k")
+	assertCheckConstraintContains(t, ctx, postgres, "official_quality_events", "official_quality_events_signature_length_check", "octet_length(device_signature) = 64")
+	assertCheckConstraintContains(t, ctx, postgres, "official_quality_daily_aggregates", "official_quality_daily_aggregates_suppression_check", "distinct_subject_count < suppression_threshold")
+	assertTriggerExists(t, ctx, postgres, "official_quality_consent_receipts", "official_quality_consent_receipt_immutable_trigger")
+	assertTriggerExists(t, ctx, postgres, "official_quality_events", "official_quality_event_immutable_trigger")
+	assertTriggerExists(t, ctx, postgres, "official_quality_proposal_aggregates", "official_quality_proposal_aggregate_immutable_trigger")
+	assertTriggerExists(t, ctx, postgres, "official_quality_proposal_reviews", "official_quality_proposal_review_immutable_trigger")
 	assertCheckConstraintExcludes(t, ctx, postgres, "installations", "installations_lifecycle_check", "policy_snapshot_id IS NULL")
 	assertCheckConstraintContains(t, ctx, postgres, "installations", "installations_status_check", "pending")
 	assertCheckConstraintContains(t, ctx, postgres, "installations", "installations_update_policy_check", "manual")
@@ -411,8 +431,8 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	if err := postgres.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if applied != 16 {
-		t.Fatalf("applied migration count = %d, want 16", applied)
+	if applied != 17 {
+		t.Fatalf("applied migration count = %d, want 17", applied)
 	}
 	var receiptConsumedColumn bool
 	if err := postgres.QueryRow(ctx, `
