@@ -28,12 +28,13 @@ import (
 const maximumFixtureBytes = 16 << 10
 
 type fixture struct {
-	UserID          uuid.UUID `json:"user_id"`
-	DeviceID        uuid.UUID `json:"device_id"`
-	SessionID       uuid.UUID `json:"session_id"`
-	MaskedEmail     string    `json:"masked_email"`
-	RawIdentity     string    `json:"raw_lookup_identity"`
-	InitialRevision int64     `json:"initial_revision"`
+	UserID                 uuid.UUID `json:"user_id"`
+	OfficialAudienceUserID uuid.UUID `json:"official_audience_user_id"`
+	DeviceID               uuid.UUID `json:"device_id"`
+	SessionID              uuid.UUID `json:"session_id"`
+	MaskedEmail            string    `json:"masked_email"`
+	RawIdentity            string    `json:"raw_lookup_identity"`
+	InitialRevision        int64     `json:"initial_revision"`
 }
 
 type seedConfig struct {
@@ -174,7 +175,8 @@ func seed(ctx context.Context, cfg seedConfig, output string) (fixture, error) {
 }
 
 func insertFixture(ctx context.Context, tx pgx.Tx, identities *secure.IdentityCodec) (fixture, error) {
-	userID, deviceID, sessionID := uuid.New(), uuid.New(), uuid.New()
+	userID, officialAudienceUserID := uuid.New(), uuid.New()
+	deviceID, sessionID := uuid.New(), uuid.New()
 	spaceID, installationID, familyID := uuid.New(), uuid.New(), uuid.New()
 	rawIdentity := "cloud.e2e." + strings.ReplaceAll(userID.String(), "-", "") + "@example.test"
 	normalized, err := secure.NormalizeIdentity(secure.IdentityEmail, rawIdentity)
@@ -204,6 +206,13 @@ func insertFixture(ctx context.Context, tx pgx.Tx, identities *secure.IdentityCo
 		) VALUES ($1, 'Cloud E2E User', 'active', FALSE, 1, $2, $2)
 	`, userID, now); err != nil {
 		return fixture{}, errors.New("Cloud E2E user could not be seeded")
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO users (
+			id, nickname, status, administratively_disabled, administrative_revision, created_at, updated_at
+		) VALUES ($1, 'Cloud E2E Official Audience', 'active', FALSE, 1, $2, $2)
+	`, officialAudienceUserID, now); err != nil {
+		return fixture{}, errors.New("Cloud E2E official audience user could not be seeded")
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO identities (
@@ -245,7 +254,8 @@ func insertFixture(ctx context.Context, tx pgx.Tx, identities *secure.IdentityCo
 		return fixture{}, errors.New("Cloud E2E entitlement could not be seeded")
 	}
 	return fixture{
-		UserID: userID, DeviceID: deviceID, SessionID: sessionID,
+		UserID: userID, OfficialAudienceUserID: officialAudienceUserID,
+		DeviceID: deviceID, SessionID: sessionID,
 		MaskedEmail: masked, RawIdentity: normalized, InitialRevision: 1,
 	}, nil
 }
@@ -289,7 +299,8 @@ func loadFixture(path string) (fixture, error) {
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return fixture{}, errors.New("Cloud E2E fixture is invalid")
 	}
-	if seeded.UserID == uuid.Nil || seeded.DeviceID == uuid.Nil || seeded.SessionID == uuid.Nil ||
+	if seeded.UserID == uuid.Nil || seeded.OfficialAudienceUserID == uuid.Nil ||
+		seeded.OfficialAudienceUserID == seeded.UserID || seeded.DeviceID == uuid.Nil || seeded.SessionID == uuid.Nil ||
 		seeded.InitialRevision != 1 || seeded.RawIdentity == "" || seeded.MaskedEmail == "" {
 		return fixture{}, errors.New("Cloud E2E fixture is invalid")
 	}
@@ -329,6 +340,14 @@ func verifyFacts(ctx context.Context, postgres *pgxpool.Pool, seeded fixture) er
 		revision < seeded.InitialRevision+2 || spaceStatus != "disabled" || deviceStatus != "revoked" ||
 		!deviceRevoked || !sessionRevoked || !entitlementRevoked {
 		return errors.New("Cloud E2E final account state is incomplete")
+	}
+	var officialAudienceStatus string
+	var officialAudienceDisabled bool
+	if err := postgres.QueryRow(ctx, `
+		SELECT status, administratively_disabled FROM users WHERE id = $1
+	`, seeded.OfficialAudienceUserID).Scan(&officialAudienceStatus, &officialAudienceDisabled); err != nil ||
+		officialAudienceStatus != "active" || officialAudienceDisabled {
+		return errors.New("Cloud E2E official audience account is not active")
 	}
 
 	sessionCount, err := matchingOperationAuditCount(ctx, postgres, seeded, "revoke_session", "session_admin_revoked", seeded.SessionID)

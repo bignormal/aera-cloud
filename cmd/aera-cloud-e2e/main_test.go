@@ -53,7 +53,8 @@ func TestSeedAndVerifyRealCloudAdminFacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed() error = %v", err)
 	}
-	if seeded.UserID == uuid.Nil || seeded.DeviceID == uuid.Nil || seeded.SessionID == uuid.Nil ||
+	if seeded.UserID == uuid.Nil || seeded.OfficialAudienceUserID == uuid.Nil ||
+		seeded.DeviceID == uuid.Nil || seeded.SessionID == uuid.Nil ||
 		seeded.MaskedEmail == "" || seeded.RawIdentity == "" || seeded.InitialRevision != 1 {
 		t.Fatalf("fixture = %+v", seeded)
 	}
@@ -66,10 +67,10 @@ func TestSeedAndVerifyRealCloudAdminFacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	var fixtureObject map[string]json.RawMessage
-	if err := json.Unmarshal(rawFixture, &fixtureObject); err != nil || len(fixtureObject) != 6 {
+	if err := json.Unmarshal(rawFixture, &fixtureObject); err != nil || len(fixtureObject) != 7 {
 		t.Fatalf("fixture JSON keys/error = %v / %v", fixtureObject, err)
 	}
-	for _, key := range []string{"user_id", "device_id", "session_id", "masked_email", "raw_lookup_identity", "initial_revision"} {
+	for _, key := range []string{"user_id", "official_audience_user_id", "device_id", "session_id", "masked_email", "raw_lookup_identity", "initial_revision"} {
 		if _, ok := fixtureObject[key]; !ok {
 			t.Fatalf("fixture JSON is missing %q", key)
 		}
@@ -194,6 +195,16 @@ func assertSeededCloudFacts(t *testing.T, ctx context.Context, postgres *pgxpool
 	if revision != 1 || userStatus != "active" || deviceStatus != "active" || !sessionIsActive {
 		t.Fatalf("seed state = revision:%d user:%s device:%s session_active:%t", revision, userStatus, deviceStatus, sessionIsActive)
 	}
+	var officialAudienceStatus string
+	var officialAudienceDisabled bool
+	if err := postgres.QueryRow(ctx, `
+		SELECT status, administratively_disabled FROM users WHERE id = $1
+	`, seeded.OfficialAudienceUserID).Scan(&officialAudienceStatus, &officialAudienceDisabled); err != nil {
+		t.Fatal(err)
+	}
+	if officialAudienceStatus != "active" || officialAudienceDisabled {
+		t.Fatalf("official audience state = status:%s disabled:%t", officialAudienceStatus, officialAudienceDisabled)
+	}
 	var kind secure.IdentityKind
 	var encryptionKeyID, lookupKeyID string
 	var nonce, ciphertext, lookupHMAC []byte
@@ -243,7 +254,9 @@ func cleanupE2EFixture(t *testing.T, postgres *pgxpool.Pool, seeded fixture) {
 	`, seeded.UserID, seeded.DeviceID, seeded.SessionID); err != nil {
 		t.Errorf("cleanup admin operations: %v", err)
 	}
-	if _, err := postgres.Exec(ctx, `DELETE FROM users WHERE id = $1`, seeded.UserID); err != nil {
-		t.Errorf("cleanup fixture user: %v", err)
+	if _, err := postgres.Exec(ctx, `
+		DELETE FROM users WHERE id IN ($1, $2)
+	`, seeded.UserID, seeded.OfficialAudienceUserID); err != nil {
+		t.Errorf("cleanup fixture users: %v", err)
 	}
 }
