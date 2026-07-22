@@ -42,6 +42,10 @@ func serviceSubjectFromContext(ctx context.Context) (string, bool) {
 	return subject, ok && serviceSubjectPattern.MatchString(subject)
 }
 
+func ServiceSubject(ctx context.Context) (string, bool) {
+	return serviceSubjectFromContext(ctx)
+}
+
 type Action string
 
 const (
