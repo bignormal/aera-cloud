@@ -172,6 +172,7 @@ type ServiceRepository interface {
 	LoadActivationContext(context.Context, Principal, uuid.UUID) (InstallationActivationContext, bool, error)
 	ActivateInstallation(context.Context, Principal, ActivationCommand) (Installation, error)
 	SelectInstallationVersion(context.Context, Principal, VersionSelectionCommand) (Installation, error)
+	ApplyManagedOfficialSelection(context.Context, Principal, ManagedOfficialSelectionCommand) (Installation, error)
 	ArchiveInstallation(context.Context, Principal, ArchiveInstallationCommand) (Installation, error)
 	InsertRuntimeBinding(context.Context, Principal, PersistRuntimeBindingCommand) (RuntimeBindingRecord, error)
 	SubmitExperienceCandidate(context.Context, Principal, SubmitExperienceCandidateCommand) (ExperienceCandidate, bool, error)
@@ -186,18 +187,25 @@ type ServiceRepository interface {
 	ReviewOrganizationAgentSubmission(context.Context, ReviewOrganizationAgentCommand) (OrganizationAgentSubmission, error)
 }
 
+type OfficialEligibilityEvaluator interface {
+	ResolveOfficialReleaseRevision(context.Context, Principal, uuid.UUID, uuid.UUID, OfficialEligibilityContext) (OfficialManagedTarget, error)
+	EvaluateOfficialEligibilityRecord(Principal, OfficialEligibilityContext, OfficialEligibilityRecord, bool) (OfficialManagedTarget, error)
+}
+
 type ServiceConfig struct {
-	Repository ServiceRepository
-	Signer     *Signer
-	Clock      func() time.Time
-	NewID      func() uuid.UUID
+	Repository          ServiceRepository
+	Signer              *Signer
+	OfficialEligibility OfficialEligibilityEvaluator
+	Clock               func() time.Time
+	NewID               func() uuid.UUID
 }
 
 type Service struct {
-	repository ServiceRepository
-	signer     *Signer
-	clock      func() time.Time
-	newID      func() uuid.UUID
+	repository          ServiceRepository
+	signer              *Signer
+	officialEligibility OfficialEligibilityEvaluator
+	clock               func() time.Time
+	newID               func() uuid.UUID
 }
 
 type PublishInitialRequest struct {
@@ -229,12 +237,14 @@ type RevokeVersionRequest struct {
 }
 
 type CreateInstallationRequest struct {
-	DefinitionID      uuid.UUID
-	VersionID         uuid.UUID
-	SourceWorkspaceID *uuid.UUID
-	OrganizationID    *uuid.UUID
-	IdempotencyKey    string
-	RequestID         string
+	DefinitionID              uuid.UUID
+	VersionID                 uuid.UUID
+	SourceWorkspaceID         *uuid.UUID
+	OrganizationID            *uuid.UUID
+	OfficialReleaseRevisionID *uuid.UUID
+	OfficialContext           *OfficialEligibilityContext
+	IdempotencyKey            string
+	RequestID                 string
 }
 
 type ActivateInstallationRequest struct {
@@ -250,6 +260,14 @@ type SelectInstallationVersionRequest struct {
 	InstallationID uuid.UUID
 	VersionID      uuid.UUID
 	RequestID      string
+}
+
+type ManagedUpdateRequest struct {
+	InstallationID             uuid.UUID
+	ExpectedSelectedRevisionID uuid.UUID
+	TargetReleaseRevisionID    uuid.UUID
+	OfficialContext            OfficialEligibilityContext
+	RequestID                  string
 }
 
 type ArchiveInstallationRequest struct {
@@ -278,7 +296,10 @@ func NewService(config ServiceConfig) (*Service, error) {
 	if newID == nil {
 		newID = uuid.New
 	}
-	return &Service{repository: config.Repository, signer: config.Signer, clock: clock, newID: newID}, nil
+	return &Service{
+		repository: config.Repository, signer: config.Signer,
+		officialEligibility: config.OfficialEligibility, clock: clock, newID: newID,
+	}, nil
 }
 
 func (s *Service) PublishInitial(
@@ -751,22 +772,46 @@ func (s *Service) CreateInstallation(
 	principal Principal,
 	request CreateInstallationRequest,
 ) (InstallationCreation, error) {
-	if s == nil || !validPrincipal(principal) || request.DefinitionID == uuid.Nil || request.VersionID == uuid.Nil ||
+	if s == nil || !validPrincipal(principal) || request.DefinitionID == uuid.Nil ||
 		(request.SourceWorkspaceID != nil && *request.SourceWorkspaceID == uuid.Nil) ||
 		(request.OrganizationID != nil && *request.OrganizationID == uuid.Nil) ||
 		(request.SourceWorkspaceID != nil && request.OrganizationID != nil) ||
 		!validIdempotencyKey(request.IdempotencyKey) || !validRequestID(request.RequestID) {
 		return InstallationCreation{}, ErrInvalidRequest
 	}
+	official := request.OfficialReleaseRevisionID != nil || request.OfficialContext != nil
+	if official {
+		if s.officialEligibility == nil || request.VersionID != uuid.Nil || request.SourceWorkspaceID != nil || request.OrganizationID != nil ||
+			request.OfficialReleaseRevisionID == nil || *request.OfficialReleaseRevisionID == uuid.Nil || request.OfficialContext == nil ||
+			!validOfficialEligibilityContext(principal, *request.OfficialContext) {
+			return InstallationCreation{}, ErrInvalidRequest
+		}
+	} else if request.VersionID == uuid.Nil {
+		return InstallationCreation{}, ErrInvalidRequest
+	}
+	var officialTarget OfficialManagedTarget
+	var err error
+	if official {
+		officialTarget, err = s.officialEligibility.ResolveOfficialReleaseRevision(
+			ctx, principal, request.DefinitionID, *request.OfficialReleaseRevisionID, *request.OfficialContext,
+		)
+		if err != nil {
+			return InstallationCreation{}, err
+		}
+	}
 	requestHash, err := hashRequest(struct {
-		Operation      string  `json:"operation"`
-		DefinitionID   string  `json:"definition_id"`
-		VersionID      string  `json:"version_id"`
-		WorkspaceID    *string `json:"workspace_id,omitempty"`
-		OrganizationID *string `json:"organization_id,omitempty"`
+		Operation                 string                      `json:"operation"`
+		DefinitionID              string                      `json:"definition_id"`
+		VersionID                 string                      `json:"version_id,omitempty"`
+		WorkspaceID               *string                     `json:"workspace_id,omitempty"`
+		OrganizationID            *string                     `json:"organization_id,omitempty"`
+		OfficialReleaseRevisionID *string                     `json:"official_release_revision_id,omitempty"`
+		OfficialContext           *OfficialEligibilityContext `json:"official_context,omitempty"`
 	}{
 		Operation: operationCreateInstallation, DefinitionID: request.DefinitionID.String(), VersionID: request.VersionID.String(),
 		WorkspaceID: uuidStringPointer(request.SourceWorkspaceID), OrganizationID: uuidStringPointer(request.OrganizationID),
+		OfficialReleaseRevisionID: uuidStringPointer(request.OfficialReleaseRevisionID),
+		OfficialContext:           cloneOfficialEligibilityContextPointer(request.OfficialContext),
 	})
 	if err != nil {
 		return InstallationCreation{}, ErrInvalidRequest
@@ -776,7 +821,7 @@ func (s *Service) CreateInstallation(
 	if installationID == uuid.Nil || policyID == uuid.Nil || idempotencyID == uuid.Nil || auditID == uuid.Nil {
 		return InstallationCreation{}, ErrServiceUnavailable
 	}
-	created, err := s.repository.CreatePendingInstallation(ctx, principal, CreateInstallationCommand{
+	command := CreateInstallationCommand{
 		InstallationID: installationID, DefinitionID: request.DefinitionID, VersionID: request.VersionID,
 		SourceWorkspaceID:    cloneUUIDPointer(request.SourceWorkspaceID),
 		SourceOrganizationID: cloneUUIDPointer(request.OrganizationID),
@@ -794,7 +839,24 @@ func (s *Service) CreateInstallation(
 			RequestHash: requestHash, ExpiresAt: now.Add(idempotencyLifetime),
 		},
 		Audit: AuditEvidence{EventID: auditID, RequestID: request.RequestID}, CreatedAt: now,
-	})
+	}
+	if official {
+		releaseID, releaseRevisionID := officialTarget.ReleaseID, officialTarget.ReleaseRevisionID
+		contextValue := *cloneOfficialEligibilityContextPointer(request.OfficialContext)
+		command.OfficialPlatformID = officialTarget.PlatformID
+		command.OfficialReleaseID = &releaseID
+		command.OfficialReleaseRevisionID = &releaseRevisionID
+		command.OfficialContext = &contextValue
+		command.EvaluateOfficial = func(record OfficialEligibilityRecord) (OfficialManagedTarget, error) {
+			return s.officialEligibility.EvaluateOfficialEligibilityRecord(principal, contextValue, record, false)
+		}
+		command.BuildOfficialPolicy = func(version Version, target OfficialManagedTarget) (PolicyMaterial, error) {
+			return s.buildOfficialPolicy(
+				installationID, policyID, principal, version, target, contextValue, 1, now,
+			)
+		}
+	}
+	created, err := s.repository.CreatePendingInstallation(ctx, principal, command)
 	if errors.Is(err, ErrNotFound) {
 		if auditErr := s.recordDenied(ctx, principal, "agent_definition", request.DefinitionID, request.RequestID); auditErr != nil {
 			return InstallationCreation{}, auditErr
@@ -887,6 +949,51 @@ func (s *Service) SelectInstallationVersion(
 		) (PolicyMaterial, error) {
 			return s.buildOrganizationPolicy(
 				request.InstallationID, policyID, version, policyVersion, effective, now,
+			)
+		},
+		Audit: AuditEvidence{EventID: auditID, RequestID: request.RequestID}, SelectedAt: now,
+	})
+	if errors.Is(err, ErrNotFound) {
+		if auditErr := s.recordDenied(ctx, principal, "agent_installation", request.InstallationID, request.RequestID); auditErr != nil {
+			return Installation{}, auditErr
+		}
+	}
+	if err != nil {
+		return Installation{}, err
+	}
+	return cloneInstallation(selected), nil
+}
+
+func (s *Service) ApplyManagedOfficialUpdate(
+	ctx context.Context,
+	principal Principal,
+	request ManagedUpdateRequest,
+) (Installation, error) {
+	if s == nil || s.officialEligibility == nil || !validPrincipal(principal) ||
+		request.InstallationID == uuid.Nil || request.ExpectedSelectedRevisionID == uuid.Nil ||
+		request.TargetReleaseRevisionID == uuid.Nil || !validOfficialEligibilityContext(principal, request.OfficialContext) ||
+		!validRequestID(request.RequestID) {
+		return Installation{}, ErrInvalidRequest
+	}
+	policyID, auditID := s.newID(), s.newID()
+	if policyID == uuid.Nil || auditID == uuid.Nil {
+		return Installation{}, ErrServiceUnavailable
+	}
+	now := s.clock().UTC()
+	selected, err := s.repository.ApplyManagedOfficialSelection(ctx, principal, ManagedOfficialSelectionCommand{
+		InstallationID:             request.InstallationID,
+		ExpectedSelectedRevisionID: request.ExpectedSelectedRevisionID,
+		TargetReleaseRevisionID:    request.TargetReleaseRevisionID,
+		OfficialContext:            request.OfficialContext,
+		EvaluateOfficial: func(record OfficialEligibilityRecord) (OfficialManagedTarget, error) {
+			return s.officialEligibility.EvaluateOfficialEligibilityRecord(
+				principal, request.OfficialContext, record, true,
+			)
+		},
+		BuildPolicy: func(policyVersion int64, version Version, target OfficialManagedTarget) (PolicyMaterial, error) {
+			return s.buildOfficialPolicy(
+				request.InstallationID, policyID, principal, version, target,
+				request.OfficialContext, policyVersion, now,
 			)
 		},
 		Audit: AuditEvidence{EventID: auditID, RequestID: request.RequestID}, SelectedAt: now,
@@ -1008,6 +1115,36 @@ func (s *Service) buildOrganizationPolicy(
 	}, nil
 }
 
+func (s *Service) buildOfficialPolicy(
+	installationID uuid.UUID,
+	policyID uuid.UUID,
+	principal Principal,
+	version Version,
+	target OfficialManagedTarget,
+	eligibilityContext OfficialEligibilityContext,
+	policyVersion int64,
+	createdAt time.Time,
+) (PolicyMaterial, error) {
+	document, err := policyDocumentForOfficialVersion(
+		installationID, principal, version, target, eligibilityContext,
+	)
+	if err != nil {
+		return PolicyMaterial{}, err
+	}
+	digest := sha256.Sum256(document)
+	attestation, err := s.signer.SignPolicy(PolicySignatureInput{
+		PolicyID: policyID, PolicyVersion: policyVersion, DocumentDigest: digest,
+	})
+	if err != nil {
+		return PolicyMaterial{}, ErrServiceUnavailable
+	}
+	return PolicyMaterial{
+		ID: policyID, InstallationID: installationID, AgentVersionID: version.ID, PolicyVersion: policyVersion,
+		Document: document, ContentDigest: digest, Issuer: attestation.Issuer, SigningKeyID: attestation.KeyID,
+		Signature: append([]byte(nil), attestation.Signature...), CreatedAt: createdAt.UTC(),
+	}, nil
+}
+
 func (s *Service) recordDenied(
 	ctx context.Context,
 	principal Principal,
@@ -1091,6 +1228,18 @@ type policyDocumentV1 struct {
 	RuntimeCompatibility canonicalRuntimeCompatibility `json:"runtime_compatibility"`
 	PublicationAllowed   bool                          `json:"publication_allowed"`
 	DenyRules            []string                      `json:"deny_rules"`
+	OfficialContext      *officialPolicyContextV1      `json:"official_context,omitempty"`
+}
+
+type officialPolicyContextV1 struct {
+	PlatformID        string     `json:"platform_id"`
+	ReleaseID         string     `json:"release_id"`
+	ReleaseRevisionID string     `json:"release_revision_id"`
+	UserID            string     `json:"user_id"`
+	DeviceID          string     `json:"device_id"`
+	InstallationID    string     `json:"installation_id"`
+	ProductScope      OwnerScope `json:"product_scope"`
+	ProductContextID  string     `json:"product_context_id"`
 }
 
 func policyDocumentForVersion(version Version) ([]byte, error) {
@@ -1116,6 +1265,49 @@ func policyDocumentForOrganizationVersion(
 		}
 	}
 	return policyDocumentForVersionWithConstraints(version, &effective.AgentPolicyConstraints)
+}
+
+func policyDocumentForOfficialVersion(
+	installationID uuid.UUID,
+	principal Principal,
+	version Version,
+	target OfficialManagedTarget,
+	eligibilityContext OfficialEligibilityContext,
+) ([]byte, error) {
+	if installationID == uuid.Nil || !validPrincipal(principal) || target.PlatformID == uuid.Nil ||
+		target.ReleaseID == uuid.Nil || target.ReleaseRevisionID == uuid.Nil || target.DefinitionID != version.DefinitionID ||
+		target.VersionID != version.ID || !validOfficialEligibilityContext(principal, eligibilityContext) {
+		return nil, ErrInvalidAgentContent
+	}
+	base, err := policyDocumentForVersion(version)
+	if err != nil {
+		return nil, err
+	}
+	var document policyDocumentV1
+	if err := decodeStrictJSON(base, &document); err != nil {
+		return nil, ErrInvalidAgentContent
+	}
+	contextID := eligibilityContext.Selector.PersonalSpaceID
+	switch eligibilityContext.Selector.Scope {
+	case OwnerScopeWorkspace:
+		contextID = eligibilityContext.Selector.WorkspaceID
+	case OwnerScopeOrganization:
+		contextID = eligibilityContext.Selector.OrganizationID
+	}
+	if contextID == uuid.Nil {
+		return nil, ErrInvalidAgentContent
+	}
+	document.OfficialContext = &officialPolicyContextV1{
+		PlatformID: target.PlatformID.String(), ReleaseID: target.ReleaseID.String(),
+		ReleaseRevisionID: target.ReleaseRevisionID.String(), UserID: principal.UserID.String(),
+		DeviceID: principal.DeviceID.String(), InstallationID: installationID.String(),
+		ProductScope: eligibilityContext.Selector.Scope, ProductContextID: contextID.String(),
+	}
+	encoded, err := marshalCanonical(document)
+	if err != nil || len(encoded) > MaxManifestBytes {
+		return nil, ErrInvalidAgentContent
+	}
+	return encoded, nil
 }
 
 func policyDocumentForVersionWithConstraints(
@@ -1215,9 +1407,19 @@ func cloneInstallationCreation(value InstallationCreation) InstallationCreation 
 func cloneInstallation(value Installation) Installation {
 	value.RuntimeProfileID = cloneUUIDPointer(value.RuntimeProfileID)
 	value.PolicySnapshotID = cloneUUIDPointer(value.PolicySnapshotID)
+	value.OfficialReleaseID = cloneUUIDPointer(value.OfficialReleaseID)
+	value.SelectedReleaseRevisionID = cloneUUIDPointer(value.SelectedReleaseRevisionID)
 	value.ActivatedAt = cloneTimePointer(value.ActivatedAt)
 	value.ArchivedAt = cloneTimePointer(value.ArchivedAt)
 	return value
+}
+
+func cloneOfficialEligibilityContextPointer(value *OfficialEligibilityContext) *OfficialEligibilityContext {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func clonePolicySnapshot(value PolicySnapshot) PolicySnapshot {

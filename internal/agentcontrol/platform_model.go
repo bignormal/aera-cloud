@@ -127,6 +127,7 @@ type ChangeOfficialReleaseStateCommand struct {
 }
 
 type OfficialManagedTarget struct {
+	PlatformID        uuid.UUID
 	ReleaseID         uuid.UUID
 	ReleaseRevisionID uuid.UUID
 	DefinitionID      uuid.UUID

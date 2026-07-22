@@ -493,6 +493,7 @@ type PlatformRepository interface {
 	AppendOfficialReleaseRevision(context.Context, OfficialReleaseMutationRepositoryCommand) (OfficialRelease, error)
 	GetOfficialRelease(context.Context, uuid.UUID, uuid.UUID) (OfficialRelease, bool, error)
 	GetOfficialEligibility(context.Context, uuid.UUID, uuid.UUID, Principal, OfficialEligibilityContext) (OfficialEligibilityRecord, bool, error)
+	GetOfficialEligibilityByRevision(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, Principal, OfficialEligibilityContext) (OfficialEligibilityRecord, bool, error)
 }
 
 type PlatformService interface {
@@ -517,6 +518,8 @@ type PlatformService interface {
 	ResumeOfficialRelease(context.Context, PlatformAdminActor, ChangeOfficialReleaseStateCommand) (OfficialRelease, error)
 	RollbackOfficialRelease(context.Context, PlatformAdminActor, RollbackOfficialReleaseCommand) (OfficialRelease, error)
 	ResolveOfficialRelease(context.Context, Principal, uuid.UUID, OfficialEligibilityContext) (OfficialManagedTarget, error)
+	ResolveOfficialReleaseRevision(context.Context, Principal, uuid.UUID, uuid.UUID, OfficialEligibilityContext) (OfficialManagedTarget, error)
+	EvaluateOfficialEligibilityRecord(Principal, OfficialEligibilityContext, OfficialEligibilityRecord, bool) (OfficialManagedTarget, error)
 }
 
 type PlatformInitializer interface {
@@ -1180,13 +1183,52 @@ func (s *platformService) ResolveOfficialRelease(
 	if err != nil {
 		return OfficialManagedTarget{}, err
 	}
-	if !found || !record.AccountDeviceActive {
+	if !found {
+		return OfficialManagedTarget{}, ErrOfficialAgentNotEligible
+	}
+	return s.EvaluateOfficialEligibilityRecord(principal, eligibilityContext, record, false)
+}
+
+func (s *platformService) ResolveOfficialReleaseRevision(
+	ctx context.Context,
+	principal Principal,
+	definitionID uuid.UUID,
+	releaseRevisionID uuid.UUID,
+	eligibilityContext OfficialEligibilityContext,
+) (OfficialManagedTarget, error) {
+	if s == nil || !validPrincipal(principal) || definitionID == uuid.Nil || releaseRevisionID == uuid.Nil ||
+		!validOfficialEligibilityContext(principal, eligibilityContext) {
+		return OfficialManagedTarget{}, ErrInvalidRequest
+	}
+	record, found, err := s.repository.GetOfficialEligibilityByRevision(
+		ctx, s.platformID, definitionID, releaseRevisionID, principal, eligibilityContext,
+	)
+	if err != nil {
+		return OfficialManagedTarget{}, err
+	}
+	if !found || record.Release.DefinitionID != definitionID || record.Revision.ID != releaseRevisionID {
+		return OfficialManagedTarget{}, ErrOfficialAgentNotEligible
+	}
+	return s.EvaluateOfficialEligibilityRecord(principal, eligibilityContext, record, false)
+}
+
+func (s *platformService) EvaluateOfficialEligibilityRecord(
+	principal Principal,
+	eligibilityContext OfficialEligibilityContext,
+	record OfficialEligibilityRecord,
+	allowPaused bool,
+) (OfficialManagedTarget, error) {
+	if s == nil || !validPrincipal(principal) || !validOfficialEligibilityContext(principal, eligibilityContext) {
+		return OfficialManagedTarget{}, ErrInvalidRequest
+	}
+	if !record.AccountDeviceActive {
 		return OfficialManagedTarget{}, ErrOfficialAgentNotEligible
 	}
 	if !record.PlatformActive || !record.ChannelEntitled {
 		return OfficialManagedTarget{}, ErrOfficialAgentNotEligible
 	}
-	if record.Release.ID != releaseID || record.Release.PlatformID != s.platformID || record.Release.DefinitionID == uuid.Nil ||
+	releaseID := record.Release.ID
+	if releaseID == uuid.Nil || record.Release.PlatformID != s.platformID || record.Release.DefinitionID == uuid.Nil ||
 		record.Release.Channel != eligibilityContext.Channel || record.Release.CurrentRevisionID != record.Revision.ID ||
 		record.Release.HeadRevision != record.Revision.RevisionNumber || record.Revision.ReleaseID != releaseID ||
 		record.Revision.AgentVersionID == uuid.Nil || record.Revision.BucketAlgorithmVersion != officialBucketAlgorithmV1 ||
@@ -1194,10 +1236,12 @@ func (s *platformService) ResolveOfficialRelease(
 		return OfficialManagedTarget{}, ErrCloudUnavailable
 	}
 	if record.Revision.State != OfficialReleaseStateActive {
-		if record.Revision.State == OfficialReleaseStatePaused {
+		if record.Revision.State == OfficialReleaseStatePaused && !allowPaused {
 			return OfficialManagedTarget{}, ErrOfficialReleasePaused
 		}
-		return OfficialManagedTarget{}, ErrCloudUnavailable
+		if record.Revision.State != OfficialReleaseStatePaused {
+			return OfficialManagedTarget{}, ErrCloudUnavailable
+		}
 	}
 	_, desktopVersion, desktopErr := parseSemanticVersion(eligibilityContext.DesktopVersion)
 	_, minimumVersion, minimumErr := parseSemanticVersion(record.Revision.MinimumDesktopVersion)
@@ -1226,7 +1270,7 @@ func (s *platformService) ResolveOfficialRelease(
 		return OfficialManagedTarget{}, ErrOfficialAgentNotEligible
 	}
 	return OfficialManagedTarget{
-		ReleaseID: releaseID, ReleaseRevisionID: record.Revision.ID,
+		PlatformID: s.platformID, ReleaseID: releaseID, ReleaseRevisionID: record.Revision.ID,
 		DefinitionID: record.Release.DefinitionID, VersionID: record.Revision.AgentVersionID,
 		Channel: record.Release.Channel, HeadRevision: record.Release.HeadRevision,
 	}, nil

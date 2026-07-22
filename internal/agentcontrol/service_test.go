@@ -560,7 +560,7 @@ func TestServiceArchiveAndBindingUseMetadataOnlyCommands(t *testing.T) {
 	commandType := reflect.TypeOf(RuntimeBindingRecordCommand{})
 	wantFields := []string{
 		"BindingID", "AgentInstallationID", "AgentVersionID", "RuntimeProfileID",
-		"RuntimeVersion", "PolicySnapshotID", "ToolPermissionDigest",
+		"RuntimeVersion", "PolicySnapshotID", "OfficialReleaseRevisionID", "ToolPermissionDigest",
 	}
 	if commandType.NumField() != len(wantFields) {
 		t.Fatalf("RuntimeBindingRecordCommand fields = %d, want %d", commandType.NumField(), len(wantFields))
@@ -684,6 +684,7 @@ type stubServiceRepository struct {
 	loadActivationContext          func(context.Context, Principal, uuid.UUID) (InstallationActivationContext, bool, error)
 	activateInstallation           func(context.Context, Principal, ActivationCommand) (Installation, error)
 	selectInstallationVersion      func(context.Context, Principal, VersionSelectionCommand) (Installation, error)
+	applyManagedOfficialSelection  func(context.Context, Principal, ManagedOfficialSelectionCommand) (Installation, error)
 	archiveInstallation            func(context.Context, Principal, ArchiveInstallationCommand) (Installation, error)
 	insertRuntimeBinding           func(context.Context, Principal, PersistRuntimeBindingCommand) (RuntimeBindingRecord, error)
 	submitExperienceCandidate      func(context.Context, Principal, SubmitExperienceCandidateCommand) (ExperienceCandidate, bool, error)
@@ -888,6 +889,13 @@ func (s *stubServiceRepository) SelectInstallationVersion(ctx context.Context, p
 		return Installation{}, errors.New("unexpected SelectInstallationVersion call")
 	}
 	return s.selectInstallationVersion(ctx, principal, command)
+}
+
+func (s *stubServiceRepository) ApplyManagedOfficialSelection(ctx context.Context, principal Principal, command ManagedOfficialSelectionCommand) (Installation, error) {
+	if s.applyManagedOfficialSelection == nil {
+		return Installation{}, errors.New("unexpected ApplyManagedOfficialSelection call")
+	}
+	return s.applyManagedOfficialSelection(ctx, principal, command)
 }
 
 func (s *stubServiceRepository) ArchiveInstallation(ctx context.Context, principal Principal, command ArchiveInstallationCommand) (Installation, error) {

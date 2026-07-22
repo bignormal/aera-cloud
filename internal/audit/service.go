@@ -35,7 +35,9 @@ var (
 		"agent_definition_id": {}, "agent_version_id": {},
 		"agent_installation_id": {}, "policy_snapshot_id": {},
 		"content_digest": {}, "source_owner_scope": {}, "source_workspace_id": {},
-		"source_organization_id":  {},
+		"source_organization_id": {}, "platform_id": {},
+		"official_release_id": {}, "official_release_revision_id": {},
+		"product_context_scope":   {},
 		"experience_candidate_id": {}, "decision": {}, "reason_code": {},
 	}
 	workspaceMetadataKeys = map[string]struct{}{
@@ -197,6 +199,11 @@ func validMetadata(eventType string, metadata map[string]string, organizationID 
 	sourceOwnerScope, hasSourceOwnerScope := metadata["source_owner_scope"]
 	_, hasSourceWorkspaceID := metadata["source_workspace_id"]
 	_, hasSourceOrganizationID := metadata["source_organization_id"]
+	_, hasPlatformID := metadata["platform_id"]
+	_, hasOfficialReleaseID := metadata["official_release_id"]
+	_, hasOfficialReleaseRevisionID := metadata["official_release_revision_id"]
+	productContextScope, hasProductContextScope := metadata["product_context_scope"]
+	hasOfficialProvenance := hasPlatformID || hasOfficialReleaseID || hasOfficialReleaseRevisionID || hasProductContextScope
 	if hasWorkspaceID && (!hasOwnerScope || ownerScope != "WORKSPACE" || hasTenantID || hasOwnerID) {
 		return false
 	}
@@ -219,25 +226,36 @@ func validMetadata(eventType string, metadata map[string]string, organizationID 
 		}
 	}
 	if hasSourceOwnerScope || hasSourceWorkspaceID || hasSourceOrganizationID {
-		if eventType != "agent_installation_created" || !hasSourceOwnerScope {
+		if !hasSourceOwnerScope || !hasOwnerScope || ownerScope != "USER" {
+			return false
+		}
+		if eventType != "agent_installation_created" &&
+			(eventType != "agent_installation_managed_version_selected" || sourceOwnerScope != "PLATFORM") {
 			return false
 		}
 		switch sourceOwnerScope {
 		case "USER":
-			if hasSourceWorkspaceID || hasSourceOrganizationID {
+			if hasSourceWorkspaceID || hasSourceOrganizationID || hasOfficialProvenance {
 				return false
 			}
 		case "WORKSPACE":
-			if !hasSourceWorkspaceID || hasSourceOrganizationID {
+			if !hasSourceWorkspaceID || hasSourceOrganizationID || hasOfficialProvenance {
 				return false
 			}
 		case "ORGANIZATION":
-			if hasSourceWorkspaceID || !hasSourceOrganizationID {
+			if hasSourceWorkspaceID || !hasSourceOrganizationID || hasOfficialProvenance {
+				return false
+			}
+		case "PLATFORM":
+			if hasSourceWorkspaceID || hasSourceOrganizationID || !hasPlatformID || !hasOfficialReleaseID ||
+				!hasOfficialReleaseRevisionID || !hasProductContextScope {
 				return false
 			}
 		default:
 			return false
 		}
+	} else if hasOfficialProvenance {
+		return false
 	}
 	for key, value := range metadata {
 		if !namePattern.MatchString(key) {
@@ -248,6 +266,12 @@ func validMetadata(eventType string, metadata map[string]string, organizationID 
 		}
 		switch key {
 		case "owner_scope", "source_owner_scope":
+			continue
+		case "product_context_scope":
+			if sourceOwnerScope != "PLATFORM" ||
+				(productContextScope != "USER" && productContextScope != "WORKSPACE" && productContextScope != "ORGANIZATION") {
+				return false
+			}
 			continue
 		case "decision":
 			if !strings.HasPrefix(eventType, "agent_experience_candidate_") ||

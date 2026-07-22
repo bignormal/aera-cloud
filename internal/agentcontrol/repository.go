@@ -53,6 +53,7 @@ const (
 	InstallationStatusActive           = "active"
 	InstallationStatusArchived         = "archived"
 	installationUpdatePolicy           = "manual"
+	installationUpdatePolicyManaged    = "managed"
 )
 
 type workspaceAgentAccessMode uint8
@@ -177,32 +178,40 @@ type PolicySnapshot struct {
 }
 
 type Installation struct {
-	ID                   uuid.UUID
-	DeviceID             uuid.UUID
-	DeviceInstallationID uuid.UUID
-	DefinitionID         uuid.UUID
-	SelectedVersionID    uuid.UUID
-	RuntimeProfileID     *uuid.UUID
-	PolicySnapshotID     *uuid.UUID
-	UpdatePolicy         string
-	Status               string
-	CreatedAt            time.Time
-	UpdatedAt            time.Time
-	ActivatedAt          *time.Time
-	ArchivedAt           *time.Time
+	ID                        uuid.UUID
+	DeviceID                  uuid.UUID
+	DeviceInstallationID      uuid.UUID
+	DefinitionID              uuid.UUID
+	SelectedVersionID         uuid.UUID
+	RuntimeProfileID          *uuid.UUID
+	PolicySnapshotID          *uuid.UUID
+	OfficialReleaseID         *uuid.UUID
+	SelectedReleaseRevisionID *uuid.UUID
+	UpdatePolicy              string
+	Status                    string
+	CreatedAt                 time.Time
+	UpdatedAt                 time.Time
+	ActivatedAt               *time.Time
+	ArchivedAt                *time.Time
 }
 
 type CreateInstallationCommand struct {
-	InstallationID          uuid.UUID
-	DefinitionID            uuid.UUID
-	VersionID               uuid.UUID
-	SourceWorkspaceID       *uuid.UUID
-	SourceOrganizationID    *uuid.UUID
-	BuildPolicy             func(Version) (PolicyMaterial, error)
-	BuildOrganizationPolicy func(Version, EffectiveOrganizationAgentPolicy) (PolicyMaterial, error)
-	Idempotency             IdempotencyEvidence
-	Audit                   AuditEvidence
-	CreatedAt               time.Time
+	InstallationID            uuid.UUID
+	DefinitionID              uuid.UUID
+	VersionID                 uuid.UUID
+	SourceWorkspaceID         *uuid.UUID
+	SourceOrganizationID      *uuid.UUID
+	OfficialPlatformID        uuid.UUID
+	OfficialReleaseID         *uuid.UUID
+	OfficialReleaseRevisionID *uuid.UUID
+	OfficialContext           *OfficialEligibilityContext
+	EvaluateOfficial          func(OfficialEligibilityRecord) (OfficialManagedTarget, error)
+	BuildPolicy               func(Version) (PolicyMaterial, error)
+	BuildOrganizationPolicy   func(Version, EffectiveOrganizationAgentPolicy) (PolicyMaterial, error)
+	BuildOfficialPolicy       func(Version, OfficialManagedTarget) (PolicyMaterial, error)
+	Idempotency               IdempotencyEvidence
+	Audit                     AuditEvidence
+	CreatedAt                 time.Time
 }
 
 type InstallationCreation struct {
@@ -230,6 +239,17 @@ type VersionSelectionCommand struct {
 	SelectedAt              time.Time
 }
 
+type ManagedOfficialSelectionCommand struct {
+	InstallationID             uuid.UUID
+	ExpectedSelectedRevisionID uuid.UUID
+	TargetReleaseRevisionID    uuid.UUID
+	OfficialContext            OfficialEligibilityContext
+	EvaluateOfficial           func(OfficialEligibilityRecord) (OfficialManagedTarget, error)
+	BuildPolicy                func(policyVersion int64, version Version, target OfficialManagedTarget) (PolicyMaterial, error)
+	Audit                      AuditEvidence
+	SelectedAt                 time.Time
+}
+
 type ArchiveInstallationCommand struct {
 	InstallationID uuid.UUID
 	Audit          AuditEvidence
@@ -237,13 +257,14 @@ type ArchiveInstallationCommand struct {
 }
 
 type RuntimeBindingRecordCommand struct {
-	BindingID            uuid.UUID
-	AgentInstallationID  uuid.UUID
-	AgentVersionID       uuid.UUID
-	RuntimeProfileID     uuid.UUID
-	RuntimeVersion       string
-	PolicySnapshotID     uuid.UUID
-	ToolPermissionDigest [sha256.Size]byte
+	BindingID                 uuid.UUID
+	AgentInstallationID       uuid.UUID
+	AgentVersionID            uuid.UUID
+	RuntimeProfileID          uuid.UUID
+	RuntimeVersion            string
+	PolicySnapshotID          uuid.UUID
+	OfficialReleaseRevisionID *uuid.UUID
+	ToolPermissionDigest      [sha256.Size]byte
 }
 
 type PersistRuntimeBindingCommand struct {
@@ -259,15 +280,16 @@ type InstallationActivationContext struct {
 }
 
 type RuntimeBindingRecord struct {
-	ID                   uuid.UUID
-	DeviceID             uuid.UUID
-	AgentInstallationID  uuid.UUID
-	AgentVersionID       uuid.UUID
-	RuntimeProfileID     uuid.UUID
-	RuntimeVersion       string
-	PolicySnapshotID     uuid.UUID
-	ToolPermissionDigest [sha256.Size]byte
-	CreatedAt            time.Time
+	ID                        uuid.UUID
+	DeviceID                  uuid.UUID
+	AgentInstallationID       uuid.UUID
+	AgentVersionID            uuid.UUID
+	RuntimeProfileID          uuid.UUID
+	RuntimeVersion            string
+	PolicySnapshotID          uuid.UUID
+	OfficialReleaseRevisionID *uuid.UUID
+	ToolPermissionDigest      [sha256.Size]byte
+	CreatedAt                 time.Time
 }
 
 type VersionRevocationCommand struct {
@@ -1035,6 +1057,7 @@ func (r *PostgresRepository) CreatePendingInstallation(
 	}
 	defer rollback(tx)
 	var organizationAccess OrganizationAgentAccess
+	var officialTarget OfficialManagedTarget
 	if command.SourceWorkspaceID != nil {
 		if _, err := requireWorkspaceAgentAccess(
 			ctx, tx, principal, *command.SourceWorkspaceID, workspaceAgentInstall, true,
@@ -1047,6 +1070,23 @@ func (r *PostgresRepository) CreatePendingInstallation(
 		)
 		if err != nil {
 			return InstallationCreation{}, err
+		}
+	} else if command.OfficialReleaseID != nil {
+		record, recordErr := loadOfficialEligibilityRecord(
+			ctx, tx, command.OfficialPlatformID, *command.OfficialReleaseID,
+			principal, *command.OfficialContext, true,
+		)
+		if recordErr != nil {
+			return InstallationCreation{}, recordErr
+		}
+		officialTarget, recordErr = command.EvaluateOfficial(record)
+		if recordErr != nil {
+			return InstallationCreation{}, recordErr
+		}
+		if officialTarget.PlatformID != command.OfficialPlatformID || officialTarget.ReleaseID != *command.OfficialReleaseID ||
+			officialTarget.ReleaseRevisionID != *command.OfficialReleaseRevisionID ||
+			officialTarget.DefinitionID != command.DefinitionID {
+			return InstallationCreation{}, ErrOfficialReleaseRevisionConflict
 		}
 	}
 	response, found, err := lockAndReadIdempotency(ctx, tx, principal, operationCreateInstallation, command.Idempotency)
@@ -1077,6 +1117,11 @@ func (r *PostgresRepository) CreatePendingInstallation(
 	}
 	if err != nil {
 		return InstallationCreation{}, ErrServiceUnavailable
+	}
+	if command.OfficialReleaseID != nil {
+		return createOfficialPendingInstallation(
+			ctx, tx, principal, command, officialTarget, deviceInstallationID,
+		)
 	}
 	var definitionStatus string
 	var version Version
@@ -1208,6 +1253,98 @@ func (r *PostgresRepository) CreatePendingInstallation(
 	return created, commitTransaction(ctx, tx)
 }
 
+func createOfficialPendingInstallation(
+	ctx context.Context,
+	tx pgx.Tx,
+	principal Principal,
+	command CreateInstallationCommand,
+	target OfficialManagedTarget,
+	deviceInstallationID uuid.UUID,
+) (InstallationCreation, error) {
+	var definitionStatus string
+	if err := tx.QueryRow(ctx, `
+		SELECT status FROM agent_definitions
+		WHERE id = $1 AND owner_scope = 'PLATFORM' AND platform_id = $2
+	`, command.DefinitionID, command.OfficialPlatformID).Scan(&definitionStatus); errors.Is(err, pgx.ErrNoRows) {
+		return InstallationCreation{}, ErrNotFound
+	} else if err != nil {
+		return InstallationCreation{}, ErrServiceUnavailable
+	}
+	if definitionStatus != definitionStatusActive {
+		return InstallationCreation{}, ErrDefinitionArchived
+	}
+	version, err := scanVersion(tx.QueryRow(
+		ctx, platformVersionSelect+` AND version.id = $2`, command.OfficialPlatformID, target.VersionID,
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return InstallationCreation{}, ErrNotFound
+	}
+	if err != nil || version.DefinitionID != command.DefinitionID {
+		return InstallationCreation{}, ErrServiceUnavailable
+	}
+	policy, err := command.BuildOfficialPolicy(version, target)
+	if err != nil {
+		return InstallationCreation{}, err
+	}
+	if !validPolicyMaterial(policy, command.InstallationID, target.VersionID) || policy.PolicyVersion != 1 {
+		return InstallationCreation{}, ErrInvalidRepositoryCommand
+	}
+	owner := principal.Owner()
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO installations (
+			id, tenant_id, owner_scope, owner_id, device_id, device_installation_id,
+			definition_id, selected_version_id, runtime_profile_id, policy_snapshot_id,
+			update_policy, status, created_by, created_at, updated_at,
+			official_release_id, selected_release_revision_id
+		) VALUES ($1, $2, 'USER', $3, $4, $5, $6, $7, NULL, NULL,
+		          'managed', 'pending', $3, $8, $8, $9, $10)
+	`, command.InstallationID, owner.TenantID, owner.OwnerID, principal.DeviceID, deviceInstallationID,
+		command.DefinitionID, target.VersionID, command.CreatedAt.UTC(), target.ReleaseID, target.ReleaseRevisionID); err != nil {
+		return InstallationCreation{}, ErrServiceUnavailable
+	}
+	if err := insertPolicy(ctx, tx, principal, policy); err != nil {
+		return InstallationCreation{}, err
+	}
+	result, err := tx.Exec(ctx, `
+		UPDATE installations SET policy_snapshot_id = $4, updated_at = $5
+		WHERE id = $3 AND tenant_id = $1 AND owner_scope = 'USER' AND owner_id = $2
+	`, owner.TenantID, owner.OwnerID, command.InstallationID, policy.ID, command.CreatedAt.UTC())
+	if err != nil || result.RowsAffected() != 1 {
+		return InstallationCreation{}, ErrServiceUnavailable
+	}
+	response := idempotencyResponse{InstallationID: command.InstallationID, PolicySnapshotID: policy.ID}
+	if err := insertIdempotency(
+		ctx, tx, principal, operationCreateInstallation, command.Idempotency,
+		"agent_installation", command.InstallationID, response, command.CreatedAt,
+	); err != nil {
+		return InstallationCreation{}, err
+	}
+	metadata := map[string]string{
+		"agent_definition_id": command.DefinitionID.String(), "agent_version_id": target.VersionID.String(),
+		"agent_installation_id": command.InstallationID.String(), "policy_snapshot_id": policy.ID.String(),
+		"source_owner_scope": string(OwnerScopePlatform), "platform_id": target.PlatformID.String(),
+		"official_release_id":          target.ReleaseID.String(),
+		"official_release_revision_id": target.ReleaseRevisionID.String(),
+		"product_context_scope":        string(command.OfficialContext.Selector.Scope),
+	}
+	if err := recordAudit(
+		ctx, tx, principal, command.Audit, "agent_installation_created", "agent_installation",
+		command.InstallationID, command.CreatedAt, metadata,
+	); err != nil {
+		return InstallationCreation{}, err
+	}
+	installation, err := loadInstallation(ctx, tx, principal, command.InstallationID, false)
+	if err != nil {
+		return InstallationCreation{}, err
+	}
+	storedPolicy, err := loadPolicy(ctx, tx, principal, policy.ID)
+	if err != nil {
+		return InstallationCreation{}, err
+	}
+	created := InstallationCreation{Installation: installation, Policy: storedPolicy}
+	return created, commitTransaction(ctx, tx)
+}
+
 func (r *PostgresRepository) FindInstallation(
 	ctx context.Context,
 	principal Principal,
@@ -1244,7 +1381,7 @@ func (r *PostgresRepository) LoadActivationContext(
 	if installation.DeviceID != principal.DeviceID {
 		return InstallationActivationContext{}, false, nil
 	}
-	version, err := loadVersion(ctx, r.postgres, principal, installation.SelectedVersionID)
+	version, err := loadInstallationSelectedVersion(ctx, r.postgres, principal, installation)
 	if err != nil {
 		return InstallationActivationContext{}, false, err
 	}
@@ -1309,7 +1446,7 @@ func (r *PostgresRepository) ActivateInstallation(
 	default:
 		return Installation{}, ErrServiceUnavailable
 	}
-	version, err := loadVersion(ctx, tx, principal, command.AgentVersionID)
+	version, err := loadInstallationSelectedVersion(ctx, tx, principal, installation)
 	if err != nil {
 		return Installation{}, err
 	}
@@ -1361,6 +1498,9 @@ func (r *PostgresRepository) SelectInstallationVersion(
 	}
 	if installation.DeviceID != principal.DeviceID {
 		return Installation{}, ErrNotFound
+	}
+	if installation.UpdatePolicy == installationUpdatePolicyManaged {
+		return Installation{}, ErrOfficialManagedUpdateConflict
 	}
 	if installation.Status == InstallationStatusArchived {
 		return Installation{}, ErrInstallationArchived
@@ -1498,6 +1638,130 @@ func (r *PostgresRepository) SelectInstallationVersion(
 	return selected, commitTransaction(ctx, tx)
 }
 
+func (r *PostgresRepository) ApplyManagedOfficialSelection(
+	ctx context.Context,
+	principal Principal,
+	command ManagedOfficialSelectionCommand,
+) (Installation, error) {
+	if r == nil || r.postgres == nil || !validPrincipal(principal) ||
+		command.InstallationID == uuid.Nil || command.ExpectedSelectedRevisionID == uuid.Nil ||
+		command.TargetReleaseRevisionID == uuid.Nil || !validOfficialEligibilityContext(principal, command.OfficialContext) ||
+		command.EvaluateOfficial == nil || command.BuildPolicy == nil || command.SelectedAt.IsZero() ||
+		!validAuditEvidence(command.Audit) {
+		return Installation{}, ErrInvalidRepositoryCommand
+	}
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return Installation{}, ErrServiceUnavailable
+	}
+	defer rollback(tx)
+	installation, err := loadInstallation(ctx, tx, principal, command.InstallationID, true)
+	if err != nil {
+		return Installation{}, err
+	}
+	if installation.DeviceID != principal.DeviceID {
+		return Installation{}, ErrNotFound
+	}
+	if installation.UpdatePolicy != installationUpdatePolicyManaged || installation.OfficialReleaseID == nil ||
+		installation.SelectedReleaseRevisionID == nil {
+		return Installation{}, ErrOfficialManagedUpdateConflict
+	}
+	if installation.Status == InstallationStatusArchived {
+		return Installation{}, ErrInstallationArchived
+	}
+	if installation.Status != InstallationStatusActive {
+		return Installation{}, ErrActivationConflict
+	}
+	if *installation.SelectedReleaseRevisionID == command.TargetReleaseRevisionID {
+		return installation, commitTransaction(ctx, tx)
+	}
+	if *installation.SelectedReleaseRevisionID != command.ExpectedSelectedRevisionID {
+		return Installation{}, ErrOfficialManagedUpdateConflict
+	}
+	var platformID uuid.UUID
+	if err := tx.QueryRow(ctx, `
+		SELECT platform_id FROM official_releases WHERE id = $1
+	`, *installation.OfficialReleaseID).Scan(&platformID); errors.Is(err, pgx.ErrNoRows) {
+		return Installation{}, ErrNotFound
+	} else if err != nil {
+		return Installation{}, ErrServiceUnavailable
+	}
+	record, err := loadOfficialEligibilityRecord(
+		ctx, tx, platformID, *installation.OfficialReleaseID, principal, command.OfficialContext, true,
+	)
+	if err != nil {
+		return Installation{}, err
+	}
+	target, err := command.EvaluateOfficial(record)
+	if err != nil {
+		return Installation{}, err
+	}
+	if target.PlatformID != platformID || target.ReleaseID != *installation.OfficialReleaseID ||
+		target.DefinitionID != installation.DefinitionID || target.ReleaseRevisionID != command.TargetReleaseRevisionID {
+		return Installation{}, ErrOfficialManagedUpdateConflict
+	}
+	version, err := scanVersion(tx.QueryRow(
+		ctx, platformVersionSelect+` AND version.id = $2`, target.PlatformID, target.VersionID,
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Installation{}, ErrNotFound
+	}
+	if err != nil || version.DefinitionID != installation.DefinitionID {
+		return Installation{}, ErrServiceUnavailable
+	}
+	if installation.PolicySnapshotID == nil {
+		return Installation{}, ErrServiceUnavailable
+	}
+	var currentPolicyVersion int64
+	if err := tx.QueryRow(ctx, `
+		SELECT policy_version FROM policy_snapshots
+		WHERE id = $3 AND tenant_id = $1 AND owner_scope = 'USER' AND owner_id = $2
+	`, principal.PersonalSpaceID, principal.UserID, *installation.PolicySnapshotID).Scan(&currentPolicyVersion); err != nil {
+		return Installation{}, ErrServiceUnavailable
+	}
+	policy, err := command.BuildPolicy(currentPolicyVersion+1, version, target)
+	if err != nil {
+		return Installation{}, err
+	}
+	if !validPolicyMaterial(policy, command.InstallationID, target.VersionID) || policy.PolicyVersion != currentPolicyVersion+1 {
+		return Installation{}, ErrInvalidRepositoryCommand
+	}
+	if err := insertPolicy(ctx, tx, principal, policy); err != nil {
+		return Installation{}, err
+	}
+	result, err := tx.Exec(ctx, `
+		UPDATE installations
+		SET selected_version_id = $4, selected_release_revision_id = $5,
+		    policy_snapshot_id = $6, updated_at = $7
+		WHERE id = $3 AND tenant_id = $1 AND owner_scope = 'USER' AND owner_id = $2
+		  AND update_policy = 'managed' AND selected_release_revision_id = $8 AND status = 'active'
+	`, principal.PersonalSpaceID, principal.UserID, command.InstallationID,
+		target.VersionID, target.ReleaseRevisionID, policy.ID, command.SelectedAt.UTC(), command.ExpectedSelectedRevisionID)
+	if err != nil {
+		return Installation{}, ErrServiceUnavailable
+	}
+	if result.RowsAffected() != 1 {
+		return Installation{}, ErrOfficialManagedUpdateConflict
+	}
+	if err := recordAudit(ctx, tx, principal, command.Audit,
+		"agent_installation_managed_version_selected", "agent_installation", command.InstallationID,
+		command.SelectedAt, map[string]string{
+			"agent_installation_id": command.InstallationID.String(),
+			"agent_version_id":      target.VersionID.String(), "policy_snapshot_id": policy.ID.String(),
+			"source_owner_scope": string(OwnerScopePlatform), "platform_id": target.PlatformID.String(),
+			"official_release_id":          target.ReleaseID.String(),
+			"official_release_revision_id": target.ReleaseRevisionID.String(),
+			"product_context_scope":        string(command.OfficialContext.Selector.Scope),
+		}); err != nil {
+		return Installation{}, err
+	}
+	selected, err := loadInstallation(ctx, tx, principal, command.InstallationID, false)
+	if err != nil {
+		return Installation{}, err
+	}
+	return selected, commitTransaction(ctx, tx)
+}
+
 func (r *PostgresRepository) ArchiveInstallation(
 	ctx context.Context,
 	principal Principal,
@@ -1567,16 +1831,24 @@ func (r *PostgresRepository) InsertRuntimeBinding(
 		*installation.PolicySnapshotID != command.PolicySnapshotID {
 		return RuntimeBindingRecord{}, ErrNotFound
 	}
+	if installation.UpdatePolicy == installationUpdatePolicyManaged {
+		if installation.SelectedReleaseRevisionID == nil || command.OfficialReleaseRevisionID == nil ||
+			*installation.SelectedReleaseRevisionID != *command.OfficialReleaseRevisionID {
+			return RuntimeBindingRecord{}, ErrOfficialManagedUpdateConflict
+		}
+	} else if command.OfficialReleaseRevisionID != nil {
+		return RuntimeBindingRecord{}, ErrInvalidRepositoryCommand
+	}
 	owner := principal.Owner()
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO runtime_binding_records (
 			id, tenant_id, owner_scope, owner_id, device_id, agent_installation_id,
 			agent_version_id, runtime_profile_id, runtime_version, policy_snapshot_id,
-			tool_permission_digest, created_at
-		) VALUES ($1, $2, 'USER', $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			tool_permission_digest, created_at, official_release_revision_id
+		) VALUES ($1, $2, 'USER', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 	`, command.BindingID, owner.TenantID, owner.OwnerID, principal.DeviceID, command.AgentInstallationID,
 		command.AgentVersionID, command.RuntimeProfileID, command.RuntimeVersion, command.PolicySnapshotID,
-		command.ToolPermissionDigest[:], command.CreatedAt.UTC()); err != nil {
+		command.ToolPermissionDigest[:], command.CreatedAt.UTC(), nullUUIDPointer(command.OfficialReleaseRevisionID)); err != nil {
 		return RuntimeBindingRecord{}, ErrServiceUnavailable
 	}
 	if err := recordAudit(ctx, tx, principal, command.Audit, "runtime_binding_recorded", "runtime_binding_record",
@@ -1590,7 +1862,8 @@ func (r *PostgresRepository) InsertRuntimeBinding(
 		ID: command.BindingID, DeviceID: principal.DeviceID, AgentInstallationID: command.AgentInstallationID,
 		AgentVersionID: command.AgentVersionID, RuntimeProfileID: command.RuntimeProfileID,
 		RuntimeVersion: command.RuntimeVersion, PolicySnapshotID: command.PolicySnapshotID,
-		ToolPermissionDigest: command.ToolPermissionDigest, CreatedAt: command.CreatedAt.UTC(),
+		OfficialReleaseRevisionID: cloneUUIDPointer(command.OfficialReleaseRevisionID),
+		ToolPermissionDigest:      command.ToolPermissionDigest, CreatedAt: command.CreatedAt.UTC(),
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return RuntimeBindingRecord{}, ErrServiceUnavailable
@@ -1725,7 +1998,8 @@ const workspaceVersionQuery = `
 
 const installationQuery = `
 	SELECT id, device_id, device_installation_id, definition_id, selected_version_id,
-		runtime_profile_id, policy_snapshot_id, update_policy, status, created_at, updated_at, activated_at, archived_at
+		runtime_profile_id, policy_snapshot_id, official_release_id, selected_release_revision_id,
+		update_policy, status, created_at, updated_at, activated_at, archived_at
 	FROM installations
 	WHERE tenant_id = $1 AND owner_scope = 'USER' AND owner_id = $2 AND id = $3
 `
@@ -1923,6 +2197,43 @@ func loadVersion(ctx context.Context, queryer queryRower, principal Principal, v
 	return version, nil
 }
 
+func loadInstallationSelectedVersion(
+	ctx context.Context,
+	queryer queryRower,
+	principal Principal,
+	installation Installation,
+) (Version, error) {
+	if installation.UpdatePolicy != installationUpdatePolicyManaged {
+		return loadVersion(ctx, queryer, principal, installation.SelectedVersionID)
+	}
+	if installation.OfficialReleaseID == nil || installation.SelectedReleaseRevisionID == nil {
+		return Version{}, ErrServiceUnavailable
+	}
+	var platformID uuid.UUID
+	if err := queryer.QueryRow(ctx, `
+		SELECT release.platform_id
+		FROM official_releases release
+		JOIN official_release_revisions revision
+		  ON revision.release_id = release.id AND revision.id = $2
+		WHERE release.id = $1 AND revision.agent_version_id = $3
+	`, *installation.OfficialReleaseID, *installation.SelectedReleaseRevisionID,
+		installation.SelectedVersionID).Scan(&platformID); errors.Is(err, pgx.ErrNoRows) {
+		return Version{}, ErrNotFound
+	} else if err != nil {
+		return Version{}, ErrServiceUnavailable
+	}
+	version, err := scanVersion(queryer.QueryRow(
+		ctx, platformVersionSelect+` AND version.id = $2`, platformID, installation.SelectedVersionID,
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Version{}, ErrNotFound
+	}
+	if err != nil || version.DefinitionID != installation.DefinitionID {
+		return Version{}, ErrServiceUnavailable
+	}
+	return version, nil
+}
+
 func loadWorkspaceVersion(
 	ctx context.Context,
 	queryer queryRower,
@@ -1951,11 +2262,12 @@ func loadInstallation(
 		query += " FOR UPDATE"
 	}
 	var installation Installation
-	var runtimeProfile, policySnapshot pgtype.UUID
+	var runtimeProfile, policySnapshot, officialRelease, selectedReleaseRevision pgtype.UUID
 	var activatedAt, archivedAt pgtype.Timestamptz
 	err := queryer.QueryRow(ctx, query, principal.PersonalSpaceID, principal.UserID, installationID).Scan(
 		&installation.ID, &installation.DeviceID, &installation.DeviceInstallationID, &installation.DefinitionID,
-		&installation.SelectedVersionID, &runtimeProfile, &policySnapshot, &installation.UpdatePolicy,
+		&installation.SelectedVersionID, &runtimeProfile, &policySnapshot, &officialRelease, &selectedReleaseRevision,
+		&installation.UpdatePolicy,
 		&installation.Status, &installation.CreatedAt, &installation.UpdatedAt, &activatedAt, &archivedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -1971,6 +2283,14 @@ func loadInstallation(
 	if policySnapshot.Valid {
 		value := uuid.UUID(policySnapshot.Bytes)
 		installation.PolicySnapshotID = &value
+	}
+	if officialRelease.Valid {
+		value := uuid.UUID(officialRelease.Bytes)
+		installation.OfficialReleaseID = &value
+	}
+	if selectedReleaseRevision.Valid {
+		value := uuid.UUID(selectedReleaseRevision.Bytes)
+		installation.SelectedReleaseRevisionID = &value
 	}
 	if activatedAt.Valid {
 		value := activatedAt.Time
@@ -2409,12 +2729,32 @@ func validVersionMaterial(material VersionMaterial, expectedNumber int64) bool {
 }
 
 func validCreateInstallation(command CreateInstallationCommand) bool {
-	return command.InstallationID != uuid.Nil && command.DefinitionID != uuid.Nil && command.VersionID != uuid.Nil &&
-		(command.SourceWorkspaceID == nil || *command.SourceWorkspaceID != uuid.Nil) &&
-		(command.SourceOrganizationID == nil || *command.SourceOrganizationID != uuid.Nil) &&
-		(command.SourceWorkspaceID == nil || command.SourceOrganizationID == nil) && command.BuildPolicy != nil &&
-		(command.SourceOrganizationID == nil || command.BuildOrganizationPolicy != nil) &&
-		validIdempotency(command.Idempotency, command.CreatedAt) && validAuditEvidence(command.Audit) && !command.CreatedAt.IsZero()
+	if command.InstallationID == uuid.Nil || command.DefinitionID == uuid.Nil {
+		return false
+	}
+	if command.SourceWorkspaceID != nil && *command.SourceWorkspaceID == uuid.Nil {
+		return false
+	}
+	if command.SourceOrganizationID != nil && *command.SourceOrganizationID == uuid.Nil {
+		return false
+	}
+	if command.SourceWorkspaceID != nil && command.SourceOrganizationID != nil {
+		return false
+	}
+	if command.BuildPolicy == nil || !validIdempotency(command.Idempotency, command.CreatedAt) ||
+		!validAuditEvidence(command.Audit) || command.CreatedAt.IsZero() {
+		return false
+	}
+	official := command.OfficialReleaseID != nil || command.OfficialReleaseRevisionID != nil || command.OfficialContext != nil ||
+		command.OfficialPlatformID != uuid.Nil || command.EvaluateOfficial != nil || command.BuildOfficialPolicy != nil
+	if official {
+		return command.VersionID == uuid.Nil && command.SourceWorkspaceID == nil && command.SourceOrganizationID == nil &&
+			command.OfficialPlatformID != uuid.Nil && command.OfficialReleaseID != nil && *command.OfficialReleaseID != uuid.Nil &&
+			command.OfficialReleaseRevisionID != nil && *command.OfficialReleaseRevisionID != uuid.Nil &&
+			command.OfficialContext != nil && command.EvaluateOfficial != nil && command.BuildOfficialPolicy != nil
+	}
+	return command.VersionID != uuid.Nil && command.OfficialPlatformID == uuid.Nil &&
+		(command.SourceOrganizationID == nil || command.BuildOrganizationPolicy != nil)
 }
 
 func validPolicyMaterial(policy PolicyMaterial, installationID uuid.UUID, versionID uuid.UUID) bool {
@@ -2427,7 +2767,8 @@ func validPolicyMaterial(policy PolicyMaterial, installationID uuid.UUID, versio
 func validRuntimeBinding(command RuntimeBindingRecordCommand) bool {
 	return command.BindingID != uuid.Nil && command.AgentInstallationID != uuid.Nil && command.AgentVersionID != uuid.Nil &&
 		command.RuntimeProfileID != uuid.Nil && command.PolicySnapshotID != uuid.Nil && !zeroDigest(command.ToolPermissionDigest) &&
-		validToken(command.RuntimeVersion, 128)
+		validToken(command.RuntimeVersion, 128) &&
+		(command.OfficialReleaseRevisionID == nil || *command.OfficialReleaseRevisionID != uuid.Nil)
 }
 
 func validVersionRevocation(command VersionRevocationCommand) bool {
@@ -2466,6 +2807,13 @@ func validIcon(mediaType string, data []byte) bool {
 func validToken(value string, maximum int) bool {
 	return value != "" && strings.TrimSpace(value) == value && utf8.ValidString(value) && len([]byte(value)) <= maximum &&
 		!strings.ContainsAny(value, "\r\n\x00")
+}
+
+func nullUUIDPointer(value *uuid.UUID) any {
+	if value == nil {
+		return nil
+	}
+	return *value
 }
 
 func commitTransaction(ctx context.Context, tx pgx.Tx) error {

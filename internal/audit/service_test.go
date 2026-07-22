@@ -313,6 +313,65 @@ func TestPostgresRecorderPersistsOrganizationSourcedUserInstallationMetadata(t *
 	}
 }
 
+func TestPostgresRecorderPersistsPlatformSourcedUserInstallationMetadata(t *testing.T) {
+	executor := &fakeExecutor{}
+	recorder, err := NewRecorder(executor)
+	if err != nil {
+		t.Fatalf("NewRecorder() error = %v", err)
+	}
+	metadata := map[string]string{
+		"tenant_id":                    uuid.NewString(),
+		"owner_scope":                  "USER",
+		"owner_id":                     uuid.NewString(),
+		"agent_definition_id":          uuid.NewString(),
+		"agent_version_id":             uuid.NewString(),
+		"agent_installation_id":        uuid.NewString(),
+		"policy_snapshot_id":           uuid.NewString(),
+		"source_owner_scope":           "PLATFORM",
+		"platform_id":                  uuid.NewString(),
+		"official_release_id":          uuid.NewString(),
+		"official_release_revision_id": uuid.NewString(),
+		"product_context_scope":        "USER",
+	}
+	if err := recorder.Record(context.Background(), Event{
+		EventType: "agent_installation_created", Outcome: OutcomeSuccess, Metadata: metadata,
+	}); err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+	if executor.calls != 1 {
+		t.Fatalf("Exec() calls = %d, want 1", executor.calls)
+	}
+}
+
+func TestPostgresRecorderPersistsManagedPlatformSelectionMetadata(t *testing.T) {
+	executor := &fakeExecutor{}
+	recorder, err := NewRecorder(executor)
+	if err != nil {
+		t.Fatalf("NewRecorder() error = %v", err)
+	}
+	metadata := map[string]string{
+		"tenant_id":                    uuid.NewString(),
+		"owner_scope":                  "USER",
+		"owner_id":                     uuid.NewString(),
+		"agent_version_id":             uuid.NewString(),
+		"agent_installation_id":        uuid.NewString(),
+		"policy_snapshot_id":           uuid.NewString(),
+		"source_owner_scope":           "PLATFORM",
+		"platform_id":                  uuid.NewString(),
+		"official_release_id":          uuid.NewString(),
+		"official_release_revision_id": uuid.NewString(),
+		"product_context_scope":        "WORKSPACE",
+	}
+	if err := recorder.Record(context.Background(), Event{
+		EventType: "agent_installation_managed_version_selected", Outcome: OutcomeSuccess, Metadata: metadata,
+	}); err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+	if executor.calls != 1 {
+		t.Fatalf("Exec() calls = %d, want 1", executor.calls)
+	}
+}
+
 func TestPostgresRecorderRejectsUnsafeAgentMetadata(t *testing.T) {
 	tooMany := make(map[string]string, 13)
 	for index := range 13 {
@@ -404,6 +463,9 @@ func TestPostgresRecorderRejectsUnsafeWorkspaceMetadata(t *testing.T) {
 		{name: "Organization source without organization", eventType: "agent_installation_created", metadata: map[string]string{"owner_scope": "USER", "source_owner_scope": "ORGANIZATION"}},
 		{name: "Organization source with workspace", eventType: "agent_installation_created", metadata: map[string]string{"owner_scope": "USER", "source_owner_scope": "ORGANIZATION", "source_organization_id": organizationID, "source_workspace_id": workspaceID}},
 		{name: "Workspace source with organization", eventType: "agent_installation_created", metadata: map[string]string{"owner_scope": "USER", "source_owner_scope": "WORKSPACE", "source_workspace_id": workspaceID, "source_organization_id": organizationID}},
+		{name: "Platform source without provenance", eventType: "agent_installation_created", metadata: map[string]string{"owner_scope": "USER", "source_owner_scope": "PLATFORM"}},
+		{name: "Platform provenance on user source", eventType: "agent_installation_created", metadata: map[string]string{"owner_scope": "USER", "source_owner_scope": "USER", "platform_id": uuid.NewString(), "official_release_id": uuid.NewString(), "official_release_revision_id": uuid.NewString(), "product_context_scope": "USER"}},
+		{name: "Platform source with invalid context scope", eventType: "agent_installation_created", metadata: map[string]string{"owner_scope": "USER", "source_owner_scope": "PLATFORM", "platform_id": uuid.NewString(), "official_release_id": uuid.NewString(), "official_release_revision_id": uuid.NewString(), "product_context_scope": "PLATFORM"}},
 		{name: "source ownership on unrelated Agent event", eventType: "agent_version_published", metadata: map[string]string{"owner_scope": "USER", "source_owner_scope": "WORKSPACE", "source_workspace_id": workspaceID}},
 		{name: "workspace metadata on browser event", eventType: "browser_login", metadata: map[string]string{"workspace_id": workspaceID}},
 		{name: "oversized value", eventType: "workspace_created", metadata: map[string]string{"workspace_id": strings.Repeat("a", 129)}},

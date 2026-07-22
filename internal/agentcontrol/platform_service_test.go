@@ -390,6 +390,13 @@ func (s *stubPlatformRepository) GetOfficialEligibility(ctx context.Context, pla
 	return s.eligibility(ctx, platformID, releaseID, principal, eligibilityContext)
 }
 
+func (s *stubPlatformRepository) GetOfficialEligibilityByRevision(ctx context.Context, platformID uuid.UUID, _ uuid.UUID, _ uuid.UUID, principal Principal, eligibilityContext OfficialEligibilityContext) (OfficialEligibilityRecord, bool, error) {
+	if s.eligibility == nil {
+		return OfficialEligibilityRecord{}, false, errors.New("unexpected GetOfficialEligibilityByRevision call")
+	}
+	return s.eligibility(ctx, platformID, uuid.Nil, principal, eligibilityContext)
+}
+
 func platformDraftFromCreate(command CreatePlatformDraftRepositoryCommand) PlatformAgentDraft {
 	return PlatformAgentDraft{
 		ID: command.DraftID, PlatformID: command.PlatformID,

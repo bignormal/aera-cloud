@@ -992,15 +992,70 @@ func (r *PostgresRepository) GetOfficialEligibility(
 		!validPrincipal(principal) || !validOfficialEligibilityContext(principal, eligibilityContext) {
 		return OfficialEligibilityRecord{}, false, ErrInvalidRepositoryCommand
 	}
-	release, err := loadOfficialRelease(ctx, r.postgres, platformID, releaseID, false)
+	record, err := loadOfficialEligibilityRecord(
+		ctx, r.postgres, platformID, releaseID, principal, eligibilityContext, false,
+	)
 	if errors.Is(err, ErrNotFound) {
 		return OfficialEligibilityRecord{}, false, nil
 	}
 	if err != nil {
 		return OfficialEligibilityRecord{}, false, err
 	}
+	return record, true, nil
+}
+
+func (r *PostgresRepository) GetOfficialEligibilityByRevision(
+	ctx context.Context,
+	platformID uuid.UUID,
+	definitionID uuid.UUID,
+	revisionID uuid.UUID,
+	principal Principal,
+	eligibilityContext OfficialEligibilityContext,
+) (OfficialEligibilityRecord, bool, error) {
+	if r == nil || r.postgres == nil || platformID == uuid.Nil || definitionID == uuid.Nil || revisionID == uuid.Nil ||
+		!validPrincipal(principal) || !validOfficialEligibilityContext(principal, eligibilityContext) {
+		return OfficialEligibilityRecord{}, false, ErrInvalidRepositoryCommand
+	}
+	var releaseID uuid.UUID
+	err := r.postgres.QueryRow(ctx, `
+		SELECT release.id
+		FROM official_release_revisions revision
+		JOIN official_releases release ON release.id = revision.release_id
+		WHERE revision.id = $1 AND release.platform_id = $2 AND release.definition_id = $3
+	`, revisionID, platformID, definitionID).Scan(&releaseID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return OfficialEligibilityRecord{}, false, nil
+	}
+	if err != nil {
+		return OfficialEligibilityRecord{}, false, ErrServiceUnavailable
+	}
+	record, err := loadOfficialEligibilityRecord(
+		ctx, r.postgres, platformID, releaseID, principal, eligibilityContext, false,
+	)
+	if err != nil {
+		return OfficialEligibilityRecord{}, false, err
+	}
+	if record.Revision.ID != revisionID {
+		return OfficialEligibilityRecord{}, false, nil
+	}
+	return record, true, nil
+}
+
+func loadOfficialEligibilityRecord(
+	ctx context.Context,
+	queryer officialReleaseQueryer,
+	platformID uuid.UUID,
+	releaseID uuid.UUID,
+	principal Principal,
+	eligibilityContext OfficialEligibilityContext,
+	forUpdate bool,
+) (OfficialEligibilityRecord, error) {
+	release, err := loadOfficialRelease(ctx, queryer, platformID, releaseID, forUpdate)
+	if err != nil {
+		return OfficialEligibilityRecord{}, err
+	}
 	record := OfficialEligibilityRecord{Release: release, Revision: release.CurrentRevision}
-	if err := r.postgres.QueryRow(ctx, `
+	if err := queryer.QueryRow(ctx, `
 		SELECT EXISTS (
 			SELECT 1
 			FROM users user_account
@@ -1010,20 +1065,20 @@ func (r *PostgresRepository) GetOfficialEligibility(
 			  AND device.status = 'active' AND personal_space.status = 'active'
 		)
 	`, principal.UserID, principal.DeviceID, principal.PersonalSpaceID).Scan(&record.AccountDeviceActive); err != nil {
-		return OfficialEligibilityRecord{}, false, ErrServiceUnavailable
+		return OfficialEligibilityRecord{}, ErrServiceUnavailable
 	}
 	var platformStatus string
-	if err := r.postgres.QueryRow(ctx, `SELECT status FROM platforms WHERE id = $1`, platformID).Scan(&platformStatus); err != nil {
-		return OfficialEligibilityRecord{}, false, ErrServiceUnavailable
+	if err := queryer.QueryRow(ctx, `SELECT status FROM platforms WHERE id = $1`, platformID).Scan(&platformStatus); err != nil {
+		return OfficialEligibilityRecord{}, ErrServiceUnavailable
 	}
 	record.PlatformActive = platformStatus == "active"
-	policy, policyFound, err := loadLatestPlatformPolicy(ctx, r.postgres, platformID)
+	policy, policyFound, err := loadLatestPlatformPolicy(ctx, queryer, platformID)
 	if err != nil || !policyFound {
-		return OfficialEligibilityRecord{}, false, ErrServiceUnavailable
+		return OfficialEligibilityRecord{}, ErrServiceUnavailable
 	}
 	policyDocument, err := decodePlatformPolicy(policy)
 	if err != nil {
-		return OfficialEligibilityRecord{}, false, err
+		return OfficialEligibilityRecord{}, err
 	}
 	for _, channel := range policyDocument.PermittedChannels {
 		if channel == eligibilityContext.Channel && release.Channel == channel {
@@ -1031,8 +1086,8 @@ func (r *PostgresRepository) GetOfficialEligibility(
 			break
 		}
 	}
-	if err := authorizeOfficialProductContext(ctx, r.postgres, principal, eligibilityContext.Selector, &record); err != nil {
-		return OfficialEligibilityRecord{}, false, err
+	if err := authorizeOfficialProductContext(ctx, queryer, principal, eligibilityContext.Selector, &record); err != nil {
+		return OfficialEligibilityRecord{}, err
 	}
 	for _, userID := range release.CurrentRevision.AllowlistedUserIDs {
 		if userID == principal.UserID {
@@ -1042,7 +1097,7 @@ func (r *PostgresRepository) GetOfficialEligibility(
 	}
 	record.Release.CurrentRevision.AllowlistedUserIDs = nil
 	record.Revision.AllowlistedUserIDs = nil
-	return record, true, nil
+	return record, nil
 }
 
 type officialReleaseQueryer interface {
