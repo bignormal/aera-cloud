@@ -69,14 +69,23 @@ func TestOfficialInstallationRepositoryRemainsUserOwnedAndBindsRuntimeProvenance
 	if tenantID != principal.PersonalSpaceID || ownerScope != string(OwnerScopeUser) || ownerID != principal.UserID {
 		t.Fatalf("official Installation owner = %s/%s/%s", tenantID, ownerScope, ownerID)
 	}
+	var deviceInstallationID uuid.UUID
+	if err := fixture.postgres.QueryRow(fixture.ctx, `
+		SELECT installation_id FROM devices WHERE id = $1 AND user_id = $2
+	`, principal.DeviceID, principal.UserID).Scan(&deviceInstallationID); err != nil {
+		t.Fatalf("read official device installation identity: %v", err)
+	}
 	policyText := string(created.Policy.Document)
 	for _, required := range []string{
-		`"official_context"`, release.ID.String(), active.CurrentRevision.ID.String(),
-		principal.UserID.String(), principal.DeviceID.String(), created.Installation.ID.String(),
+		`"official_context"`, `"device_installation_id"`, release.ID.String(), active.CurrentRevision.ID.String(),
+		principal.UserID.String(), deviceInstallationID.String(), created.Installation.ID.String(),
 	} {
 		if !strings.Contains(policyText, required) {
 			t.Fatalf("official policy missing %q: %s", required, policyText)
 		}
+	}
+	if strings.Contains(policyText, `"device_id"`) || strings.Contains(policyText, principal.DeviceID.String()) {
+		t.Fatalf("official policy exposed Cloud-internal device identity: %s", policyText)
 	}
 	for _, forbidden := range []string{"profile_path", "memory", "session", "credential", "private_skill", "curator"} {
 		if strings.Contains(strings.ToLower(policyText), forbidden) {

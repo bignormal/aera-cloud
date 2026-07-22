@@ -416,6 +416,34 @@ func TestPolicyDocumentRecanonicalizesEquivalentJSONStorageBytes(t *testing.T) {
 	}
 }
 
+func TestOfficialPolicyDocumentBindsDeviceInstallationIdentity(t *testing.T) {
+	fixture := newAgentControlServiceFixture(t)
+	definitionID, versionID := uuid.New(), uuid.New()
+	version := policyVersionFixture(t, definitionID, versionID, 1)
+	installationID, deviceInstallationID := uuid.New(), uuid.New()
+	target := OfficialManagedTarget{
+		PlatformID: uuid.New(), ReleaseID: uuid.New(), ReleaseRevisionID: uuid.New(),
+		DefinitionID: definitionID, VersionID: versionID, Channel: OfficialChannelStable, HeadRevision: 1,
+	}
+	contextValue := OfficialEligibilityContext{
+		Channel: OfficialChannelStable, DesktopVersion: "v1.0.0",
+		Selector: OfficialProductSelector{Scope: OwnerScopeUser, PersonalSpaceID: fixture.principal.PersonalSpaceID},
+	}
+
+	document, err := policyDocumentForOfficialVersion(
+		installationID, deviceInstallationID, fixture.principal, version, target, contextValue,
+	)
+	if err != nil {
+		t.Fatalf("policyDocumentForOfficialVersion() error = %v", err)
+	}
+	if !bytes.Contains(document, []byte(`"device_installation_id":"`+deviceInstallationID.String()+`"`)) {
+		t.Fatalf("official policy does not bind device installation identity: %s", document)
+	}
+	if bytes.Contains(document, []byte(`"device_id"`)) || bytes.Contains(document, []byte(fixture.principal.DeviceID.String())) {
+		t.Fatalf("official policy exposes Cloud-internal device identity: %s", document)
+	}
+}
+
 func TestServiceActivationVerifiesDeviceProofDigestProfileTimestampAndReplay(t *testing.T) {
 	fixture := newAgentControlServiceFixture(t)
 	private := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x55}, ed25519.SeedSize))

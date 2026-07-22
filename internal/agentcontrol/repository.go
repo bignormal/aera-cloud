@@ -208,7 +208,7 @@ type CreateInstallationCommand struct {
 	EvaluateOfficial          func(OfficialEligibilityRecord) (OfficialManagedTarget, error)
 	BuildPolicy               func(Version) (PolicyMaterial, error)
 	BuildOrganizationPolicy   func(Version, EffectiveOrganizationAgentPolicy) (PolicyMaterial, error)
-	BuildOfficialPolicy       func(Version, OfficialManagedTarget) (PolicyMaterial, error)
+	BuildOfficialPolicy       func(Version, OfficialManagedTarget, uuid.UUID) (PolicyMaterial, error)
 	Idempotency               IdempotencyEvidence
 	Audit                     AuditEvidence
 	CreatedAt                 time.Time
@@ -245,7 +245,7 @@ type ManagedOfficialSelectionCommand struct {
 	TargetReleaseRevisionID    uuid.UUID
 	OfficialContext            OfficialEligibilityContext
 	EvaluateOfficial           func(OfficialEligibilityRecord) (OfficialManagedTarget, error)
-	BuildPolicy                func(policyVersion int64, version Version, target OfficialManagedTarget) (PolicyMaterial, error)
+	BuildPolicy                func(policyVersion int64, version Version, target OfficialManagedTarget, deviceInstallationID uuid.UUID) (PolicyMaterial, error)
 	Audit                      AuditEvidence
 	SelectedAt                 time.Time
 }
@@ -1282,7 +1282,7 @@ func createOfficialPendingInstallation(
 	if err != nil || version.DefinitionID != command.DefinitionID {
 		return InstallationCreation{}, ErrServiceUnavailable
 	}
-	policy, err := command.BuildOfficialPolicy(version, target)
+	policy, err := command.BuildOfficialPolicy(version, target, deviceInstallationID)
 	if err != nil {
 		return InstallationCreation{}, err
 	}
@@ -1719,7 +1719,7 @@ func (r *PostgresRepository) ApplyManagedOfficialSelection(
 	`, principal.PersonalSpaceID, principal.UserID, *installation.PolicySnapshotID).Scan(&currentPolicyVersion); err != nil {
 		return Installation{}, ErrServiceUnavailable
 	}
-	policy, err := command.BuildPolicy(currentPolicyVersion+1, version, target)
+	policy, err := command.BuildPolicy(currentPolicyVersion+1, version, target, installation.DeviceInstallationID)
 	if err != nil {
 		return Installation{}, err
 	}

@@ -4915,7 +4915,7 @@ components:
         - release_id
         - release_revision_id
         - user_id
-        - device_id
+        - device_installation_id
         - installation_id
         - product_scope
         - product_context_id
@@ -4932,7 +4932,7 @@ components:
         user_id:
           type: string
           format: uuid
-        device_id:
+        device_installation_id:
           type: string
           format: uuid
         installation_id:

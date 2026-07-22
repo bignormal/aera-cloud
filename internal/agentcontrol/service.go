@@ -857,9 +857,13 @@ func (s *Service) CreateInstallation(
 		command.EvaluateOfficial = func(record OfficialEligibilityRecord) (OfficialManagedTarget, error) {
 			return s.officialEligibility.EvaluateOfficialEligibilityRecord(principal, contextValue, record, false)
 		}
-		command.BuildOfficialPolicy = func(version Version, target OfficialManagedTarget) (PolicyMaterial, error) {
+		command.BuildOfficialPolicy = func(
+			version Version,
+			target OfficialManagedTarget,
+			deviceInstallationID uuid.UUID,
+		) (PolicyMaterial, error) {
 			return s.buildOfficialPolicy(
-				installationID, policyID, principal, version, target, contextValue, 1, now,
+				installationID, policyID, deviceInstallationID, principal, version, target, contextValue, 1, now,
 			)
 		}
 	}
@@ -997,9 +1001,14 @@ func (s *Service) ApplyManagedOfficialUpdate(
 				principal, request.OfficialContext, record, true,
 			)
 		},
-		BuildPolicy: func(policyVersion int64, version Version, target OfficialManagedTarget) (PolicyMaterial, error) {
+		BuildPolicy: func(
+			policyVersion int64,
+			version Version,
+			target OfficialManagedTarget,
+			deviceInstallationID uuid.UUID,
+		) (PolicyMaterial, error) {
 			return s.buildOfficialPolicy(
-				request.InstallationID, policyID, principal, version, target,
+				request.InstallationID, policyID, deviceInstallationID, principal, version, target,
 				request.OfficialContext, policyVersion, now,
 			)
 		},
@@ -1177,6 +1186,7 @@ func (s *Service) buildOrganizationPolicy(
 func (s *Service) buildOfficialPolicy(
 	installationID uuid.UUID,
 	policyID uuid.UUID,
+	deviceInstallationID uuid.UUID,
 	principal Principal,
 	version Version,
 	target OfficialManagedTarget,
@@ -1185,7 +1195,7 @@ func (s *Service) buildOfficialPolicy(
 	createdAt time.Time,
 ) (PolicyMaterial, error) {
 	document, err := policyDocumentForOfficialVersion(
-		installationID, principal, version, target, eligibilityContext,
+		installationID, deviceInstallationID, principal, version, target, eligibilityContext,
 	)
 	if err != nil {
 		return PolicyMaterial{}, err
@@ -1291,14 +1301,14 @@ type policyDocumentV1 struct {
 }
 
 type officialPolicyContextV1 struct {
-	PlatformID        string     `json:"platform_id"`
-	ReleaseID         string     `json:"release_id"`
-	ReleaseRevisionID string     `json:"release_revision_id"`
-	UserID            string     `json:"user_id"`
-	DeviceID          string     `json:"device_id"`
-	InstallationID    string     `json:"installation_id"`
-	ProductScope      OwnerScope `json:"product_scope"`
-	ProductContextID  string     `json:"product_context_id"`
+	PlatformID           string     `json:"platform_id"`
+	ReleaseID            string     `json:"release_id"`
+	ReleaseRevisionID    string     `json:"release_revision_id"`
+	UserID               string     `json:"user_id"`
+	DeviceInstallationID string     `json:"device_installation_id"`
+	InstallationID       string     `json:"installation_id"`
+	ProductScope         OwnerScope `json:"product_scope"`
+	ProductContextID     string     `json:"product_context_id"`
 }
 
 func policyDocumentForVersion(version Version) ([]byte, error) {
@@ -1328,12 +1338,13 @@ func policyDocumentForOrganizationVersion(
 
 func policyDocumentForOfficialVersion(
 	installationID uuid.UUID,
+	deviceInstallationID uuid.UUID,
 	principal Principal,
 	version Version,
 	target OfficialManagedTarget,
 	eligibilityContext OfficialEligibilityContext,
 ) ([]byte, error) {
-	if installationID == uuid.Nil || !validPrincipal(principal) || target.PlatformID == uuid.Nil ||
+	if installationID == uuid.Nil || deviceInstallationID == uuid.Nil || !validPrincipal(principal) || target.PlatformID == uuid.Nil ||
 		target.ReleaseID == uuid.Nil || target.ReleaseRevisionID == uuid.Nil || target.DefinitionID != version.DefinitionID ||
 		target.VersionID != version.ID || !validOfficialEligibilityContext(principal, eligibilityContext) {
 		return nil, ErrInvalidAgentContent
@@ -1359,7 +1370,7 @@ func policyDocumentForOfficialVersion(
 	document.OfficialContext = &officialPolicyContextV1{
 		PlatformID: target.PlatformID.String(), ReleaseID: target.ReleaseID.String(),
 		ReleaseRevisionID: target.ReleaseRevisionID.String(), UserID: principal.UserID.String(),
-		DeviceID: principal.DeviceID.String(), InstallationID: installationID.String(),
+		DeviceInstallationID: deviceInstallationID.String(), InstallationID: installationID.String(),
 		ProductScope: eligibilityContext.Selector.Scope, ProductContextID: contextID.String(),
 	}
 	encoded, err := marshalCanonical(document)
