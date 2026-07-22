@@ -51,7 +51,7 @@ func TestOrganizationSubmissionRepositoryVisibilityWithdrawalAndRejection(t *tes
 		ReviewID: uuid.New(), OrganizationID: fixture.organizationID, SubmissionID: submission.ID,
 		ExpectedRevision: submission.Revision, Principal: fixture.admin, Decision: OrganizationReviewReject,
 		ReasonCode: "policy_mismatch", SafeNote: "Select an approved model.",
-		Idempotency: fixture.idempotency(0x72), Audit: fixture.auditEvidence(0x72), ReviewedAt: fixture.now.Add(time.Minute),
+		Idempotency: fixture.idempotency(0x72), Audit: fixture.auditEvidence(0x72), ReviewedAt: submission.SubmittedAt.Add(time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("ReviewOrganizationAgentSubmission(reject) error = %v", err)
@@ -325,15 +325,15 @@ func TestOrganizationApprovalFailuresRollbackPublication(t *testing.T) {
 
 	t.Run("submitter demotion", func(t *testing.T) {
 		fixture := newOrganizationSubmissionRepositoryFixture(t)
-		submission := fixture.submitInitial(t, fixture.owner, 0xc3)
+		submission := fixture.submitInitial(t, fixture.admin, 0xc3)
 		if _, err := fixture.postgres.Exec(fixture.ctx, `
 			UPDATE organization_memberships SET role = 'member', revision = revision + 1, updated_at = $3
 			WHERE organization_id = $1 AND user_id = $2
-		`, fixture.organizationID, fixture.owner.UserID, fixture.now.Add(time.Minute)); err != nil {
+		`, fixture.organizationID, fixture.admin.UserID, fixture.now.Add(time.Minute)); err != nil {
 			t.Fatalf("demote submitter: %v", err)
 		}
 		if _, err := fixture.repository.ReviewOrganizationAgentSubmission(
-			fixture.ctx, fixture.approvalCommand(t, submission, fixture.admin, 0xc4),
+			fixture.ctx, fixture.approvalCommand(t, submission, fixture.secondAdmin, 0xc4),
 		); !errors.Is(err, ErrOrganizationAgentForbidden) {
 			t.Fatalf("demoted submitter approval error = %v", err)
 		}

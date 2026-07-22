@@ -238,7 +238,7 @@ func TestOrganizationInstallationAndSelectionRecheckCurrentPolicy(t *testing.T) 
 	}
 	restricted := organization.DefaultPolicyDocument()
 	restricted.Models.Allowlist = []organization.ModelIdentifier{{
-		Provider: "anthropic", Model: "claude-opus-5",
+		Provider: "google", Model: "gemini-2.5-pro",
 	}}
 	fixture.replacePolicy(t, restricted)
 
