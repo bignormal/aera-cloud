@@ -204,6 +204,12 @@ func validateControlCommand(action Action, targetID uuid.UUID, command Command) 
 	return nil
 }
 
+// ValidateCommand applies the domain-level shape checks required before a
+// control command may reach persistent storage.
+func ValidateCommand(action Action, targetID uuid.UUID, command Command) error {
+	return validateControlCommand(action, targetID, command)
+}
+
 func validateOperation(operation Operation) error {
 	if operation.ID == uuid.Nil || operation.UpdatedAt.IsZero() {
 		return ErrUnavailable

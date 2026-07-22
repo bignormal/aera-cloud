@@ -85,24 +85,34 @@ func NewAuthenticator(config AuthenticatorConfig) (*Authenticator, error) {
 
 func (a *Authenticator) RequireScope(scope string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-			if a == nil || next == nil || !verifiedClientCertificate(request) {
-				writeAuthenticationError(response, http.StatusUnauthorized, "AUTHENTICATION_REQUIRED")
-				return
-			}
-			claims, err := a.authenticate(request)
-			if err != nil {
-				writeAuthenticationError(response, http.StatusUnauthorized, "AUTHENTICATION_REQUIRED")
-				return
-			}
-			if _, allowed := allowedServiceScopes[scope]; !allowed || !containsScope(claims.Scopes, scope) {
-				writeAuthenticationError(response, http.StatusForbidden, "PERMISSION_DENIED")
-				return
-			}
-			ctx := admin.WithServiceSubject(request.Context(), claims.Subject)
-			next.ServeHTTP(response, request.WithContext(ctx))
-		})
+		return a.require(next, scope)
 	}
+}
+
+func (a *Authenticator) RequireAuthentication(next http.Handler) http.Handler {
+	return a.require(next, "")
+}
+
+func (a *Authenticator) require(next http.Handler, scope string) http.Handler {
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if a == nil || next == nil || !verifiedClientCertificate(request) {
+			writeAuthenticationError(response, request, http.StatusUnauthorized, "AUTHENTICATION_REQUIRED")
+			return
+		}
+		claims, err := a.authenticate(request)
+		if err != nil {
+			writeAuthenticationError(response, request, http.StatusUnauthorized, "AUTHENTICATION_REQUIRED")
+			return
+		}
+		if scope != "" {
+			if _, allowed := allowedServiceScopes[scope]; !allowed || !containsScope(claims.Scopes, scope) {
+				writeAuthenticationError(response, request, http.StatusForbidden, "PERMISSION_DENIED")
+				return
+			}
+		}
+		ctx := admin.WithServiceSubject(request.Context(), claims.Subject)
+		next.ServeHTTP(response, request.WithContext(ctx))
+	})
 }
 
 func (a *Authenticator) authenticate(request *http.Request) (serviceJWTClaims, error) {
@@ -219,9 +229,6 @@ func containsScope(scopes []string, required string) bool {
 	return false
 }
 
-func writeAuthenticationError(response http.ResponseWriter, status int, code string) {
-	response.Header().Set("Cache-Control", "no-store")
-	response.Header().Set("Content-Type", "application/json")
-	response.WriteHeader(status)
-	_, _ = response.Write([]byte(`{"error":{"code":"` + code + `"}}`))
+func writeAuthenticationError(response http.ResponseWriter, request *http.Request, status int, code string) {
+	writeErrorResponse(response, request, status, code)
 }
