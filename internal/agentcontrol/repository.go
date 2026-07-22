@@ -2081,14 +2081,16 @@ func insertPolicy(ctx context.Context, tx pgx.Tx, principal Principal, policy Po
 }
 
 type idempotencyResponse struct {
-	DefinitionID     uuid.UUID `json:"definition_id,omitempty"`
-	DraftID          uuid.UUID `json:"draft_id,omitempty"`
-	VersionID        uuid.UUID `json:"version_id,omitempty"`
-	InstallationID   uuid.UUID `json:"installation_id,omitempty"`
-	PolicySnapshotID uuid.UUID `json:"policy_snapshot_id,omitempty"`
-	CandidateID      uuid.UUID `json:"candidate_id,omitempty"`
-	ReviewID         uuid.UUID `json:"review_id,omitempty"`
-	SubmissionID     uuid.UUID `json:"submission_id,omitempty"`
+	DefinitionID      uuid.UUID `json:"definition_id,omitempty"`
+	DraftID           uuid.UUID `json:"draft_id,omitempty"`
+	VersionID         uuid.UUID `json:"version_id,omitempty"`
+	InstallationID    uuid.UUID `json:"installation_id,omitempty"`
+	PolicySnapshotID  uuid.UUID `json:"policy_snapshot_id,omitempty"`
+	CandidateID       uuid.UUID `json:"candidate_id,omitempty"`
+	ReviewID          uuid.UUID `json:"review_id,omitempty"`
+	SubmissionID      uuid.UUID `json:"submission_id,omitempty"`
+	ReleaseID         uuid.UUID `json:"release_id,omitempty"`
+	ReleaseRevisionID uuid.UUID `json:"release_revision_id,omitempty"`
 }
 
 func lockAndReadIdempotency(

@@ -865,6 +865,621 @@ func (r *PostgresRepository) GetPlatformVersion(
 	return value, true, nil
 }
 
+func (r *PostgresRepository) AppendOfficialReleaseRevision(
+	ctx context.Context,
+	command OfficialReleaseMutationRepositoryCommand,
+) (OfficialRelease, error) {
+	if r == nil || r.postgres == nil || !validOfficialReleaseMutationRepositoryCommand(command) {
+		return OfficialRelease{}, ErrInvalidRepositoryCommand
+	}
+	tx, err := r.postgres.Begin(ctx)
+	if err != nil {
+		return OfficialRelease{}, ErrServiceUnavailable
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	operation := "official_release_" + string(command.Action)
+	replayed, found, err := lockAndReadPlatformIdempotency(ctx, tx, command.PlatformID, operation, command.Idempotency)
+	if err != nil {
+		return OfficialRelease{}, err
+	}
+	if found {
+		if replayed.ReleaseID != command.ReleaseID || replayed.ReleaseRevisionID == uuid.Nil {
+			return OfficialRelease{}, ErrServiceUnavailable
+		}
+		value, loadErr := loadOfficialReleaseAtRevision(ctx, tx, command.PlatformID, replayed.ReleaseID, replayed.ReleaseRevisionID, false)
+		if loadErr != nil {
+			return OfficialRelease{}, loadErr
+		}
+		value.Replayed = true
+		return value, commitOfficialRelease(ctx, tx, value)
+	}
+	if err := requireActivePlatform(ctx, tx, command.PlatformID, true); err != nil {
+		return OfficialRelease{}, err
+	}
+	current, err := loadOfficialRelease(ctx, tx, command.PlatformID, command.ReleaseID, true)
+	if err != nil {
+		return OfficialRelease{}, err
+	}
+	if current.HeadRevision != command.ExpectedHeadRevision {
+		return OfficialRelease{}, ErrOfficialReleaseRevisionConflict
+	}
+
+	next, err := buildOfficialReleaseRevision(ctx, tx, current, command)
+	if err != nil {
+		return OfficialRelease{}, err
+	}
+	if err := insertOfficialReleaseRevision(ctx, tx, next); err != nil {
+		return OfficialRelease{}, err
+	}
+	if err := insertOfficialAudience(ctx, tx, next.ID, next.AllowlistedUserIDs); err != nil {
+		return OfficialRelease{}, err
+	}
+	result, err := tx.Exec(ctx, `
+		UPDATE official_releases
+		SET current_release_revision_id = $4, head_revision = $5, updated_at = $6
+		WHERE id = $1 AND platform_id = $2 AND current_release_revision_id = $3 AND head_revision = $7
+	`, current.ID, command.PlatformID, current.CurrentRevisionID, next.ID,
+		next.RevisionNumber, command.ChangedAt.UTC(), command.ExpectedHeadRevision)
+	if err != nil {
+		return OfficialRelease{}, ErrServiceUnavailable
+	}
+	if result.RowsAffected() != 1 {
+		return OfficialRelease{}, ErrOfficialReleaseRevisionConflict
+	}
+	if err := insertPlatformIdempotency(
+		ctx, tx, command.PlatformID, operation, command.Idempotency,
+		"official_release", command.ReleaseID,
+		idempotencyResponse{ReleaseID: command.ReleaseID, ReleaseRevisionID: next.ID}, command.ChangedAt,
+	); err != nil {
+		return OfficialRelease{}, err
+	}
+	metadata := map[string]string{
+		"release_id": command.ReleaseID.String(), "release_revision_id": next.ID.String(),
+		"release_revision": strconv.FormatInt(next.RevisionNumber, 10),
+		"agent_version_id": next.AgentVersionID.String(), "action": string(next.Action),
+		"state": string(next.State), "rollout_basis_points": strconv.Itoa(next.RolloutBasisPoints),
+		"audience_count":  strconv.Itoa(len(next.AllowlistedUserIDs)),
+		"audience_digest": digestArrayHex(officialAudienceDigest(next.AllowlistedUserIDs)),
+		"reason_code":     command.ReasonCode,
+	}
+	if command.TicketReference != "" {
+		metadata["ticket_reference"] = command.TicketReference
+	}
+	if command.ApprovalID != uuid.Nil {
+		metadata["approval_id"] = command.ApprovalID.String()
+	}
+	if err := recordPlatformAudit(
+		ctx, tx, command.Actor, command.PlatformID, command.Audit,
+		"official_release_"+string(command.Action), "official_release", command.ReleaseID,
+		command.ChangedAt, metadata,
+	); err != nil {
+		return OfficialRelease{}, err
+	}
+	current.CurrentRevisionID = next.ID
+	current.HeadRevision = next.RevisionNumber
+	current.CurrentRevision = next
+	current.UpdatedAt = command.ChangedAt.UTC()
+	return current, commitOfficialRelease(ctx, tx, current)
+}
+
+func (r *PostgresRepository) GetOfficialRelease(
+	ctx context.Context,
+	platformID uuid.UUID,
+	releaseID uuid.UUID,
+) (OfficialRelease, bool, error) {
+	if r == nil || r.postgres == nil || platformID == uuid.Nil || releaseID == uuid.Nil {
+		return OfficialRelease{}, false, ErrInvalidRepositoryCommand
+	}
+	value, err := loadOfficialRelease(ctx, r.postgres, platformID, releaseID, false)
+	if errors.Is(err, ErrNotFound) {
+		return OfficialRelease{}, false, nil
+	}
+	if err != nil {
+		return OfficialRelease{}, false, err
+	}
+	return value, true, nil
+}
+
+func (r *PostgresRepository) GetOfficialEligibility(
+	ctx context.Context,
+	platformID uuid.UUID,
+	releaseID uuid.UUID,
+	principal Principal,
+	eligibilityContext OfficialEligibilityContext,
+) (OfficialEligibilityRecord, bool, error) {
+	if r == nil || r.postgres == nil || platformID == uuid.Nil || releaseID == uuid.Nil ||
+		!validPrincipal(principal) || !validOfficialEligibilityContext(principal, eligibilityContext) {
+		return OfficialEligibilityRecord{}, false, ErrInvalidRepositoryCommand
+	}
+	release, err := loadOfficialRelease(ctx, r.postgres, platformID, releaseID, false)
+	if errors.Is(err, ErrNotFound) {
+		return OfficialEligibilityRecord{}, false, nil
+	}
+	if err != nil {
+		return OfficialEligibilityRecord{}, false, err
+	}
+	record := OfficialEligibilityRecord{Release: release, Revision: release.CurrentRevision}
+	if err := r.postgres.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM users user_account
+			JOIN devices device ON device.id = $2 AND device.user_id = user_account.id
+			JOIN personal_spaces personal_space ON personal_space.id = $3 AND personal_space.owner_user_id = user_account.id
+			WHERE user_account.id = $1 AND user_account.status = 'active'
+			  AND device.status = 'active' AND personal_space.status = 'active'
+		)
+	`, principal.UserID, principal.DeviceID, principal.PersonalSpaceID).Scan(&record.AccountDeviceActive); err != nil {
+		return OfficialEligibilityRecord{}, false, ErrServiceUnavailable
+	}
+	var platformStatus string
+	if err := r.postgres.QueryRow(ctx, `SELECT status FROM platforms WHERE id = $1`, platformID).Scan(&platformStatus); err != nil {
+		return OfficialEligibilityRecord{}, false, ErrServiceUnavailable
+	}
+	record.PlatformActive = platformStatus == "active"
+	policy, policyFound, err := loadLatestPlatformPolicy(ctx, r.postgres, platformID)
+	if err != nil || !policyFound {
+		return OfficialEligibilityRecord{}, false, ErrServiceUnavailable
+	}
+	policyDocument, err := decodePlatformPolicy(policy)
+	if err != nil {
+		return OfficialEligibilityRecord{}, false, err
+	}
+	for _, channel := range policyDocument.PermittedChannels {
+		if channel == eligibilityContext.Channel && release.Channel == channel {
+			record.ChannelEntitled = true
+			break
+		}
+	}
+	if err := authorizeOfficialProductContext(ctx, r.postgres, principal, eligibilityContext.Selector, &record); err != nil {
+		return OfficialEligibilityRecord{}, false, err
+	}
+	for _, userID := range release.CurrentRevision.AllowlistedUserIDs {
+		if userID == principal.UserID {
+			record.UserAllowlisted = true
+			break
+		}
+	}
+	record.Release.CurrentRevision.AllowlistedUserIDs = nil
+	record.Revision.AllowlistedUserIDs = nil
+	return record, true, nil
+}
+
+type officialReleaseQueryer interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
+const officialReleaseSelect = `
+	SELECT release.id, release.platform_id, release.definition_id, release.channel,
+	       release.current_release_revision_id, release.head_revision,
+	       release.created_at, release.updated_at,
+	       revision.id, revision.release_id, revision.revision_number,
+	       revision.agent_version_id, revision.state, revision.rollout_basis_points,
+	       revision.minimum_desktop_version, revision.bucket_algorithm_version,
+	       revision.rollout_key_id, revision.action, revision.previous_revision_id,
+	       revision.rollback_target_revision_id, revision.actor_admin_id,
+	       revision.actor_admin_role, revision.reason_code,
+	       COALESCE(revision.ticket_reference, ''), revision.created_at
+	FROM official_releases release
+	JOIN official_release_revisions revision
+	  ON revision.release_id = release.id
+`
+
+func loadOfficialRelease(
+	ctx context.Context,
+	queryer officialReleaseQueryer,
+	platformID uuid.UUID,
+	releaseID uuid.UUID,
+	forUpdate bool,
+) (OfficialRelease, error) {
+	query := officialReleaseSelect + `
+		 AND revision.id = release.current_release_revision_id
+		WHERE release.platform_id = $1 AND release.id = $2
+	`
+	if forUpdate {
+		query += ` FOR UPDATE OF release`
+	}
+	value, err := scanOfficialRelease(queryer.QueryRow(ctx, query, platformID, releaseID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return OfficialRelease{}, ErrNotFound
+	}
+	if err != nil {
+		return OfficialRelease{}, ErrServiceUnavailable
+	}
+	audience, err := loadOfficialAudience(ctx, queryer, value.CurrentRevision.ID)
+	if err != nil {
+		return OfficialRelease{}, err
+	}
+	value.CurrentRevision.AllowlistedUserIDs = audience
+	return value, nil
+}
+
+func loadOfficialReleaseAtRevision(
+	ctx context.Context,
+	queryer officialReleaseQueryer,
+	platformID uuid.UUID,
+	releaseID uuid.UUID,
+	revisionID uuid.UUID,
+	forUpdate bool,
+) (OfficialRelease, error) {
+	query := officialReleaseSelect + `
+		WHERE release.platform_id = $1 AND release.id = $2 AND revision.id = $3
+	`
+	if forUpdate {
+		query += ` FOR UPDATE OF release`
+	}
+	value, err := scanOfficialRelease(queryer.QueryRow(ctx, query, platformID, releaseID, revisionID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return OfficialRelease{}, ErrNotFound
+	}
+	if err != nil {
+		return OfficialRelease{}, ErrServiceUnavailable
+	}
+	audience, err := loadOfficialAudience(ctx, queryer, value.CurrentRevision.ID)
+	if err != nil {
+		return OfficialRelease{}, err
+	}
+	value.CurrentRevisionID = value.CurrentRevision.ID
+	value.HeadRevision = value.CurrentRevision.RevisionNumber
+	value.CurrentRevision.AllowlistedUserIDs = audience
+	return value, nil
+}
+
+func scanOfficialRelease(row rowScanner) (OfficialRelease, error) {
+	var value OfficialRelease
+	var previous, rollback pgtype.UUID
+	if err := row.Scan(
+		&value.ID, &value.PlatformID, &value.DefinitionID, &value.Channel,
+		&value.CurrentRevisionID, &value.HeadRevision, &value.CreatedAt, &value.UpdatedAt,
+		&value.CurrentRevision.ID, &value.CurrentRevision.ReleaseID,
+		&value.CurrentRevision.RevisionNumber, &value.CurrentRevision.AgentVersionID,
+		&value.CurrentRevision.State, &value.CurrentRevision.RolloutBasisPoints,
+		&value.CurrentRevision.MinimumDesktopVersion, &value.CurrentRevision.BucketAlgorithmVersion,
+		&value.CurrentRevision.RolloutKeyID, &value.CurrentRevision.Action,
+		&previous, &rollback, &value.CurrentRevision.ActorAdminID,
+		&value.CurrentRevision.ActorAdminRole, &value.CurrentRevision.ReasonCode,
+		&value.CurrentRevision.TicketReference, &value.CurrentRevision.CreatedAt,
+	); err != nil {
+		return OfficialRelease{}, err
+	}
+	if previous.Valid {
+		value.CurrentRevision.PreviousRevisionID = uuid.UUID(previous.Bytes)
+	}
+	if rollback.Valid {
+		value.CurrentRevision.RollbackTargetRevisionID = uuid.UUID(rollback.Bytes)
+	}
+	if !validStoredOfficialRelease(value) {
+		return OfficialRelease{}, ErrServiceUnavailable
+	}
+	value.CreatedAt = value.CreatedAt.UTC()
+	value.UpdatedAt = value.UpdatedAt.UTC()
+	value.CurrentRevision.CreatedAt = value.CurrentRevision.CreatedAt.UTC()
+	return value, nil
+}
+
+func loadOfficialAudience(
+	ctx context.Context,
+	queryer officialReleaseQueryer,
+	revisionID uuid.UUID,
+) ([]uuid.UUID, error) {
+	rows, err := queryer.Query(ctx, `
+		SELECT user_id
+		FROM official_release_audience_accounts
+		WHERE release_revision_id = $1
+		ORDER BY user_id
+	`, revisionID)
+	if err != nil {
+		return nil, ErrServiceUnavailable
+	}
+	defer rows.Close()
+	var result []uuid.UUID
+	for rows.Next() {
+		var userID uuid.UUID
+		if err := rows.Scan(&userID); err != nil || userID == uuid.Nil {
+			return nil, ErrServiceUnavailable
+		}
+		result = append(result, userID)
+	}
+	if rows.Err() != nil {
+		return nil, ErrServiceUnavailable
+	}
+	return result, nil
+}
+
+func buildOfficialReleaseRevision(
+	ctx context.Context,
+	tx pgx.Tx,
+	current OfficialRelease,
+	command OfficialReleaseMutationRepositoryCommand,
+) (OfficialReleaseRevision, error) {
+	next := OfficialReleaseRevision{
+		ID: command.RevisionID, ReleaseID: current.ID, RevisionNumber: current.HeadRevision + 1,
+		Action: command.Action, PreviousRevisionID: current.CurrentRevision.ID,
+		ActorAdminID: command.Actor.AdminID, ActorAdminRole: command.Actor.Role,
+		ReasonCode: command.ReasonCode, TicketReference: command.TicketReference,
+		CreatedAt: command.ChangedAt.UTC(),
+	}
+	switch command.Action {
+	case OfficialReleaseActionActivate:
+		if err := requireApprovedOfficialVersion(ctx, tx, current.PlatformID, current.DefinitionID, command.VersionID); err != nil {
+			return OfficialReleaseRevision{}, err
+		}
+		if err := requireActiveOfficialAudience(ctx, tx, command.AllowlistedUserIDs); err != nil {
+			return OfficialReleaseRevision{}, err
+		}
+		next.AgentVersionID = command.VersionID
+		next.State = OfficialReleaseStateActive
+		next.RolloutBasisPoints = command.RolloutBasisPoints
+		next.MinimumDesktopVersion = command.MinimumDesktopVersion
+		next.BucketAlgorithmVersion = officialBucketAlgorithmV1
+		next.RolloutKeyID = command.RolloutKeyID
+		next.AllowlistedUserIDs = append([]uuid.UUID(nil), command.AllowlistedUserIDs...)
+	case OfficialReleaseActionRolloutUpdate:
+		if current.CurrentRevision.State != OfficialReleaseStateActive {
+			return OfficialReleaseRevision{}, ErrOfficialReleasePaused
+		}
+		if err := requireActiveOfficialAudience(ctx, tx, command.AllowlistedUserIDs); err != nil {
+			return OfficialReleaseRevision{}, err
+		}
+		next.AgentVersionID = current.CurrentRevision.AgentVersionID
+		next.State = OfficialReleaseStateActive
+		next.RolloutBasisPoints = command.RolloutBasisPoints
+		next.MinimumDesktopVersion = command.MinimumDesktopVersion
+		next.BucketAlgorithmVersion = officialBucketAlgorithmV1
+		next.RolloutKeyID = command.RolloutKeyID
+		next.AllowlistedUserIDs = append([]uuid.UUID(nil), command.AllowlistedUserIDs...)
+	case OfficialReleaseActionPause:
+		if current.CurrentRevision.State != OfficialReleaseStateActive {
+			return OfficialReleaseRevision{}, ErrOfficialRolloutInvalid
+		}
+		next = copyOfficialReleaseRevision(next, current.CurrentRevision)
+		next.State = OfficialReleaseStatePaused
+	case OfficialReleaseActionResume:
+		if current.CurrentRevision.State != OfficialReleaseStatePaused {
+			return OfficialReleaseRevision{}, ErrOfficialRolloutInvalid
+		}
+		next = copyOfficialReleaseRevision(next, current.CurrentRevision)
+		next.State = OfficialReleaseStateActive
+	case OfficialReleaseActionRollback:
+		target, err := loadOfficialReleaseAtRevision(
+			ctx, tx, current.PlatformID, current.ID, command.TargetReleaseRevisionID, false,
+		)
+		if err != nil {
+			return OfficialReleaseRevision{}, ErrOfficialRolloutInvalid
+		}
+		if target.CurrentRevision.RevisionNumber >= current.HeadRevision ||
+			target.CurrentRevision.AgentVersionID != command.VersionID {
+			return OfficialReleaseRevision{}, ErrOfficialRolloutInvalid
+		}
+		if err := requireApprovedOfficialVersion(ctx, tx, current.PlatformID, current.DefinitionID, command.VersionID); err != nil {
+			return OfficialReleaseRevision{}, err
+		}
+		next = copyOfficialReleaseRevision(next, target.CurrentRevision)
+		next.State = current.CurrentRevision.State
+		next.RollbackTargetRevisionID = target.CurrentRevision.ID
+	default:
+		return OfficialReleaseRevision{}, ErrOfficialRolloutInvalid
+	}
+	return next, nil
+}
+
+func copyOfficialReleaseRevision(
+	destination OfficialReleaseRevision,
+	source OfficialReleaseRevision,
+) OfficialReleaseRevision {
+	destination.AgentVersionID = source.AgentVersionID
+	destination.RolloutBasisPoints = source.RolloutBasisPoints
+	destination.MinimumDesktopVersion = source.MinimumDesktopVersion
+	destination.BucketAlgorithmVersion = source.BucketAlgorithmVersion
+	destination.RolloutKeyID = source.RolloutKeyID
+	destination.AllowlistedUserIDs = append([]uuid.UUID(nil), source.AllowlistedUserIDs...)
+	return destination
+}
+
+func requireApprovedOfficialVersion(
+	ctx context.Context,
+	tx pgx.Tx,
+	platformID uuid.UUID,
+	definitionID uuid.UUID,
+	versionID uuid.UUID,
+) error {
+	var exists bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM agent_versions version
+			JOIN platform_agent_submissions submission
+			  ON submission.id = version.platform_submission_id
+			 AND submission.platform_id = version.platform_id
+			WHERE version.id = $1 AND version.definition_id = $2
+			  AND version.owner_scope = 'PLATFORM' AND version.platform_id = $3
+			  AND submission.status = 'approved'
+		)
+	`, versionID, definitionID, platformID).Scan(&exists); err != nil {
+		return ErrServiceUnavailable
+	}
+	if !exists {
+		return ErrOfficialRolloutInvalid
+	}
+	return nil
+}
+
+func requireActiveOfficialAudience(ctx context.Context, tx pgx.Tx, audience []uuid.UUID) error {
+	if len(audience) == 0 {
+		return nil
+	}
+	var count int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM users WHERE status = 'active' AND id = ANY($1::uuid[])
+	`, audience).Scan(&count); err != nil {
+		return ErrServiceUnavailable
+	}
+	if count != len(audience) {
+		return ErrOfficialRolloutInvalid
+	}
+	return nil
+}
+
+func insertOfficialReleaseRevision(
+	ctx context.Context,
+	tx pgx.Tx,
+	value OfficialReleaseRevision,
+) error {
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO official_release_revisions (
+			id, release_id, revision_number, agent_version_id, state,
+			rollout_basis_points, minimum_desktop_version, bucket_algorithm_version,
+			rollout_key_id, action, previous_revision_id, rollback_target_revision_id,
+			actor_admin_id, actor_admin_role, reason_code, ticket_reference, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NULLIF($16, ''), $17)
+	`, value.ID, value.ReleaseID, value.RevisionNumber, value.AgentVersionID, value.State,
+		value.RolloutBasisPoints, value.MinimumDesktopVersion, value.BucketAlgorithmVersion,
+		value.RolloutKeyID, value.Action, value.PreviousRevisionID, nullUUID(value.RollbackTargetRevisionID),
+		value.ActorAdminID, value.ActorAdminRole, value.ReasonCode, value.TicketReference, value.CreatedAt.UTC()); err != nil {
+		return ErrServiceUnavailable
+	}
+	return nil
+}
+
+func insertOfficialAudience(ctx context.Context, tx pgx.Tx, revisionID uuid.UUID, audience []uuid.UUID) error {
+	for _, userID := range audience {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO official_release_audience_accounts (release_revision_id, user_id)
+			VALUES ($1, $2)
+		`, revisionID, userID); err != nil {
+			return ErrServiceUnavailable
+		}
+	}
+	return nil
+}
+
+func authorizeOfficialProductContext(
+	ctx context.Context,
+	queryer queryRower,
+	principal Principal,
+	selector OfficialProductSelector,
+	record *OfficialEligibilityRecord,
+) error {
+	switch selector.Scope {
+	case OwnerScopeUser:
+		record.ContextAuthorized = record.AccountDeviceActive && selector.PersonalSpaceID == principal.PersonalSpaceID
+		record.ContextPolicyAllowed = record.ContextAuthorized
+		return nil
+	case OwnerScopeWorkspace:
+		if err := queryer.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM workspaces workspace
+				JOIN workspace_memberships membership ON membership.workspace_id = workspace.id
+				WHERE workspace.id = $1 AND membership.user_id = $2 AND workspace.status = 'active'
+			)
+		`, selector.WorkspaceID, principal.UserID).Scan(&record.ContextAuthorized); err != nil {
+			return ErrServiceUnavailable
+		}
+		record.ContextPolicyAllowed = record.ContextAuthorized
+		return nil
+	case OwnerScopeOrganization:
+		var installation string
+		err := queryer.QueryRow(ctx, `
+			SELECT policy.policy_document #>> '{official_agents,installation}'
+			FROM organizations organization
+			JOIN organization_memberships membership
+			  ON membership.organization_id = organization.id AND membership.user_id = $2
+			JOIN organization_policy_snapshots policy
+			  ON policy.organization_id = organization.id AND policy.id = organization.current_policy_snapshot_id
+			WHERE organization.id = $1 AND organization.status = 'active'
+		`, selector.OrganizationID, principal.UserID).Scan(&installation)
+		if errors.Is(err, pgx.ErrNoRows) {
+			record.ContextAuthorized = false
+			record.ContextPolicyAllowed = false
+			return nil
+		}
+		if err != nil {
+			return ErrServiceUnavailable
+		}
+		record.ContextAuthorized = true
+		record.ContextPolicyAllowed = installation == "allowed"
+		return nil
+	default:
+		return ErrInvalidRepositoryCommand
+	}
+}
+
+func validOfficialReleaseMutationRepositoryCommand(command OfficialReleaseMutationRepositoryCommand) bool {
+	if command.RevisionID == uuid.Nil || command.PlatformID == uuid.Nil || command.ReleaseID == uuid.Nil ||
+		command.ExpectedHeadRevision <= 0 ||
+		!platformReasonPattern.MatchString(command.ReasonCode) ||
+		(command.TicketReference != "" && !validPlatformTicketReference(command.TicketReference)) ||
+		!validIdempotency(command.Idempotency, command.ChangedAt) || !validAuditEvidence(command.Audit) ||
+		command.ChangedAt.IsZero() {
+		return false
+	}
+	audience, ok := canonicalOfficialAudience(command.AllowlistedUserIDs)
+	if !ok || len(audience) != len(command.AllowlistedUserIDs) {
+		return false
+	}
+	for index := range audience {
+		if audience[index] != command.AllowlistedUserIDs[index] {
+			return false
+		}
+	}
+	validRollout := command.RolloutBasisPoints >= 0 && command.RolloutBasisPoints <= 10000 &&
+		command.MinimumDesktopVersion != "" && platformRolloutKeyPattern.MatchString(command.RolloutKeyID)
+	if validRollout {
+		_, _, validRolloutErr := parseSemanticVersion(command.MinimumDesktopVersion)
+		validRollout = validRolloutErr == nil
+	}
+	switch command.Action {
+	case OfficialReleaseActionActivate:
+		return validPlatformActor(command.Actor, platformActionReleaseWrite) && command.VersionID != uuid.Nil &&
+			command.TargetReleaseRevisionID == uuid.Nil && command.ApprovalID == uuid.Nil && validRollout
+	case OfficialReleaseActionRolloutUpdate:
+		return validPlatformActor(command.Actor, platformActionReleaseWrite) && command.VersionID == uuid.Nil &&
+			command.TargetReleaseRevisionID == uuid.Nil && command.ApprovalID == uuid.Nil && validRollout
+	case OfficialReleaseActionPause, OfficialReleaseActionResume:
+		return validPlatformActor(command.Actor, platformActionReleaseWrite) && command.VersionID == uuid.Nil &&
+			command.TargetReleaseRevisionID == uuid.Nil && command.ApprovalID == uuid.Nil &&
+			command.RolloutBasisPoints == 0 && command.MinimumDesktopVersion == "" && command.RolloutKeyID == "" && len(command.AllowlistedUserIDs) == 0
+	case OfficialReleaseActionRollback:
+		return validPlatformActor(command.Actor, platformActionRollback) && command.VersionID != uuid.Nil &&
+			command.TargetReleaseRevisionID != uuid.Nil && command.ApprovalID != uuid.Nil &&
+			command.RolloutBasisPoints == 0 && command.MinimumDesktopVersion == "" && command.RolloutKeyID == "" && len(command.AllowlistedUserIDs) == 0
+	default:
+		return false
+	}
+}
+
+func validStoredOfficialRelease(value OfficialRelease) bool {
+	revision := value.CurrentRevision
+	if value.ID == uuid.Nil || value.PlatformID == uuid.Nil || value.DefinitionID == uuid.Nil ||
+		(value.Channel != OfficialChannelInternal && value.Channel != OfficialChannelStable) ||
+		value.CurrentRevisionID == uuid.Nil || value.HeadRevision <= 0 || value.CreatedAt.IsZero() || value.UpdatedAt.Before(value.CreatedAt) ||
+		revision.ID == uuid.Nil || revision.ReleaseID != value.ID || revision.RevisionNumber <= 0 ||
+		revision.AgentVersionID == uuid.Nil || revision.RolloutBasisPoints < 0 || revision.RolloutBasisPoints > 10000 ||
+		revision.BucketAlgorithmVersion != officialBucketAlgorithmV1 || !platformRolloutKeyPattern.MatchString(revision.RolloutKeyID) ||
+		!platformReasonPattern.MatchString(revision.ReasonCode) || revision.ActorAdminID == uuid.Nil || revision.CreatedAt.IsZero() {
+		return false
+	}
+	if _, _, err := parseSemanticVersion(revision.MinimumDesktopVersion); err != nil {
+		return false
+	}
+	if revision.ID == value.CurrentRevisionID && revision.RevisionNumber != value.HeadRevision {
+		return false
+	}
+	if revision.Action == OfficialReleaseActionInitial {
+		return revision.RevisionNumber == 1 && revision.State == OfficialReleaseStatePaused && revision.PreviousRevisionID == uuid.Nil
+	}
+	return revision.RevisionNumber > 1 && revision.PreviousRevisionID != uuid.Nil &&
+		(revision.State == OfficialReleaseStateActive || revision.State == OfficialReleaseStatePaused)
+}
+
+func commitOfficialRelease(ctx context.Context, tx pgx.Tx, value OfficialRelease) error {
+	if err := commitTransaction(ctx, tx); err != nil {
+		return err
+	}
+	return nil
+}
+
 const platformDefinitionSelect = `
 	SELECT definition.id, definition.display_name, COALESCE(definition.icon_media_type, ''),
 	       definition.icon_data, definition.status, definition.latest_version_id,

@@ -3,7 +3,9 @@ package agentcontrol
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"regexp"
@@ -37,6 +39,7 @@ const (
 	platformActionDraftWrite   platformAction = "draft_write"
 	platformActionReview       platformAction = "review"
 	platformActionReleaseWrite platformAction = "release_write"
+	platformActionRollback     platformAction = "rollback"
 )
 
 func platformRoleAllowed(role string, action platformAction) bool {
@@ -51,6 +54,8 @@ func platformRoleAllowed(role string, action platformAction) bool {
 		return role == "super_admin"
 	case platformActionReleaseWrite:
 		return role == "operator"
+	case platformActionRollback:
+		return role == "super_admin"
 	default:
 		return false
 	}
@@ -485,6 +490,9 @@ type PlatformRepository interface {
 	GetPlatformSubmission(context.Context, uuid.UUID, uuid.UUID) (PlatformAgentSubmission, bool, error)
 	ListPlatformVersions(context.Context, uuid.UUID, PageRequest) (PlatformVersionPage, error)
 	GetPlatformVersion(context.Context, uuid.UUID, uuid.UUID) (Version, bool, error)
+	AppendOfficialReleaseRevision(context.Context, OfficialReleaseMutationRepositoryCommand) (OfficialRelease, error)
+	GetOfficialRelease(context.Context, uuid.UUID, uuid.UUID) (OfficialRelease, bool, error)
+	GetOfficialEligibility(context.Context, uuid.UUID, uuid.UUID, Principal, OfficialEligibilityContext) (OfficialEligibilityRecord, bool, error)
 }
 
 type PlatformService interface {
@@ -503,6 +511,12 @@ type PlatformService interface {
 	GetSubmission(context.Context, PlatformAdminActor, uuid.UUID) (PlatformAgentSubmission, error)
 	ListVersions(context.Context, PlatformAdminActor, PageRequest) (PlatformVersionPage, error)
 	GetVersion(context.Context, PlatformAdminActor, uuid.UUID) (Version, error)
+	ActivateOfficialRelease(context.Context, PlatformAdminActor, ActivateOfficialReleaseCommand) (OfficialRelease, error)
+	UpdateOfficialRollout(context.Context, PlatformAdminActor, UpdateOfficialRolloutCommand) (OfficialRelease, error)
+	PauseOfficialRelease(context.Context, PlatformAdminActor, ChangeOfficialReleaseStateCommand) (OfficialRelease, error)
+	ResumeOfficialRelease(context.Context, PlatformAdminActor, ChangeOfficialReleaseStateCommand) (OfficialRelease, error)
+	RollbackOfficialRelease(context.Context, PlatformAdminActor, RollbackOfficialReleaseCommand) (OfficialRelease, error)
+	ResolveOfficialRelease(context.Context, Principal, uuid.UUID, OfficialEligibilityContext) (OfficialManagedTarget, error)
 }
 
 type PlatformInitializer interface {
@@ -517,6 +531,7 @@ type PlatformServiceConfig struct {
 	PlatformKey         string
 	PlatformDisplayName string
 	RolloutKeyID        string
+	RolloutKeys         map[string][]byte
 	Clock               func() time.Time
 	NewID               func() uuid.UUID
 }
@@ -528,6 +543,7 @@ type platformService struct {
 	platformKey         string
 	platformDisplayName string
 	rolloutKeyID        string
+	rolloutKeys         map[string][]byte
 	clock               func() time.Time
 	newID               func() uuid.UUID
 }
@@ -538,6 +554,13 @@ func NewPlatformService(config PlatformServiceConfig) (PlatformInitializer, erro
 		!validPlatformDisplayName(config.PlatformDisplayName) ||
 		!platformRolloutKeyPattern.MatchString(config.RolloutKeyID) {
 		return nil, ErrInvalidRequest
+	}
+	rolloutKeys := cloneRolloutKeys(config.RolloutKeys)
+	if len(rolloutKeys) > 0 {
+		active, exists := rolloutKeys[config.RolloutKeyID]
+		if !exists || len(active) != sha256.Size {
+			return nil, ErrInvalidRequest
+		}
 	}
 	clock := config.Clock
 	if clock == nil {
@@ -551,7 +574,8 @@ func NewPlatformService(config PlatformServiceConfig) (PlatformInitializer, erro
 		repository: config.Repository, signer: config.Signer,
 		platformID: config.PlatformID, platformKey: config.PlatformKey,
 		platformDisplayName: config.PlatformDisplayName, rolloutKeyID: config.RolloutKeyID,
-		clock: clock, newID: newID,
+		rolloutKeys: rolloutKeys,
+		clock:       clock, newID: newID,
 	}, nil
 }
 
@@ -1002,6 +1026,212 @@ func (s *platformService) GetVersion(ctx context.Context, actor PlatformAdminAct
 	return cloneVersion(value), nil
 }
 
+func (s *platformService) ActivateOfficialRelease(
+	ctx context.Context,
+	actor PlatformAdminActor,
+	request ActivateOfficialReleaseCommand,
+) (OfficialRelease, error) {
+	if !s.authorized(actor, platformActionReleaseWrite) {
+		return OfficialRelease{}, platformRequestError(actor, platformActionReleaseWrite)
+	}
+	minimum, _, err := parseSemanticVersion(request.MinimumDesktopVersion)
+	if err != nil || request.ReleaseID == uuid.Nil || request.VersionID == uuid.Nil || request.ExpectedHeadRevision <= 0 ||
+		request.RolloutBasisPoints < 0 || request.RolloutBasisPoints > DefaultPlatformAgentPolicyV1().MaximumRolloutBasisPts ||
+		!validPlatformOperationEvidence(request.Evidence) {
+		return OfficialRelease{}, ErrOfficialRolloutInvalid
+	}
+	audience, ok := canonicalOfficialAudience(request.AllowlistedUserIDs)
+	if !ok {
+		return OfficialRelease{}, ErrOfficialRolloutInvalid
+	}
+	return s.appendOfficialRelease(ctx, actor, OfficialReleaseMutationRepositoryCommand{
+		PlatformID: s.platformID, ReleaseID: request.ReleaseID,
+		ExpectedHeadRevision: request.ExpectedHeadRevision, Action: OfficialReleaseActionActivate,
+		VersionID: request.VersionID, RolloutBasisPoints: request.RolloutBasisPoints,
+		MinimumDesktopVersion: minimum, RolloutKeyID: s.rolloutKeyID,
+		AllowlistedUserIDs: audience, ReasonCode: request.Evidence.ReasonCode,
+		TicketReference: request.Evidence.TicketReference,
+	}, request.Evidence)
+}
+
+func (s *platformService) UpdateOfficialRollout(
+	ctx context.Context,
+	actor PlatformAdminActor,
+	request UpdateOfficialRolloutCommand,
+) (OfficialRelease, error) {
+	if !s.authorized(actor, platformActionReleaseWrite) {
+		return OfficialRelease{}, platformRequestError(actor, platformActionReleaseWrite)
+	}
+	minimum, _, err := parseSemanticVersion(request.MinimumDesktopVersion)
+	if err != nil || request.ReleaseID == uuid.Nil || request.ExpectedHeadRevision <= 0 ||
+		request.RolloutBasisPoints < 0 || request.RolloutBasisPoints > DefaultPlatformAgentPolicyV1().MaximumRolloutBasisPts ||
+		!validPlatformOperationEvidence(request.Evidence) {
+		return OfficialRelease{}, ErrOfficialRolloutInvalid
+	}
+	audience, ok := canonicalOfficialAudience(request.AllowlistedUserIDs)
+	if !ok {
+		return OfficialRelease{}, ErrOfficialRolloutInvalid
+	}
+	return s.appendOfficialRelease(ctx, actor, OfficialReleaseMutationRepositoryCommand{
+		PlatformID: s.platformID, ReleaseID: request.ReleaseID,
+		ExpectedHeadRevision: request.ExpectedHeadRevision, Action: OfficialReleaseActionRolloutUpdate,
+		RolloutBasisPoints: request.RolloutBasisPoints, MinimumDesktopVersion: minimum,
+		RolloutKeyID: s.rolloutKeyID, AllowlistedUserIDs: audience,
+		ReasonCode: request.Evidence.ReasonCode, TicketReference: request.Evidence.TicketReference,
+	}, request.Evidence)
+}
+
+func (s *platformService) PauseOfficialRelease(
+	ctx context.Context,
+	actor PlatformAdminActor,
+	request ChangeOfficialReleaseStateCommand,
+) (OfficialRelease, error) {
+	return s.changeOfficialReleaseState(ctx, actor, request, OfficialReleaseActionPause)
+}
+
+func (s *platformService) ResumeOfficialRelease(
+	ctx context.Context,
+	actor PlatformAdminActor,
+	request ChangeOfficialReleaseStateCommand,
+) (OfficialRelease, error) {
+	return s.changeOfficialReleaseState(ctx, actor, request, OfficialReleaseActionResume)
+}
+
+func (s *platformService) changeOfficialReleaseState(
+	ctx context.Context,
+	actor PlatformAdminActor,
+	request ChangeOfficialReleaseStateCommand,
+	action OfficialReleaseAction,
+) (OfficialRelease, error) {
+	if !s.authorized(actor, platformActionReleaseWrite) {
+		return OfficialRelease{}, platformRequestError(actor, platformActionReleaseWrite)
+	}
+	if request.ReleaseID == uuid.Nil || request.ExpectedHeadRevision <= 0 || !validPlatformOperationEvidence(request.Evidence) ||
+		(action != OfficialReleaseActionPause && action != OfficialReleaseActionResume) {
+		return OfficialRelease{}, ErrOfficialRolloutInvalid
+	}
+	return s.appendOfficialRelease(ctx, actor, OfficialReleaseMutationRepositoryCommand{
+		PlatformID: s.platformID, ReleaseID: request.ReleaseID,
+		ExpectedHeadRevision: request.ExpectedHeadRevision, Action: action,
+		ReasonCode: request.Evidence.ReasonCode, TicketReference: request.Evidence.TicketReference,
+	}, request.Evidence)
+}
+
+func (s *platformService) RollbackOfficialRelease(
+	ctx context.Context,
+	actor PlatformAdminActor,
+	request RollbackOfficialReleaseCommand,
+) (OfficialRelease, error) {
+	if !s.authorized(actor, platformActionRollback) {
+		return OfficialRelease{}, platformRequestError(actor, platformActionRollback)
+	}
+	if request.ReleaseID == uuid.Nil || request.TargetVersionID == uuid.Nil || request.TargetReleaseRevisionID == uuid.Nil ||
+		request.ApprovalID == uuid.Nil || request.ExpectedHeadRevision <= 0 || !validPlatformOperationEvidence(request.Evidence) {
+		return OfficialRelease{}, ErrOfficialRolloutInvalid
+	}
+	return s.appendOfficialRelease(ctx, actor, OfficialReleaseMutationRepositoryCommand{
+		PlatformID: s.platformID, ReleaseID: request.ReleaseID,
+		ExpectedHeadRevision: request.ExpectedHeadRevision, Action: OfficialReleaseActionRollback,
+		VersionID: request.TargetVersionID, TargetReleaseRevisionID: request.TargetReleaseRevisionID,
+		ApprovalID: request.ApprovalID, ReasonCode: request.Evidence.ReasonCode,
+		TicketReference: request.Evidence.TicketReference,
+	}, request.Evidence)
+}
+
+func (s *platformService) appendOfficialRelease(
+	ctx context.Context,
+	actor PlatformAdminActor,
+	command OfficialReleaseMutationRepositoryCommand,
+	evidence PlatformOperationEvidence,
+) (OfficialRelease, error) {
+	if s == nil || len(s.rolloutKeys) == 0 {
+		return OfficialRelease{}, ErrCloudUnavailable
+	}
+	ids, ok := s.ids(3)
+	if !ok {
+		return OfficialRelease{}, ErrServiceUnavailable
+	}
+	command.RevisionID = ids[0]
+	command.Actor = actor
+	command.ChangedAt = s.clock().UTC()
+	requestHash, err := officialReleaseRequestHash(command)
+	if err != nil {
+		return OfficialRelease{}, ErrServiceUnavailable
+	}
+	command.Idempotency = newPlatformIdempotency(ids[1], evidence.IdempotencyKey, requestHash, command.ChangedAt)
+	command.Audit = AuditEvidence{EventID: ids[2], RequestID: actor.RequestID}
+	value, err := s.repository.AppendOfficialReleaseRevision(ctx, command)
+	return cloneOfficialRelease(value), err
+}
+
+func (s *platformService) ResolveOfficialRelease(
+	ctx context.Context,
+	principal Principal,
+	releaseID uuid.UUID,
+	eligibilityContext OfficialEligibilityContext,
+) (OfficialManagedTarget, error) {
+	if s == nil || !validPrincipal(principal) || releaseID == uuid.Nil ||
+		!validOfficialEligibilityContext(principal, eligibilityContext) {
+		return OfficialManagedTarget{}, ErrInvalidRequest
+	}
+	record, found, err := s.repository.GetOfficialEligibility(
+		ctx, s.platformID, releaseID, principal, eligibilityContext,
+	)
+	if err != nil {
+		return OfficialManagedTarget{}, err
+	}
+	if !found || !record.AccountDeviceActive {
+		return OfficialManagedTarget{}, ErrOfficialAgentNotEligible
+	}
+	if !record.PlatformActive || !record.ChannelEntitled {
+		return OfficialManagedTarget{}, ErrOfficialAgentNotEligible
+	}
+	if record.Release.ID != releaseID || record.Release.PlatformID != s.platformID || record.Release.DefinitionID == uuid.Nil ||
+		record.Release.Channel != eligibilityContext.Channel || record.Release.CurrentRevisionID != record.Revision.ID ||
+		record.Release.HeadRevision != record.Revision.RevisionNumber || record.Revision.ReleaseID != releaseID ||
+		record.Revision.AgentVersionID == uuid.Nil || record.Revision.BucketAlgorithmVersion != officialBucketAlgorithmV1 ||
+		record.Revision.RolloutBasisPoints < 0 || record.Revision.RolloutBasisPoints > 10000 {
+		return OfficialManagedTarget{}, ErrCloudUnavailable
+	}
+	if record.Revision.State != OfficialReleaseStateActive {
+		if record.Revision.State == OfficialReleaseStatePaused {
+			return OfficialManagedTarget{}, ErrOfficialReleasePaused
+		}
+		return OfficialManagedTarget{}, ErrCloudUnavailable
+	}
+	_, desktopVersion, desktopErr := parseSemanticVersion(eligibilityContext.DesktopVersion)
+	_, minimumVersion, minimumErr := parseSemanticVersion(record.Revision.MinimumDesktopVersion)
+	if desktopErr != nil {
+		return OfficialManagedTarget{}, ErrInvalidRequest
+	}
+	if minimumErr != nil {
+		return OfficialManagedTarget{}, ErrCloudUnavailable
+	}
+	if compareSemanticVersion(desktopVersion, minimumVersion) < 0 {
+		return OfficialManagedTarget{}, ErrOfficialClientVersionUnsupported
+	}
+	if !record.ContextAuthorized {
+		return OfficialManagedTarget{}, ErrOfficialAgentNotEligible
+	}
+	if !record.ContextPolicyAllowed {
+		return OfficialManagedTarget{}, ErrOfficialInstallationPolicyBlocked
+	}
+	key, exists := s.rolloutKeys[record.Revision.RolloutKeyID]
+	if !exists || len(key) != sha256.Size {
+		return OfficialManagedTarget{}, ErrCloudUnavailable
+	}
+	if !record.UserAllowlisted && officialBucket(
+		key, record.Revision.BucketAlgorithmVersion, releaseID, principal.UserID,
+	) >= record.Revision.RolloutBasisPoints {
+		return OfficialManagedTarget{}, ErrOfficialAgentNotEligible
+	}
+	return OfficialManagedTarget{
+		ReleaseID: releaseID, ReleaseRevisionID: record.Revision.ID,
+		DefinitionID: record.Release.DefinitionID, VersionID: record.Revision.AgentVersionID,
+		Channel: record.Release.Channel, HeadRevision: record.Release.HeadRevision,
+	}, nil
+}
+
 func (s *platformService) authorized(actor PlatformAdminActor, action platformAction) bool {
 	return s != nil && actor.AdminID != uuid.Nil && validRequestID(actor.RequestID) && platformRoleAllowed(actor.Role, action)
 }
@@ -1065,6 +1295,120 @@ func platformTerminalRequestHash(operation string, platformID uuid.UUID, actor P
 		ExpectedRevision int64  `json:"expected_revision"`
 		AdminID          string `json:"admin_id"`
 	}{operation, platformID.String(), request.SubmissionID.String(), request.ExpectedRevision, actor.AdminID.String()})
+}
+
+func officialReleaseRequestHash(command OfficialReleaseMutationRepositoryCommand) ([sha256.Size]byte, error) {
+	return hashRequest(struct {
+		Operation               OfficialReleaseAction `json:"operation"`
+		PlatformID              string                `json:"platform_id"`
+		ReleaseID               string                `json:"release_id"`
+		ExpectedHeadRevision    int64                 `json:"expected_head_revision"`
+		AdminID                 string                `json:"admin_id"`
+		VersionID               string                `json:"version_id,omitempty"`
+		TargetReleaseRevisionID string                `json:"target_release_revision_id,omitempty"`
+		ApprovalID              string                `json:"approval_id,omitempty"`
+		RolloutBasisPoints      int                   `json:"rollout_basis_points,omitempty"`
+		MinimumDesktopVersion   string                `json:"minimum_desktop_version,omitempty"`
+		RolloutKeyID            string                `json:"rollout_key_id,omitempty"`
+		AudienceDigest          string                `json:"audience_digest"`
+		ReasonCode              string                `json:"reason_code"`
+		TicketReference         string                `json:"ticket_reference,omitempty"`
+	}{
+		Operation: command.Action, PlatformID: command.PlatformID.String(), ReleaseID: command.ReleaseID.String(),
+		ExpectedHeadRevision: command.ExpectedHeadRevision, AdminID: command.Actor.AdminID.String(),
+		VersionID: command.VersionID.String(), TargetReleaseRevisionID: command.TargetReleaseRevisionID.String(),
+		ApprovalID: command.ApprovalID.String(), RolloutBasisPoints: command.RolloutBasisPoints,
+		MinimumDesktopVersion: command.MinimumDesktopVersion, RolloutKeyID: command.RolloutKeyID,
+		AudienceDigest: digestArrayHex(officialAudienceDigest(command.AllowlistedUserIDs)),
+		ReasonCode:     command.ReasonCode, TicketReference: command.TicketReference,
+	})
+}
+
+func officialBucket(key []byte, algorithmVersion string, releaseID uuid.UUID, userID uuid.UUID) int {
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte(algorithmVersion))
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write([]byte(releaseID.String()))
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write([]byte(userID.String()))
+	digest := mac.Sum(nil)
+	return int(binary.BigEndian.Uint64(digest[:8]) % 10000)
+}
+
+func canonicalOfficialAudience(input []uuid.UUID) ([]uuid.UUID, bool) {
+	if len(input) > 10000 {
+		return nil, false
+	}
+	result := append([]uuid.UUID(nil), input...)
+	for _, userID := range result {
+		if userID == uuid.Nil {
+			return nil, false
+		}
+	}
+	slices.SortFunc(result, func(left, right uuid.UUID) int {
+		return bytes.Compare(left[:], right[:])
+	})
+	result = slices.Compact(result)
+	return result, true
+}
+
+func officialAudienceDigest(input []uuid.UUID) [sha256.Size]byte {
+	hash := sha256.New()
+	for _, userID := range input {
+		_, _ = hash.Write([]byte(userID.String()))
+		_, _ = hash.Write([]byte{0})
+	}
+	var result [sha256.Size]byte
+	copy(result[:], hash.Sum(nil))
+	return result
+}
+
+func validPlatformOperationEvidence(value PlatformOperationEvidence) bool {
+	return platformReasonPattern.MatchString(value.ReasonCode) && validIdempotencyKey(value.IdempotencyKey) &&
+		(value.TicketReference == "" || validPlatformTicketReference(value.TicketReference))
+}
+
+func validPlatformTicketReference(value string) bool {
+	return value == strings.TrimSpace(value) && utf8.ValidString(value) && len([]rune(value)) <= 128 &&
+		strings.IndexFunc(value, unicode.IsControl) < 0
+}
+
+func validOfficialEligibilityContext(principal Principal, value OfficialEligibilityContext) bool {
+	if value.Channel != OfficialChannelInternal && value.Channel != OfficialChannelStable {
+		return false
+	}
+	if _, _, err := parseSemanticVersion(value.DesktopVersion); err != nil {
+		return false
+	}
+	switch value.Selector.Scope {
+	case OwnerScopeUser:
+		return value.Selector.PersonalSpaceID == principal.PersonalSpaceID &&
+			value.Selector.WorkspaceID == uuid.Nil && value.Selector.OrganizationID == uuid.Nil
+	case OwnerScopeWorkspace:
+		return value.Selector.PersonalSpaceID == uuid.Nil && value.Selector.WorkspaceID != uuid.Nil &&
+			value.Selector.OrganizationID == uuid.Nil
+	case OwnerScopeOrganization:
+		return value.Selector.PersonalSpaceID == uuid.Nil && value.Selector.WorkspaceID == uuid.Nil &&
+			value.Selector.OrganizationID != uuid.Nil
+	default:
+		return false
+	}
+}
+
+func cloneRolloutKeys(input map[string][]byte) map[string][]byte {
+	if len(input) == 0 {
+		return nil
+	}
+	result := make(map[string][]byte, len(input))
+	for keyID, material := range input {
+		result[keyID] = bytes.Clone(material)
+	}
+	return result
+}
+
+func cloneOfficialRelease(value OfficialRelease) OfficialRelease {
+	value.CurrentRevision.AllowlistedUserIDs = append([]uuid.UUID(nil), value.CurrentRevision.AllowlistedUserIDs...)
+	return value
 }
 
 func canonicalInitialChannels(decision PlatformReviewDecision, input []OfficialChannel) ([]OfficialChannel, bool) {

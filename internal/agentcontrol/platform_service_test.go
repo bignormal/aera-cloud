@@ -295,6 +295,9 @@ type stubPlatformRepository struct {
 	createDraft         func(context.Context, CreatePlatformDraftRepositoryCommand) (PlatformAgentDraft, error)
 	submitDraft         func(context.Context, SubmitPlatformDraftRepositoryCommand) (PlatformAgentSubmission, error)
 	reviewSubmission    func(context.Context, ReviewPlatformSubmissionRepositoryCommand) (PlatformAgentSubmission, error)
+	appendRelease       func(context.Context, OfficialReleaseMutationRepositoryCommand) (OfficialRelease, error)
+	eligibility         func(context.Context, uuid.UUID, uuid.UUID, Principal, OfficialEligibilityContext) (OfficialEligibilityRecord, bool, error)
+	lastMutation        OfficialReleaseMutationRepositoryCommand
 	lastInitialReleases []InitialOfficialRelease
 }
 
@@ -366,6 +369,25 @@ func (s *stubPlatformRepository) ListPlatformVersions(context.Context, uuid.UUID
 
 func (s *stubPlatformRepository) GetPlatformVersion(context.Context, uuid.UUID, uuid.UUID) (Version, bool, error) {
 	return Version{}, false, errors.New("unexpected GetPlatformVersion call")
+}
+
+func (s *stubPlatformRepository) AppendOfficialReleaseRevision(ctx context.Context, command OfficialReleaseMutationRepositoryCommand) (OfficialRelease, error) {
+	s.lastMutation = command
+	if s.appendRelease != nil {
+		return s.appendRelease(ctx, command)
+	}
+	return OfficialRelease{ID: command.ReleaseID, PlatformID: command.PlatformID, HeadRevision: command.ExpectedHeadRevision + 1}, nil
+}
+
+func (s *stubPlatformRepository) GetOfficialRelease(context.Context, uuid.UUID, uuid.UUID) (OfficialRelease, bool, error) {
+	return OfficialRelease{}, false, errors.New("unexpected GetOfficialRelease call")
+}
+
+func (s *stubPlatformRepository) GetOfficialEligibility(ctx context.Context, platformID uuid.UUID, releaseID uuid.UUID, principal Principal, eligibilityContext OfficialEligibilityContext) (OfficialEligibilityRecord, bool, error) {
+	if s.eligibility == nil {
+		return OfficialEligibilityRecord{}, false, errors.New("unexpected GetOfficialEligibility call")
+	}
+	return s.eligibility(ctx, platformID, releaseID, principal, eligibilityContext)
 }
 
 func platformDraftFromCreate(command CreatePlatformDraftRepositoryCommand) PlatformAgentDraft {
