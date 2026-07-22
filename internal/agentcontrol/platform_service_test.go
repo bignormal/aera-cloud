@@ -292,13 +292,18 @@ func newPlatformServiceFixture(t *testing.T) *platformServiceFixture {
 }
 
 type stubPlatformRepository struct {
-	createDraft         func(context.Context, CreatePlatformDraftRepositoryCommand) (PlatformAgentDraft, error)
-	submitDraft         func(context.Context, SubmitPlatformDraftRepositoryCommand) (PlatformAgentSubmission, error)
-	reviewSubmission    func(context.Context, ReviewPlatformSubmissionRepositoryCommand) (PlatformAgentSubmission, error)
-	appendRelease       func(context.Context, OfficialReleaseMutationRepositoryCommand) (OfficialRelease, error)
-	eligibility         func(context.Context, uuid.UUID, uuid.UUID, Principal, OfficialEligibilityContext) (OfficialEligibilityRecord, bool, error)
-	lastMutation        OfficialReleaseMutationRepositoryCommand
-	lastInitialReleases []InitialOfficialRelease
+	createDraft              func(context.Context, CreatePlatformDraftRepositoryCommand) (PlatformAgentDraft, error)
+	submitDraft              func(context.Context, SubmitPlatformDraftRepositoryCommand) (PlatformAgentSubmission, error)
+	reviewSubmission         func(context.Context, ReviewPlatformSubmissionRepositoryCommand) (PlatformAgentSubmission, error)
+	appendRelease            func(context.Context, OfficialReleaseMutationRepositoryCommand) (OfficialRelease, error)
+	eligibility              func(context.Context, uuid.UUID, uuid.UUID, Principal, OfficialEligibilityContext) (OfficialEligibilityRecord, bool, error)
+	listOfficialReleaseIDs   func(context.Context, uuid.UUID, OfficialChannel) ([]uuid.UUID, error)
+	findOfficialReleaseID    func(context.Context, uuid.UUID, uuid.UUID, OfficialChannel) (uuid.UUID, bool, error)
+	getPlatformDefinition    func(context.Context, uuid.UUID, uuid.UUID) (PlatformDefinitionDetail, bool, error)
+	getPlatformVersion       func(context.Context, uuid.UUID, uuid.UUID) (Version, bool, error)
+	findOfficialInstallation func(context.Context, Principal, uuid.UUID) (Installation, bool, error)
+	lastMutation             OfficialReleaseMutationRepositoryCommand
+	lastInitialReleases      []InitialOfficialRelease
 }
 
 func (s *stubPlatformRepository) EnsurePlatform(context.Context, EnsurePlatformCommand) (PlatformPolicySnapshot, error) {
@@ -347,7 +352,10 @@ func (s *stubPlatformRepository) ListPlatformDefinitions(context.Context, uuid.U
 	return PlatformDefinitionPage{}, errors.New("unexpected ListPlatformDefinitions call")
 }
 
-func (s *stubPlatformRepository) GetPlatformDefinition(context.Context, uuid.UUID, uuid.UUID) (PlatformDefinitionDetail, bool, error) {
+func (s *stubPlatformRepository) GetPlatformDefinition(ctx context.Context, platformID uuid.UUID, definitionID uuid.UUID) (PlatformDefinitionDetail, bool, error) {
+	if s.getPlatformDefinition != nil {
+		return s.getPlatformDefinition(ctx, platformID, definitionID)
+	}
 	return PlatformDefinitionDetail{}, false, errors.New("unexpected GetPlatformDefinition call")
 }
 
@@ -367,8 +375,32 @@ func (s *stubPlatformRepository) ListPlatformVersions(context.Context, uuid.UUID
 	return PlatformVersionPage{}, errors.New("unexpected ListPlatformVersions call")
 }
 
-func (s *stubPlatformRepository) GetPlatformVersion(context.Context, uuid.UUID, uuid.UUID) (Version, bool, error) {
+func (s *stubPlatformRepository) GetPlatformVersion(ctx context.Context, platformID uuid.UUID, versionID uuid.UUID) (Version, bool, error) {
+	if s.getPlatformVersion != nil {
+		return s.getPlatformVersion(ctx, platformID, versionID)
+	}
 	return Version{}, false, errors.New("unexpected GetPlatformVersion call")
+}
+
+func (s *stubPlatformRepository) ListOfficialReleaseIDs(ctx context.Context, platformID uuid.UUID, channel OfficialChannel) ([]uuid.UUID, error) {
+	if s.listOfficialReleaseIDs == nil {
+		return nil, errors.New("unexpected ListOfficialReleaseIDs call")
+	}
+	return s.listOfficialReleaseIDs(ctx, platformID, channel)
+}
+
+func (s *stubPlatformRepository) FindOfficialReleaseID(ctx context.Context, platformID uuid.UUID, definitionID uuid.UUID, channel OfficialChannel) (uuid.UUID, bool, error) {
+	if s.findOfficialReleaseID == nil {
+		return uuid.Nil, false, errors.New("unexpected FindOfficialReleaseID call")
+	}
+	return s.findOfficialReleaseID(ctx, platformID, definitionID, channel)
+}
+
+func (s *stubPlatformRepository) FindOfficialInstallation(ctx context.Context, principal Principal, releaseID uuid.UUID) (Installation, bool, error) {
+	if s.findOfficialInstallation == nil {
+		return Installation{}, false, errors.New("unexpected FindOfficialInstallation call")
+	}
+	return s.findOfficialInstallation(ctx, principal, releaseID)
 }
 
 func (s *stubPlatformRepository) AppendOfficialReleaseRevision(ctx context.Context, command OfficialReleaseMutationRepositoryCommand) (OfficialRelease, error) {

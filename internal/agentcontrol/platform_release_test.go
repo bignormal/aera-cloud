@@ -151,6 +151,126 @@ func TestOfficialEligibilityHonorsPauseSemverPolicyAllowlistAndBucket(t *testing
 	}
 }
 
+func TestPlatformServiceCatalogReturnsOnlyEligibleEntriesAndDerivesManagedState(t *testing.T) {
+	fixture := newPlatformReleaseServiceFixture(t)
+	principal := Principal{UserID: uuid.New(), DeviceID: uuid.New(), PersonalSpaceID: uuid.New()}
+	contextValue := OfficialEligibilityContext{
+		Channel: OfficialChannelStable, DesktopVersion: "v2.0.0",
+		Selector: OfficialProductSelector{Scope: OwnerScopeUser, PersonalSpaceID: principal.PersonalSpaceID},
+	}
+	releaseID, deniedReleaseID := uuid.New(), uuid.New()
+	definitionID, versionID := uuid.New(), uuid.New()
+	revisionID, selectedRevisionID := uuid.New(), uuid.New()
+	record := OfficialEligibilityRecord{
+		AccountDeviceActive: true, PlatformActive: true, ChannelEntitled: true,
+		ContextAuthorized: true, ContextPolicyAllowed: true,
+		Release: OfficialRelease{
+			ID: releaseID, PlatformID: fixture.platformID, DefinitionID: definitionID,
+			Channel: OfficialChannelStable, CurrentRevisionID: revisionID, HeadRevision: 2,
+		},
+		Revision: OfficialReleaseRevision{
+			ID: revisionID, ReleaseID: releaseID, RevisionNumber: 2, AgentVersionID: versionID,
+			State: OfficialReleaseStateActive, RolloutBasisPoints: 10000,
+			MinimumDesktopVersion: "v1.0.0", BucketAlgorithmVersion: officialBucketAlgorithmV1,
+			RolloutKeyID: "rollout-v1",
+		},
+	}
+	version := Version{
+		ID: versionID, DefinitionID: definitionID, VersionNumber: 2,
+		CanonicalManifest: []byte(`{"schema_version":1}`), Bundle: []byte(`{"assets":[]}`),
+		RuntimeMinimumVersion: "v1.0.0",
+	}
+	fixture.repository.listOfficialReleaseIDs = func(context.Context, uuid.UUID, OfficialChannel) ([]uuid.UUID, error) {
+		return []uuid.UUID{releaseID, deniedReleaseID}, nil
+	}
+	fixture.repository.findOfficialReleaseID = func(_ context.Context, _ uuid.UUID, gotDefinitionID uuid.UUID, channel OfficialChannel) (uuid.UUID, bool, error) {
+		return releaseID, gotDefinitionID == definitionID && channel == OfficialChannelStable, nil
+	}
+	fixture.repository.eligibility = func(_ context.Context, _ uuid.UUID, gotReleaseID uuid.UUID, _ Principal, _ OfficialEligibilityContext) (OfficialEligibilityRecord, bool, error) {
+		if gotReleaseID == deniedReleaseID {
+			denied := record
+			denied.Release.ID = deniedReleaseID
+			denied.Revision.ReleaseID = deniedReleaseID
+			denied.AccountDeviceActive = false
+			return denied, true, nil
+		}
+		return record, true, nil
+	}
+	fixture.repository.getPlatformDefinition = func(_ context.Context, gotPlatformID uuid.UUID, gotDefinitionID uuid.UUID) (PlatformDefinitionDetail, bool, error) {
+		return PlatformDefinitionDetail{Definition: Definition{
+			ID: definitionID, DisplayName: "Official Research", IconMediaType: "image/png", IconData: []byte{1, 2, 3},
+			Status: definitionStatusActive,
+		}, PlatformID: fixture.platformID}, gotPlatformID == fixture.platformID && gotDefinitionID == definitionID, nil
+	}
+	fixture.repository.getPlatformVersion = func(_ context.Context, gotPlatformID uuid.UUID, gotVersionID uuid.UUID) (Version, bool, error) {
+		return version, gotPlatformID == fixture.platformID && gotVersionID == versionID, nil
+	}
+	fixture.repository.findOfficialInstallation = func(_ context.Context, gotPrincipal Principal, gotReleaseID uuid.UUID) (Installation, bool, error) {
+		return Installation{
+			ID: uuid.New(), DeviceID: principal.DeviceID, DefinitionID: definitionID,
+			SelectedVersionID: uuid.New(), SelectedReleaseRevisionID: &selectedRevisionID,
+			OfficialReleaseID: &releaseID, UpdatePolicy: installationUpdatePolicyManaged, Status: InstallationStatusActive,
+		}, gotPrincipal == principal && gotReleaseID == releaseID, nil
+	}
+
+	items, err := fixture.service.ListOfficialAgents(context.Background(), principal, contextValue)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("ListOfficialAgents() = %+v, %v", items, err)
+	}
+	if items[0].DefinitionID != definitionID || items[0].Target.ReleaseRevisionID != revisionID ||
+		items[0].InstallationState != OfficialInstallationInstalled || items[0].UpdateState != OfficialUpdateAvailable {
+		t.Fatalf("official catalog item = %+v", items[0])
+	}
+	detail, err := fixture.service.GetOfficialAgent(context.Background(), principal, definitionID, contextValue)
+	if err != nil || detail.Version.ID != versionID || detail.DisplayName != "Official Research" {
+		t.Fatalf("GetOfficialAgent() = %+v, %v", detail, err)
+	}
+}
+
+func TestOfficialCatalogRepositoryDerivesCurrentInstallationAndUpdateState(t *testing.T) {
+	fixture, service, platformService := newOfficialInstallationFixture(t)
+	principal := fixture.principal(t, 0xd1)
+	_, versionID, release := fixture.publishInitialOfficialRelease(t, OfficialChannelStable, 0xd2)
+	active := fixture.activateOfficialRelease(t, release, versionID, nil, 0xd7)
+	contextValue := OfficialEligibilityContext{
+		Channel: OfficialChannelStable, DesktopVersion: "v1.0.0",
+		Selector: OfficialProductSelector{Scope: OwnerScopeUser, PersonalSpaceID: principal.PersonalSpaceID},
+	}
+	items, err := platformService.ListOfficialAgents(fixture.ctx, principal, contextValue)
+	if err != nil || len(items) != 1 || items[0].InstallationState != OfficialInstallationNotInstalled {
+		t.Fatalf("initial official catalog = %+v, %v", items, err)
+	}
+	service.officialEligibility = platformService
+	created, err := service.CreateInstallation(fixture.ctx, principal, CreateInstallationRequest{
+		DefinitionID: release.DefinitionID, OfficialReleaseRevisionID: &active.CurrentRevision.ID,
+		OfficialContext: &contextValue, IdempotencyKey: "catalog-official-install", RequestID: "catalog-official-install",
+	})
+	if err != nil {
+		t.Fatalf("CreateInstallation() error = %v", err)
+	}
+	pending, err := platformService.GetOfficialAgent(fixture.ctx, principal, release.DefinitionID, contextValue)
+	if err != nil || pending.InstallationState != OfficialInstallationInstalled || pending.UpdateState != OfficialUpdateCurrent {
+		t.Fatalf("pending official detail = %+v, %v", pending, err)
+	}
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		UPDATE installations
+		SET runtime_profile_id = $2, status = 'active', activated_at = $3, updated_at = $3
+		WHERE id = $1
+	`, created.Installation.ID, uuid.New(), active.UpdatedAt.Add(time.Minute)); err != nil {
+		t.Fatalf("activate catalog fixture: %v", err)
+	}
+	detail, err := platformService.GetOfficialAgent(fixture.ctx, principal, release.DefinitionID, contextValue)
+	if err != nil || detail.InstallationState != OfficialInstallationInstalled || detail.UpdateState != OfficialUpdateCurrent {
+		t.Fatalf("installed official detail = %+v, %v", detail, err)
+	}
+	v2 := fixture.publishNextOfficialVersion(t, release.DefinitionID, versionID, 0xd8)
+	fixture.activateOfficialRelease(t, active, v2, nil, 0xdb)
+	detail, err = platformService.GetOfficialAgent(fixture.ctx, principal, release.DefinitionID, contextValue)
+	if err != nil || detail.Version.ID != v2 || detail.UpdateState != OfficialUpdateAvailable {
+		t.Fatalf("updated official detail = %+v, %v", detail, err)
+	}
+}
+
 func TestOfficialReleaseRepositoryAppendsTransitionsAndRollbackChain(t *testing.T) {
 	fixture := newPlatformRepositoryFixture(t)
 	principal := fixture.principal(t, 0x70)

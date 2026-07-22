@@ -2261,20 +2261,28 @@ func loadInstallation(
 	if forUpdate {
 		query += " FOR UPDATE"
 	}
-	var installation Installation
-	var runtimeProfile, policySnapshot, officialRelease, selectedReleaseRevision pgtype.UUID
-	var activatedAt, archivedAt pgtype.Timestamptz
-	err := queryer.QueryRow(ctx, query, principal.PersonalSpaceID, principal.UserID, installationID).Scan(
-		&installation.ID, &installation.DeviceID, &installation.DeviceInstallationID, &installation.DefinitionID,
-		&installation.SelectedVersionID, &runtimeProfile, &policySnapshot, &officialRelease, &selectedReleaseRevision,
-		&installation.UpdatePolicy,
-		&installation.Status, &installation.CreatedAt, &installation.UpdatedAt, &activatedAt, &archivedAt,
-	)
+	installation, err := scanInstallation(queryer.QueryRow(ctx, query, principal.PersonalSpaceID, principal.UserID, installationID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Installation{}, ErrNotFound
 	}
 	if err != nil {
 		return Installation{}, ErrServiceUnavailable
+	}
+	return installation, nil
+}
+
+func scanInstallation(row rowScanner) (Installation, error) {
+	var installation Installation
+	var runtimeProfile, policySnapshot, officialRelease, selectedReleaseRevision pgtype.UUID
+	var activatedAt, archivedAt pgtype.Timestamptz
+	err := row.Scan(
+		&installation.ID, &installation.DeviceID, &installation.DeviceInstallationID, &installation.DefinitionID,
+		&installation.SelectedVersionID, &runtimeProfile, &policySnapshot, &officialRelease, &selectedReleaseRevision,
+		&installation.UpdatePolicy,
+		&installation.Status, &installation.CreatedAt, &installation.UpdatedAt, &activatedAt, &archivedAt,
+	)
+	if err != nil {
+		return Installation{}, err
 	}
 	if runtimeProfile.Valid {
 		value := uuid.UUID(runtimeProfile.Bytes)

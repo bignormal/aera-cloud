@@ -50,6 +50,8 @@ type HTTPService interface {
 	CreateInstallation(context.Context, Principal, CreateInstallationRequest) (InstallationCreation, error)
 	ActivateInstallation(context.Context, Principal, ActivateInstallationRequest) (Installation, error)
 	SelectInstallationVersion(context.Context, Principal, SelectInstallationVersionRequest) (Installation, error)
+	GetManagedOfficialUpdate(context.Context, Principal, GetManagedOfficialUpdateRequest) (OfficialManagedUpdate, error)
+	ApplyManagedOfficialUpdate(context.Context, Principal, ManagedUpdateRequest) (Installation, error)
 	ArchiveInstallation(context.Context, Principal, ArchiveInstallationRequest) (Installation, error)
 	RecordRuntimeBinding(context.Context, Principal, RuntimeBindingRecordCommand, string) (RuntimeBindingRecord, error)
 	SubmitExperienceCandidate(context.Context, Principal, uuid.UUID, SubmitExperienceCandidateRequest) (ExperienceCandidate, error)
@@ -59,23 +61,33 @@ type HTTPService interface {
 	ReviewExperienceCandidate(context.Context, Principal, uuid.UUID, ReviewExperienceCandidateRequest) (ExperienceCandidate, error)
 }
 
+type OfficialCatalogHTTPService interface {
+	ListOfficialAgents(context.Context, Principal, OfficialEligibilityContext) ([]OfficialAgentCatalogEntry, error)
+	GetOfficialAgent(context.Context, Principal, uuid.UUID, OfficialEligibilityContext) (OfficialAgentCatalogEntry, error)
+}
+
 type AccessAuthenticator interface {
 	Authenticate(context.Context, string) (session.AccessClaims, error)
 }
 
 type HTTPConfig struct {
 	Service      HTTPService
+	Official     OfficialCatalogHTTPService
 	AccessTokens AccessAuthenticator
 }
 
 type httpHandler struct {
 	service      HTTPService
+	official     OfficialCatalogHTTPService
 	accessTokens AccessAuthenticator
 }
 
 func NewHandler(config HTTPConfig) http.Handler {
-	handler := &httpHandler{service: config.Service, accessTokens: config.AccessTokens}
+	handler := &httpHandler{service: config.Service, official: config.Official, accessTokens: config.AccessTokens}
 	router := chi.NewRouter()
+	router.Get("/api/v1/official-agents", handler.listOfficialAgents)
+	router.Get("/api/v1/official-agents/{definitionID}", handler.getOfficialAgent)
+	router.Get("/api/v1/official-agents/{definitionID}/release", handler.getOfficialRelease)
 	router.Get("/api/v1/agent-definitions", handler.listDefinitions)
 	router.Post("/api/v1/agent-definitions", handler.publishInitial)
 	router.Get("/api/v1/agent-definitions/{definitionID}", handler.getDefinition)
@@ -105,6 +117,8 @@ func NewHandler(config HTTPConfig) http.Handler {
 	router.Post("/api/v1/agent-installations", handler.createInstallation)
 	router.Post("/api/v1/agent-installations/{installationID}/activate", handler.activateInstallation)
 	router.Post("/api/v1/agent-installations/{installationID}/select-version", handler.selectInstallationVersion)
+	router.Get("/api/v1/agent-installations/{installationID}/managed-update", handler.getManagedOfficialUpdate)
+	router.Post("/api/v1/agent-installations/{installationID}/apply-managed-update", handler.applyManagedOfficialUpdate)
 	router.Post("/api/v1/agent-installations/{installationID}/archive", handler.archiveInstallation)
 	router.Post("/api/v1/runtime-binding-records", handler.recordRuntimeBinding)
 	return router
@@ -470,32 +484,58 @@ func (h *httpHandler) createInstallation(response http.ResponseWriter, request *
 	if !ok {
 		return
 	}
+	if request.URL.RawQuery != "" {
+		writeAgentError(response, http.StatusBadRequest, "invalid_request")
+		return
+	}
 	var payload struct {
-		DefinitionID   string  `json:"definition_id"`
-		VersionID      string  `json:"version_id"`
-		WorkspaceID    *string `json:"workspace_id,omitempty"`
-		OrganizationID *string `json:"organization_id,omitempty"`
+		DefinitionID              string  `json:"definition_id"`
+		VersionID                 *string `json:"version_id,omitempty"`
+		WorkspaceID               *string `json:"workspace_id,omitempty"`
+		OrganizationID            *string `json:"organization_id,omitempty"`
+		OfficialReleaseRevisionID *string `json:"official_release_revision_id,omitempty"`
 	}
 	if !decodeAgentJSON(response, request, metadataRequestBodyLimit, &payload) {
 		return
 	}
-	if payload.WorkspaceID != nil && payload.OrganizationID != nil {
+	official := payload.OfficialReleaseRevisionID != nil
+	if payload.WorkspaceID != nil && payload.OrganizationID != nil ||
+		(official && (payload.VersionID != nil || payload.WorkspaceID != nil || payload.OrganizationID != nil)) ||
+		(!official && payload.VersionID == nil) {
 		writeAgentError(response, http.StatusBadRequest, "invalid_request")
 		return
 	}
 	definitionID, definitionOK := canonicalUUID(payload.DefinitionID)
-	versionID, versionOK := canonicalUUID(payload.VersionID)
+	var versionID uuid.UUID
+	versionOK := true
+	if payload.VersionID != nil {
+		versionID, versionOK = canonicalUUID(*payload.VersionID)
+	}
 	workspaceID, workspaceOK := optionalCanonicalUUID(payload.WorkspaceID)
 	organizationID, organizationOK := optionalCanonicalUUID(payload.OrganizationID)
 	if !definitionOK || !versionOK || !workspaceOK || !organizationOK {
 		writeAgentError(response, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	creation, err := h.service.CreateInstallation(request.Context(), principal, CreateInstallationRequest{
+	serviceRequest := CreateInstallationRequest{
 		DefinitionID: definitionID, VersionID: versionID, SourceWorkspaceID: workspaceID,
 		OrganizationID: organizationID,
 		IdempotencyKey: idempotencyKey, RequestID: newAgentRequestID(),
-	})
+	}
+	if official {
+		revisionID, ok := canonicalUUID(*payload.OfficialReleaseRevisionID)
+		if !ok {
+			writeAgentError(response, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		contextValue, ok := h.requireOfficialContext(response, request, principal)
+		if !ok {
+			return
+		}
+		serviceRequest.OfficialReleaseRevisionID = &revisionID
+		serviceRequest.OfficialContext = &contextValue
+	}
+	creation, err := h.service.CreateInstallation(request.Context(), principal, serviceRequest)
 	if err != nil {
 		writeAgentServiceError(response, err)
 		return
@@ -603,19 +643,21 @@ func (h *httpHandler) recordRuntimeBinding(response http.ResponseWriter, request
 		return
 	}
 	var payload struct {
-		BindingID            uuid.UUID `json:"binding_id"`
-		AgentInstallationID  uuid.UUID `json:"agent_installation_id"`
-		AgentVersionID       uuid.UUID `json:"agent_version_id"`
-		RuntimeProfileID     uuid.UUID `json:"runtime_profile_id"`
-		RuntimeVersion       string    `json:"runtime_version"`
-		PolicySnapshotID     uuid.UUID `json:"policy_snapshot_id"`
-		ToolPermissionDigest string    `json:"tool_permission_digest"`
+		BindingID                 uuid.UUID `json:"binding_id"`
+		AgentInstallationID       uuid.UUID `json:"agent_installation_id"`
+		AgentVersionID            uuid.UUID `json:"agent_version_id"`
+		RuntimeProfileID          uuid.UUID `json:"runtime_profile_id"`
+		RuntimeVersion            string    `json:"runtime_version"`
+		PolicySnapshotID          uuid.UUID `json:"policy_snapshot_id"`
+		OfficialReleaseRevisionID *string   `json:"official_release_revision_id,omitempty"`
+		ToolPermissionDigest      string    `json:"tool_permission_digest"`
 	}
 	if !decodeAgentJSON(response, request, metadataRequestBodyLimit, &payload) {
 		return
 	}
 	digest, ok := decodeSHA256(payload.ToolPermissionDigest)
-	if !ok {
+	officialReleaseRevisionID, officialOK := optionalCanonicalUUID(payload.OfficialReleaseRevisionID)
+	if !ok || !officialOK {
 		writeAgentError(response, http.StatusBadRequest, "invalid_request")
 		return
 	}
@@ -623,7 +665,8 @@ func (h *httpHandler) recordRuntimeBinding(response http.ResponseWriter, request
 		BindingID: payload.BindingID, AgentInstallationID: payload.AgentInstallationID,
 		AgentVersionID: payload.AgentVersionID, RuntimeProfileID: payload.RuntimeProfileID,
 		RuntimeVersion: payload.RuntimeVersion, PolicySnapshotID: payload.PolicySnapshotID,
-		ToolPermissionDigest: digest,
+		OfficialReleaseRevisionID: officialReleaseRevisionID,
+		ToolPermissionDigest:      digest,
 	}, newAgentRequestID())
 	if err != nil {
 		writeAgentServiceError(response, err)
@@ -768,17 +811,19 @@ type policyResponse struct {
 }
 
 type installationResponse struct {
-	ID                uuid.UUID  `json:"id"`
-	DefinitionID      uuid.UUID  `json:"definition_id"`
-	SelectedVersionID uuid.UUID  `json:"selected_version_id"`
-	RuntimeProfileID  *uuid.UUID `json:"runtime_profile_id,omitempty"`
-	PolicySnapshotID  *uuid.UUID `json:"policy_snapshot_id,omitempty"`
-	UpdatePolicy      string     `json:"update_policy"`
-	Status            string     `json:"status"`
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
-	ActivatedAt       *time.Time `json:"activated_at,omitempty"`
-	ArchivedAt        *time.Time `json:"archived_at,omitempty"`
+	ID                        uuid.UUID  `json:"id"`
+	DefinitionID              uuid.UUID  `json:"definition_id"`
+	SelectedVersionID         uuid.UUID  `json:"selected_version_id"`
+	RuntimeProfileID          *uuid.UUID `json:"runtime_profile_id,omitempty"`
+	PolicySnapshotID          *uuid.UUID `json:"policy_snapshot_id,omitempty"`
+	OfficialReleaseID         *uuid.UUID `json:"official_release_id,omitempty"`
+	SelectedReleaseRevisionID *uuid.UUID `json:"selected_release_revision_id,omitempty"`
+	UpdatePolicy              string     `json:"update_policy"`
+	Status                    string     `json:"status"`
+	CreatedAt                 time.Time  `json:"created_at"`
+	UpdatedAt                 time.Time  `json:"updated_at"`
+	ActivatedAt               *time.Time `json:"activated_at,omitempty"`
+	ArchivedAt                *time.Time `json:"archived_at,omitempty"`
 }
 
 type publicationResponse struct {
@@ -804,14 +849,15 @@ type revocationResponse struct {
 }
 
 type runtimeBindingResponse struct {
-	ID                   uuid.UUID `json:"id"`
-	AgentInstallationID  uuid.UUID `json:"agent_installation_id"`
-	AgentVersionID       uuid.UUID `json:"agent_version_id"`
-	RuntimeProfileID     uuid.UUID `json:"runtime_profile_id"`
-	RuntimeVersion       string    `json:"runtime_version"`
-	PolicySnapshotID     uuid.UUID `json:"policy_snapshot_id"`
-	ToolPermissionDigest string    `json:"tool_permission_digest"`
-	CreatedAt            time.Time `json:"created_at"`
+	ID                        uuid.UUID  `json:"id"`
+	AgentInstallationID       uuid.UUID  `json:"agent_installation_id"`
+	AgentVersionID            uuid.UUID  `json:"agent_version_id"`
+	RuntimeProfileID          uuid.UUID  `json:"runtime_profile_id"`
+	RuntimeVersion            string     `json:"runtime_version"`
+	PolicySnapshotID          uuid.UUID  `json:"policy_snapshot_id"`
+	OfficialReleaseRevisionID *uuid.UUID `json:"official_release_revision_id,omitempty"`
+	ToolPermissionDigest      string     `json:"tool_permission_digest"`
+	CreatedAt                 time.Time  `json:"created_at"`
 }
 
 func publicDefinition(value Definition) definitionResponse {
@@ -845,7 +891,9 @@ func publicInstallation(value Installation) installationResponse {
 	return installationResponse{
 		ID: value.ID, DefinitionID: value.DefinitionID, SelectedVersionID: value.SelectedVersionID,
 		RuntimeProfileID: cloneUUIDPointer(value.RuntimeProfileID), PolicySnapshotID: cloneUUIDPointer(value.PolicySnapshotID),
-		UpdatePolicy: value.UpdatePolicy, Status: value.Status, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
+		OfficialReleaseID:         cloneUUIDPointer(value.OfficialReleaseID),
+		SelectedReleaseRevisionID: cloneUUIDPointer(value.SelectedReleaseRevisionID),
+		UpdatePolicy:              value.UpdatePolicy, Status: value.Status, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 		ActivatedAt: cloneTimePointer(value.ActivatedAt), ArchivedAt: cloneTimePointer(value.ArchivedAt),
 	}
 }
@@ -872,8 +920,10 @@ func publicRuntimeBinding(value RuntimeBindingRecord) runtimeBindingResponse {
 	return runtimeBindingResponse{
 		ID: value.ID, AgentInstallationID: value.AgentInstallationID, AgentVersionID: value.AgentVersionID,
 		RuntimeProfileID: value.RuntimeProfileID, RuntimeVersion: value.RuntimeVersion,
-		PolicySnapshotID: value.PolicySnapshotID, ToolPermissionDigest: hex.EncodeToString(value.ToolPermissionDigest[:]),
-		CreatedAt: value.CreatedAt,
+		PolicySnapshotID:          value.PolicySnapshotID,
+		OfficialReleaseRevisionID: cloneUUIDPointer(value.OfficialReleaseRevisionID),
+		ToolPermissionDigest:      hex.EncodeToString(value.ToolPermissionDigest[:]),
+		CreatedAt:                 value.CreatedAt,
 	}
 }
 
@@ -929,6 +979,20 @@ func writeAgentServiceErrorWithRequestID(response http.ResponseWriter, err error
 		writeAgentErrorWithRequestID(response, http.StatusUnprocessableEntity, "organization_publication_policy_blocked", requestID)
 	case errors.Is(err, ErrOrganizationPublicationDLPBlocked):
 		writeAgentErrorWithRequestID(response, http.StatusUnprocessableEntity, "organization_publication_dlp_blocked", requestID)
+	case errors.Is(err, ErrOfficialAgentNotEligible):
+		writeAgentErrorWithRequestID(response, http.StatusForbidden, "official_agent_not_eligible", requestID)
+	case errors.Is(err, ErrOfficialReleasePaused):
+		writeAgentErrorWithRequestID(response, http.StatusConflict, "official_release_paused", requestID)
+	case errors.Is(err, ErrOfficialReleaseRevisionConflict):
+		writeAgentErrorWithRequestID(response, http.StatusConflict, "official_release_revision_conflict", requestID)
+	case errors.Is(err, ErrOfficialClientVersionUnsupported):
+		writeAgentErrorWithRequestID(response, http.StatusUnprocessableEntity, "official_client_version_unsupported", requestID)
+	case errors.Is(err, ErrOfficialInstallationPolicyBlocked):
+		writeAgentErrorWithRequestID(response, http.StatusForbidden, "official_installation_policy_blocked", requestID)
+	case errors.Is(err, ErrOfficialManagedUpdateConflict):
+		writeAgentErrorWithRequestID(response, http.StatusConflict, "official_managed_update_conflict", requestID)
+	case errors.Is(err, ErrCloudUnavailable):
+		writeAgentErrorWithRequestID(response, http.StatusServiceUnavailable, "cloud_unavailable", requestID)
 	default:
 		writeAgentErrorWithRequestID(response, http.StatusServiceUnavailable, "service_unavailable", requestID)
 	}

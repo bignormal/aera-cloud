@@ -121,8 +121,8 @@ func TestOpenAPIContainsStrictUserAgentControlPlaneContract(t *testing.T) {
 		t.Fatalf("read openapi.yaml: %v", err)
 	}
 	document := string(contents)
-	if !strings.Contains(document, "version: 0.7.0") {
-		t.Fatal("OpenAPI version was not advanced for Organization Agent V1")
+	if !strings.Contains(document, "version: 0.8.0") {
+		t.Fatal("OpenAPI version was not advanced for Official Managed Agent V1")
 	}
 	for _, path := range []string{
 		"/api/v1/agent-definitions:",
@@ -228,9 +228,19 @@ func TestOpenAPIContainsOrganizationAgentApprovalContract(t *testing.T) {
 		t.Fatal("OpenAPI is missing CreateAgentInstallationRequest")
 	}
 	installation := document[installationStart:installationEnd]
+	normalStart := strings.Index(document, "    NormalAgentInstallationSource:\n")
+	normalEnd := strings.Index(document, "    OfficialAgentInstallationSource:\n")
+	if normalStart < 0 || normalEnd <= normalStart {
+		t.Fatal("OpenAPI is missing normal installation source schema")
+	}
+	normalInstallation := document[normalStart:normalEnd]
 	for _, fragment := range []string{"organization_id:", "oneOf:", "not:"} {
-		if !strings.Contains(installation, fragment) {
-			t.Fatalf("installation source union is missing %q:\n%s", fragment, installation)
+		candidate := installation
+		if fragment == "organization_id:" || fragment == "not:" {
+			candidate = normalInstallation
+		}
+		if !strings.Contains(candidate, fragment) {
+			t.Fatalf("installation source union is missing %q:\n%s", fragment, candidate)
 		}
 	}
 	for _, code := range []string{
@@ -245,6 +255,95 @@ func TestOpenAPIContainsOrganizationAgentApprovalContract(t *testing.T) {
 	}
 	if strings.Contains(document, "/api/v1/organizations/{organization_id}/agent-definitions:\n    post:") {
 		t.Fatal("OpenAPI exposed direct Organization Agent publication")
+	}
+}
+
+func TestOpenAPIContainsStrictOfficialManagedAgentPublicContract(t *testing.T) {
+	contents, err := os.ReadFile("openapi.yaml")
+	if err != nil {
+		t.Fatalf("read openapi.yaml: %v", err)
+	}
+	document := string(contents)
+	for _, path := range []string{
+		"/api/v1/official-agents:",
+		"/api/v1/official-agents/{definition_id}:",
+		"/api/v1/official-agents/{definition_id}/release:",
+		"/api/v1/agent-installations/{installation_id}/managed-update:",
+		"/api/v1/agent-installations/{installation_id}/apply-managed-update:",
+	} {
+		if !strings.Contains(document, path) {
+			t.Fatalf("OpenAPI is missing %s", path)
+		}
+	}
+	for _, parameter := range []string{
+		"X-AgentEra-Official-Channel", "X-AgentEra-Desktop-Version",
+		"X-AgentEra-Product-Context", "X-AgentEra-Product-Context-ID",
+	} {
+		if !strings.Contains(document, parameter) {
+			t.Fatalf("OpenAPI is missing trusted official header %q", parameter)
+		}
+	}
+	for _, schema := range []string{
+		"OfficialAgentSummary:", "OfficialAgentDetail:", "OfficialAgentListResponse:",
+		"OfficialManagedUpdateResponse:", "ApplyManagedOfficialUpdateRequest:",
+		"NormalAgentInstallationSource:", "OfficialAgentInstallationSource:",
+	} {
+		if !strings.Contains(document, schema) {
+			t.Fatalf("OpenAPI is missing schema %q", schema)
+		}
+	}
+	createPathStart := strings.Index(document, "  /api/v1/agent-installations:\n")
+	createPathEnd := strings.Index(document, "  /api/v1/agent-installations/{installation_id}/managed-update:\n")
+	if createPathStart < 0 || createPathEnd <= createPathStart {
+		t.Fatal("OpenAPI is missing the bounded Installation create operation")
+	}
+	if createOperation := document[createPathStart:createPathEnd]; !strings.Contains(createOperation, "#/components/responses/AgentInstallationError") ||
+		strings.Contains(createOperation, "#/components/responses/OfficialAgentError") {
+		t.Fatalf("Installation create did not preserve a source-neutral error contract:\n%s", createOperation)
+	}
+	installationStart := strings.Index(document, "    CreateAgentInstallationRequest:\n")
+	installationEnd := strings.Index(document, "    NormalAgentInstallationSource:\n")
+	if installationStart < 0 || installationEnd <= installationStart {
+		t.Fatal("OpenAPI is missing strict installation source union")
+	}
+	installation := document[installationStart:installationEnd]
+	for _, fragment := range []string{
+		"oneOf:", "$ref: '#/components/schemas/NormalAgentInstallationSource'",
+		"$ref: '#/components/schemas/OfficialAgentInstallationSource'",
+	} {
+		if !strings.Contains(installation, fragment) {
+			t.Fatalf("installation union is missing %q:\n%s", fragment, installation)
+		}
+	}
+	officialStart := strings.Index(document, "    OfficialAgentInstallationSource:\n")
+	officialEnd := strings.Index(document, "    ActivateAgentInstallationRequest:\n")
+	if officialStart < 0 || officialEnd <= officialStart {
+		t.Fatal("OpenAPI is missing official installation source")
+	}
+	official := document[officialStart:officialEnd]
+	if !strings.Contains(official, "official_release_revision_id:") {
+		t.Fatalf("official source lacks release revision:\n%s", official)
+	}
+	for _, forbidden := range []string{
+		"version_id:", "workspace_id:", "organization_id:", "owner_scope:", "platform_id:",
+		"user_id:", "device_id:", "policy_snapshot_id:",
+	} {
+		if strings.Contains(official, forbidden) {
+			t.Fatalf("official source exposed forbidden field %q:\n%s", forbidden, official)
+		}
+	}
+	for _, code := range []string{
+		"official_agent_not_eligible", "official_release_paused", "official_release_revision_conflict",
+		"official_client_version_unsupported", "official_installation_policy_blocked",
+		"official_managed_update_conflict", "cloud_unavailable",
+	} {
+		if !strings.Contains(document, "- "+code) {
+			t.Fatalf("OpenAPI is missing official error code %q", code)
+		}
+	}
+	if strings.Contains(document, "/internal/") || strings.Contains(document, "official_agent_draft") ||
+		strings.Contains(document, "official_agent_review") {
+		t.Fatal("public OpenAPI exposed Internal Admin official-agent surfaces")
 	}
 }
 
@@ -388,8 +487,8 @@ func TestOpenAPIContainsStrictOrganizationFoundationContract(t *testing.T) {
 		t.Fatalf("read openapi.yaml: %v", err)
 	}
 	document := string(contents)
-	if !strings.HasPrefix(document, "openapi: 3.0.3\n") || !strings.Contains(document, "version: 0.7.0") {
-		t.Fatal("OpenAPI did not preserve Organization Foundation in the Organization Agent 0.7.0 contract")
+	if !strings.HasPrefix(document, "openapi: 3.0.3\n") || !strings.Contains(document, "version: 0.8.0") {
+		t.Fatal("OpenAPI did not preserve Organization Foundation in the Official Managed Agent 0.8.0 contract")
 	}
 	for _, path := range []string{
 		"/api/v1/organizations:",

@@ -1,8 +1,8 @@
 openapi: 3.0.3
 info:
   title: AgentEra App Cloud API
-  version: 0.7.0
-  description: Account, device authorization, USER, Workspace, and governed Organization Agent, ExperienceCandidate, Workspace, and Organization control-plane contract for AgentEra Studio.
+  version: 0.8.0
+  description: Account, device authorization, USER, Workspace, Organization, and Official Managed Agent control-plane contract for AgentEra Studio.
 servers:
   - url: https://accounts.agentera.example
 paths:
@@ -2536,6 +2536,98 @@ paths:
           $ref: '#/components/responses/InvalidRequest'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/official-agents:
+    get:
+      operationId: listOfficialAgents
+      description: Returns only currently eligible official Agents for the authenticated user, device, trusted desktop version, channel, and selected product context. Unknown query parameters are rejected.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OfficialAgentChannel'
+        - $ref: '#/components/parameters/OfficialDesktopVersion'
+        - $ref: '#/components/parameters/OfficialProductContext'
+        - $ref: '#/components/parameters/OfficialProductContextID'
+      responses:
+        '200':
+          description: Safe eligible official Agent catalog.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OfficialAgentListResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '403':
+          $ref: '#/components/responses/OfficialAgentError'
+        '409':
+          $ref: '#/components/responses/OfficialAgentError'
+        '422':
+          $ref: '#/components/responses/OfficialAgentError'
+        '503':
+          $ref: '#/components/responses/OfficialAgentError'
+  /api/v1/official-agents/{definition_id}:
+    get:
+      operationId: getOfficialAgent
+      description: Returns the eligible official Agent summary and exact signed immutable Version material without rollout or employee data.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/AgentDefinitionID'
+        - $ref: '#/components/parameters/OfficialAgentChannel'
+        - $ref: '#/components/parameters/OfficialDesktopVersion'
+        - $ref: '#/components/parameters/OfficialProductContext'
+        - $ref: '#/components/parameters/OfficialProductContextID'
+      responses:
+        '200':
+          description: Safe official Agent detail and signed immutable Version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OfficialAgentDetail'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '403':
+          $ref: '#/components/responses/OfficialAgentError'
+        '409':
+          $ref: '#/components/responses/OfficialAgentError'
+        '422':
+          $ref: '#/components/responses/OfficialAgentError'
+        '503':
+          $ref: '#/components/responses/OfficialAgentError'
+  /api/v1/official-agents/{definition_id}/release:
+    get:
+      operationId: getOfficialAgentRelease
+      description: Re-resolves the authoritative eligible release revision for one official Agent without exposing rollout inputs.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/AgentDefinitionID'
+        - $ref: '#/components/parameters/OfficialAgentChannel'
+        - $ref: '#/components/parameters/OfficialDesktopVersion'
+        - $ref: '#/components/parameters/OfficialProductContext'
+        - $ref: '#/components/parameters/OfficialProductContextID'
+      responses:
+        '200':
+          description: Current eligible official release target.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OfficialAgentSummary'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '403':
+          $ref: '#/components/responses/OfficialAgentError'
+        '409':
+          $ref: '#/components/responses/OfficialAgentError'
+        '422':
+          $ref: '#/components/responses/OfficialAgentError'
+        '503':
+          $ref: '#/components/responses/OfficialAgentError'
   /api/v1/agent-installations:
     post:
       operationId: createUserAgentInstallation
@@ -2544,6 +2636,10 @@ paths:
         - desktopAccessToken: []
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/OptionalOfficialAgentChannel'
+        - $ref: '#/components/parameters/OptionalOfficialDesktopVersion'
+        - $ref: '#/components/parameters/OptionalOfficialProductContext'
+        - $ref: '#/components/parameters/OfficialProductContextID'
       requestBody:
         required: true
         content:
@@ -2562,17 +2658,92 @@ paths:
         '401':
           $ref: '#/components/responses/SessionRevoked'
         '403':
-          $ref: '#/components/responses/OrganizationAgentError'
+          $ref: '#/components/responses/AgentInstallationError'
         '404':
           $ref: '#/components/responses/AgentNotFound'
         '409':
-          $ref: '#/components/responses/AgentConflict'
+          $ref: '#/components/responses/AgentInstallationError'
         '413':
           $ref: '#/components/responses/InvalidRequest'
         '422':
-          $ref: '#/components/responses/OrganizationAgentError'
+          $ref: '#/components/responses/AgentInstallationError'
         '503':
-          $ref: '#/components/responses/ServiceUnavailable'
+          $ref: '#/components/responses/AgentInstallationError'
+  /api/v1/agent-installations/{installation_id}/managed-update:
+    get:
+      operationId: getOfficialManagedUpdate
+      description: Returns no update or the exact currently eligible managed release target. It never changes the selected version.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/AgentInstallationID'
+        - $ref: '#/components/parameters/OfficialAgentChannel'
+        - $ref: '#/components/parameters/OfficialDesktopVersion'
+        - $ref: '#/components/parameters/OfficialProductContext'
+        - $ref: '#/components/parameters/OfficialProductContextID'
+      responses:
+        '200':
+          description: Exact managed update state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OfficialManagedUpdateResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '403':
+          $ref: '#/components/responses/OfficialAgentError'
+        '404':
+          $ref: '#/components/responses/AgentNotFound'
+        '409':
+          $ref: '#/components/responses/OfficialAgentError'
+        '422':
+          $ref: '#/components/responses/OfficialAgentError'
+        '503':
+          $ref: '#/components/responses/OfficialAgentError'
+  /api/v1/agent-installations/{installation_id}/apply-managed-update:
+    post:
+      operationId: applyOfficialManagedUpdate
+      description: Atomically rechecks eligibility and selects the exact current release revision for future Runtime bindings only.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/AgentInstallationID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/OfficialAgentChannel'
+        - $ref: '#/components/parameters/OfficialDesktopVersion'
+        - $ref: '#/components/parameters/OfficialProductContext'
+        - $ref: '#/components/parameters/OfficialProductContextID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyManagedOfficialUpdateRequest'
+      responses:
+        '200':
+          description: Managed selection and signed policy snapshot advanced atomically.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentInstallation'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '403':
+          $ref: '#/components/responses/OfficialAgentError'
+        '404':
+          $ref: '#/components/responses/AgentNotFound'
+        '409':
+          $ref: '#/components/responses/OfficialAgentError'
+        '413':
+          $ref: '#/components/responses/InvalidRequest'
+        '422':
+          $ref: '#/components/responses/OfficialAgentError'
+        '503':
+          $ref: '#/components/responses/OfficialAgentError'
   /api/v1/agent-installations/{installation_id}/activate:
     post:
       operationId: activateUserAgentInstallation
@@ -2759,6 +2930,66 @@ components:
         minLength: 1
         maxLength: 256
         pattern: '^[^\\s\\x00]+$'
+    OfficialAgentChannel:
+      name: X-AgentEra-Official-Channel
+      in: header
+      required: true
+      description: Trusted desktop-main release channel. Packaged builds use stable; the renderer cannot supply this value.
+      schema:
+        type: string
+        enum: [internal, stable]
+    OptionalOfficialAgentChannel:
+      name: X-AgentEra-Official-Channel
+      in: header
+      required: false
+      description: Required only for the OfficialAgentInstallationSource arm and derived by desktop main.
+      schema:
+        type: string
+        enum: [internal, stable]
+    OfficialDesktopVersion:
+      name: X-AgentEra-Desktop-Version
+      in: header
+      required: true
+      description: Trusted current desktop SemVer supplied by desktop main.
+      schema:
+        type: string
+        minLength: 5
+        maxLength: 128
+        pattern: '^v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$'
+    OptionalOfficialDesktopVersion:
+      name: X-AgentEra-Desktop-Version
+      in: header
+      required: false
+      description: Required only for the OfficialAgentInstallationSource arm and derived by desktop main.
+      schema:
+        type: string
+        minLength: 5
+        maxLength: 128
+    OfficialProductContext:
+      name: X-AgentEra-Product-Context
+      in: header
+      required: true
+      description: Trusted currently selected product context. It is a policy selector and never Installation ownership.
+      schema:
+        type: string
+        enum: [USER, WORKSPACE, ORGANIZATION]
+    OptionalOfficialProductContext:
+      name: X-AgentEra-Product-Context
+      in: header
+      required: false
+      description: Required only for the OfficialAgentInstallationSource arm and derived by desktop main.
+      schema:
+        type: string
+        enum: [USER, WORKSPACE, ORGANIZATION]
+    OfficialProductContextID:
+      name: X-AgentEra-Product-Context-ID
+      in: header
+      required: false
+      description: Must be omitted for USER and must be the canonical selected Workspace or Organization UUID for shared contexts.
+      schema:
+        type: string
+        format: uuid
+        pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
     OrganizationIdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -4320,7 +4551,147 @@ components:
           format: date-time
         replayed:
           type: boolean
+    OfficialAgentSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - definition_id
+        - display_name
+        - official
+        - version_id
+        - version_number
+        - release_id
+        - release_revision_id
+        - channel
+        - runtime_minimum_version
+        - installation_state
+        - update_state
+      properties:
+        definition_id:
+          type: string
+          format: uuid
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        icon_media_type:
+          type: string
+          enum: [image/png, image/webp]
+        icon_data:
+          type: string
+          description: Canonical unpadded base64url public icon bytes.
+          pattern: '^[A-Za-z0-9_-]+$'
+          maxLength: 699051
+        official:
+          type: boolean
+          enum: [true]
+        version_id:
+          type: string
+          format: uuid
+        version_number:
+          type: integer
+          format: int64
+          minimum: 1
+        release_id:
+          type: string
+          format: uuid
+        release_revision_id:
+          type: string
+          format: uuid
+        channel:
+          type: string
+          enum: [internal, stable]
+        runtime_minimum_version:
+          type: string
+          minLength: 1
+          maxLength: 128
+        runtime_maximum_version_exclusive:
+          type: string
+          minLength: 1
+          maxLength: 128
+        installation_state:
+          type: string
+          enum: [not_installed, installed]
+        update_state:
+          type: string
+          enum: [current, update_available]
+    OfficialAgentListResponse:
+      type: object
+      additionalProperties: false
+      required: [official_agents]
+      properties:
+        official_agents:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/OfficialAgentSummary'
+    OfficialAgentDetail:
+      type: object
+      additionalProperties: false
+      required: [agent, version]
+      properties:
+        agent:
+          $ref: '#/components/schemas/OfficialAgentSummary'
+        version:
+          $ref: '#/components/schemas/AgentVersion'
+    OfficialManagedUpdateResponse:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [update_available]
+          properties:
+            update_available:
+              type: boolean
+              enum: [false]
+        - type: object
+          additionalProperties: false
+          required:
+            - update_available
+            - installation_id
+            - expected_selected_release_revision_id
+            - target_release_revision_id
+            - target_version_id
+            - runtime_minimum_version
+          properties:
+            update_available:
+              type: boolean
+              enum: [true]
+            installation_id:
+              type: string
+              format: uuid
+            expected_selected_release_revision_id:
+              type: string
+              format: uuid
+            target_release_revision_id:
+              type: string
+              format: uuid
+            target_version_id:
+              type: string
+              format: uuid
+            runtime_minimum_version:
+              type: string
+              minLength: 1
+              maxLength: 128
+            runtime_maximum_version_exclusive:
+              type: string
+              minLength: 1
+              maxLength: 128
+    ApplyManagedOfficialUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_selected_release_revision_id, target_release_revision_id]
+      properties:
+        expected_selected_release_revision_id:
+          type: string
+          format: uuid
+        target_release_revision_id:
+          type: string
+          format: uuid
     CreateAgentInstallationRequest:
+      oneOf:
+        - $ref: '#/components/schemas/NormalAgentInstallationSource'
+        - $ref: '#/components/schemas/OfficialAgentInstallationSource'
+    NormalAgentInstallationSource:
       type: object
       additionalProperties: false
       required: [definition_id, version_id]
@@ -4350,6 +4721,18 @@ components:
           type: string
           format: uuid
           description: Exact active source Organization for an approved ORGANIZATION-owned definition and version; mutually exclusive with workspace_id.
+    OfficialAgentInstallationSource:
+      type: object
+      additionalProperties: false
+      required: [definition_id, official_release_revision_id]
+      properties:
+        definition_id:
+          type: string
+          format: uuid
+        official_release_revision_id:
+          type: string
+          format: uuid
+          description: Exact eligible current release revision. Cloud derives PLATFORM, release, Version, USER ownership, device, and signed policy.
     ActivateAgentInstallationRequest:
       type: object
       additionalProperties: false
@@ -4411,9 +4794,17 @@ components:
         policy_snapshot_id:
           type: string
           format: uuid
+        official_release_id:
+          type: string
+          format: uuid
+          description: Present only for a USER-owned managed official Installation.
+        selected_release_revision_id:
+          type: string
+          format: uuid
+          description: Exact immutable official release revision selected for future Runtime bindings.
         update_policy:
           type: string
-          enum: [manual]
+          enum: [manual, managed]
         status:
           type: string
           enum: [pending, active, archived]
@@ -4514,6 +4905,45 @@ components:
           items:
             type: string
             maxLength: 256
+        official_context:
+          $ref: '#/components/schemas/OfficialAgentPolicyContextV1'
+    OfficialAgentPolicyContextV1:
+      type: object
+      additionalProperties: false
+      required:
+        - platform_id
+        - release_id
+        - release_revision_id
+        - user_id
+        - device_id
+        - installation_id
+        - product_scope
+        - product_context_id
+      properties:
+        platform_id:
+          type: string
+          format: uuid
+        release_id:
+          type: string
+          format: uuid
+        release_revision_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        device_id:
+          type: string
+          format: uuid
+        installation_id:
+          type: string
+          format: uuid
+        product_scope:
+          type: string
+          enum: [USER, WORKSPACE, ORGANIZATION]
+        product_context_id:
+          type: string
+          format: uuid
     CreateRuntimeBindingRecordRequest:
       type: object
       additionalProperties: false
@@ -4545,6 +4975,10 @@ components:
         policy_snapshot_id:
           type: string
           format: uuid
+        official_release_revision_id:
+          type: string
+          format: uuid
+          description: Required for a managed official Installation and forbidden for a manual Installation.
         tool_permission_digest:
           $ref: '#/components/schemas/SHA256Digest'
     RuntimeBindingRecord:
@@ -4577,6 +5011,9 @@ components:
           minLength: 1
           maxLength: 64
         policy_snapshot_id:
+          type: string
+          format: uuid
+        official_release_revision_id:
           type: string
           format: uuid
         tool_permission_digest:
@@ -5450,6 +5887,13 @@ components:
         - organization_submission_superseded
         - organization_publication_policy_blocked
         - organization_publication_dlp_blocked
+        - official_agent_not_eligible
+        - official_release_paused
+        - official_release_revision_conflict
+        - official_client_version_unsupported
+        - official_installation_policy_blocked
+        - official_managed_update_conflict
+        - cloud_unavailable
         - rate_limited
         - service_unavailable
     ErrorEnvelope:
@@ -5519,12 +5963,24 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorEnvelope'
+    AgentInstallationError:
+      description: A normal, Organization-source, or Official-source Installation authorization, policy, conflict, compatibility, or availability result.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
     OrganizationAgentError:
       description: Organization Agent validation, authorization, lifecycle, approval, DLP, policy, idempotency, or service result without private evidence.
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/OrganizationAgentErrorEnvelope'
+    OfficialAgentError:
+      description: Bounded official Agent eligibility, release, compatibility, policy, conflict, or Cloud availability result without rollout or allowlist evidence.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
     ExperienceCandidateError:
       description: Candidate validation, DLP, visibility, Workspace lifecycle, terminal review, idempotency, or service failure without private evidence text.
       content:

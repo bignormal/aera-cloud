@@ -211,6 +211,13 @@ func TestHTTPAgentControlMapsStableServiceErrorsWithoutDisclosingObjectExistence
 		{ErrExperienceCandidateAlreadyReviewed, http.StatusConflict, "candidate_already_reviewed"},
 		{ErrRuntimeIncompatible, http.StatusBadRequest, "runtime_incompatible"},
 		{ErrInvalidDeviceProof, http.StatusBadRequest, "invalid_device_proof"},
+		{ErrOfficialAgentNotEligible, http.StatusForbidden, "official_agent_not_eligible"},
+		{ErrOfficialReleasePaused, http.StatusConflict, "official_release_paused"},
+		{ErrOfficialReleaseRevisionConflict, http.StatusConflict, "official_release_revision_conflict"},
+		{ErrOfficialClientVersionUnsupported, http.StatusUnprocessableEntity, "official_client_version_unsupported"},
+		{ErrOfficialInstallationPolicyBlocked, http.StatusForbidden, "official_installation_policy_blocked"},
+		{ErrOfficialManagedUpdateConflict, http.StatusConflict, "official_managed_update_conflict"},
+		{ErrCloudUnavailable, http.StatusServiceUnavailable, "cloud_unavailable"},
 		{ErrServiceUnavailable, http.StatusServiceUnavailable, "service_unavailable"},
 	}
 	for _, test := range tests {
@@ -390,6 +397,10 @@ type stubAgentControlHTTPService struct {
 	candidateReviewListCalls int
 	organizationSubmissions  []OrganizationAgentSubmission
 	organizationSubmission   OrganizationAgentSubmission
+	managedUpdate            OfficialManagedUpdate
+	lastManagedUpdateRequest GetManagedOfficialUpdateRequest
+	lastManagedApplyRequest  ManagedUpdateRequest
+	lastBindingCommand       RuntimeBindingRecordCommand
 }
 
 func (s *stubAgentControlHTTPService) ListDefinitions(_ context.Context, principal Principal) ([]Definition, error) {
@@ -436,6 +447,26 @@ func (s *stubAgentControlHTTPService) CreateInstallation(_ context.Context, prin
 	s.lastPrincipal = principal
 	s.lastInstallationRequest = request
 	return s.creation, s.err
+}
+
+func (s *stubAgentControlHTTPService) GetManagedOfficialUpdate(
+	_ context.Context,
+	principal Principal,
+	request GetManagedOfficialUpdateRequest,
+) (OfficialManagedUpdate, error) {
+	s.lastPrincipal = principal
+	s.lastManagedUpdateRequest = request
+	return s.managedUpdate, s.err
+}
+
+func (s *stubAgentControlHTTPService) ApplyManagedOfficialUpdate(
+	_ context.Context,
+	principal Principal,
+	request ManagedUpdateRequest,
+) (Installation, error) {
+	s.lastPrincipal = principal
+	s.lastManagedApplyRequest = request
+	return s.installation, s.err
 }
 
 func (s *stubAgentControlHTTPService) ListWorkspaceDefinitions(
@@ -597,8 +628,9 @@ func (s *stubAgentControlHTTPService) ArchiveInstallation(_ context.Context, pri
 	return s.installation, s.err
 }
 
-func (s *stubAgentControlHTTPService) RecordRuntimeBinding(_ context.Context, principal Principal, _ RuntimeBindingRecordCommand, _ string) (RuntimeBindingRecord, error) {
+func (s *stubAgentControlHTTPService) RecordRuntimeBinding(_ context.Context, principal Principal, command RuntimeBindingRecordCommand, _ string) (RuntimeBindingRecord, error) {
 	s.lastPrincipal = principal
+	s.lastBindingCommand = command
 	return s.binding, s.err
 }
 

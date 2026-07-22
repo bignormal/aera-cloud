@@ -492,6 +492,9 @@ type PlatformRepository interface {
 	GetPlatformVersion(context.Context, uuid.UUID, uuid.UUID) (Version, bool, error)
 	AppendOfficialReleaseRevision(context.Context, OfficialReleaseMutationRepositoryCommand) (OfficialRelease, error)
 	GetOfficialRelease(context.Context, uuid.UUID, uuid.UUID) (OfficialRelease, bool, error)
+	ListOfficialReleaseIDs(context.Context, uuid.UUID, OfficialChannel) ([]uuid.UUID, error)
+	FindOfficialReleaseID(context.Context, uuid.UUID, uuid.UUID, OfficialChannel) (uuid.UUID, bool, error)
+	FindOfficialInstallation(context.Context, Principal, uuid.UUID) (Installation, bool, error)
 	GetOfficialEligibility(context.Context, uuid.UUID, uuid.UUID, Principal, OfficialEligibilityContext) (OfficialEligibilityRecord, bool, error)
 	GetOfficialEligibilityByRevision(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, Principal, OfficialEligibilityContext) (OfficialEligibilityRecord, bool, error)
 }
@@ -517,6 +520,8 @@ type PlatformService interface {
 	PauseOfficialRelease(context.Context, PlatformAdminActor, ChangeOfficialReleaseStateCommand) (OfficialRelease, error)
 	ResumeOfficialRelease(context.Context, PlatformAdminActor, ChangeOfficialReleaseStateCommand) (OfficialRelease, error)
 	RollbackOfficialRelease(context.Context, PlatformAdminActor, RollbackOfficialReleaseCommand) (OfficialRelease, error)
+	ListOfficialAgents(context.Context, Principal, OfficialEligibilityContext) ([]OfficialAgentCatalogEntry, error)
+	GetOfficialAgent(context.Context, Principal, uuid.UUID, OfficialEligibilityContext) (OfficialAgentCatalogEntry, error)
 	ResolveOfficialRelease(context.Context, Principal, uuid.UUID, OfficialEligibilityContext) (OfficialManagedTarget, error)
 	ResolveOfficialReleaseRevision(context.Context, Principal, uuid.UUID, uuid.UUID, OfficialEligibilityContext) (OfficialManagedTarget, error)
 	EvaluateOfficialEligibilityRecord(Principal, OfficialEligibilityContext, OfficialEligibilityRecord, bool) (OfficialManagedTarget, error)
@@ -1187,6 +1192,120 @@ func (s *platformService) ResolveOfficialRelease(
 		return OfficialManagedTarget{}, ErrOfficialAgentNotEligible
 	}
 	return s.EvaluateOfficialEligibilityRecord(principal, eligibilityContext, record, false)
+}
+
+func (s *platformService) ListOfficialAgents(
+	ctx context.Context,
+	principal Principal,
+	eligibilityContext OfficialEligibilityContext,
+) ([]OfficialAgentCatalogEntry, error) {
+	if s == nil || !validPrincipal(principal) || !validOfficialEligibilityContext(principal, eligibilityContext) {
+		return nil, ErrInvalidRequest
+	}
+	releaseIDs, err := s.repository.ListOfficialReleaseIDs(ctx, s.platformID, eligibilityContext.Channel)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]OfficialAgentCatalogEntry, 0, len(releaseIDs))
+	for _, releaseID := range releaseIDs {
+		item, err := s.officialAgentForRelease(ctx, principal, releaseID, eligibilityContext)
+		if isOfficialCatalogDenial(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return cloneOfficialAgentCatalog(items), nil
+}
+
+func (s *platformService) GetOfficialAgent(
+	ctx context.Context,
+	principal Principal,
+	definitionID uuid.UUID,
+	eligibilityContext OfficialEligibilityContext,
+) (OfficialAgentCatalogEntry, error) {
+	if s == nil || !validPrincipal(principal) || definitionID == uuid.Nil ||
+		!validOfficialEligibilityContext(principal, eligibilityContext) {
+		return OfficialAgentCatalogEntry{}, ErrInvalidRequest
+	}
+	releaseID, found, err := s.repository.FindOfficialReleaseID(
+		ctx, s.platformID, definitionID, eligibilityContext.Channel,
+	)
+	if err != nil {
+		return OfficialAgentCatalogEntry{}, err
+	}
+	if !found {
+		return OfficialAgentCatalogEntry{}, ErrOfficialAgentNotEligible
+	}
+	item, err := s.officialAgentForRelease(ctx, principal, releaseID, eligibilityContext)
+	return cloneOfficialAgentCatalogEntry(item), err
+}
+
+func (s *platformService) officialAgentForRelease(
+	ctx context.Context,
+	principal Principal,
+	releaseID uuid.UUID,
+	eligibilityContext OfficialEligibilityContext,
+) (OfficialAgentCatalogEntry, error) {
+	record, found, err := s.repository.GetOfficialEligibility(
+		ctx, s.platformID, releaseID, principal, eligibilityContext,
+	)
+	if err != nil {
+		return OfficialAgentCatalogEntry{}, err
+	}
+	if !found {
+		return OfficialAgentCatalogEntry{}, ErrOfficialAgentNotEligible
+	}
+	target, err := s.EvaluateOfficialEligibilityRecord(principal, eligibilityContext, record, false)
+	if err != nil {
+		return OfficialAgentCatalogEntry{}, err
+	}
+	detail, found, err := s.repository.GetPlatformDefinition(ctx, s.platformID, target.DefinitionID)
+	if err != nil {
+		return OfficialAgentCatalogEntry{}, err
+	}
+	if !found || detail.PlatformID != s.platformID || detail.Definition.ID != target.DefinitionID ||
+		detail.Definition.Status != definitionStatusActive {
+		return OfficialAgentCatalogEntry{}, ErrCloudUnavailable
+	}
+	version, found, err := s.repository.GetPlatformVersion(ctx, s.platformID, target.VersionID)
+	if err != nil {
+		return OfficialAgentCatalogEntry{}, err
+	}
+	if !found || version.ID != target.VersionID || version.DefinitionID != target.DefinitionID {
+		return OfficialAgentCatalogEntry{}, ErrCloudUnavailable
+	}
+	installationState, updateState := OfficialInstallationNotInstalled, OfficialUpdateCurrent
+	installation, found, err := s.repository.FindOfficialInstallation(ctx, principal, target.ReleaseID)
+	if err != nil {
+		return OfficialAgentCatalogEntry{}, err
+	}
+	if found {
+		if installation.DeviceID != principal.DeviceID || installation.DefinitionID != target.DefinitionID ||
+			installation.UpdatePolicy != installationUpdatePolicyManaged || installation.OfficialReleaseID == nil ||
+			*installation.OfficialReleaseID != target.ReleaseID || installation.SelectedReleaseRevisionID == nil ||
+			(installation.Status != InstallationStatusPending && installation.Status != InstallationStatusActive) {
+			return OfficialAgentCatalogEntry{}, ErrCloudUnavailable
+		}
+		installationState = OfficialInstallationInstalled
+		if installation.Status == InstallationStatusActive &&
+			*installation.SelectedReleaseRevisionID != target.ReleaseRevisionID {
+			updateState = OfficialUpdateAvailable
+		}
+	}
+	return OfficialAgentCatalogEntry{
+		DefinitionID: target.DefinitionID, DisplayName: detail.Definition.DisplayName,
+		IconMediaType: detail.Definition.IconMediaType, IconData: append([]byte(nil), detail.Definition.IconData...),
+		Version: cloneVersion(version), Target: target,
+		InstallationState: installationState, UpdateState: updateState,
+	}, nil
+}
+
+func isOfficialCatalogDenial(err error) bool {
+	return errors.Is(err, ErrOfficialAgentNotEligible) || errors.Is(err, ErrOfficialReleasePaused) ||
+		errors.Is(err, ErrOfficialClientVersionUnsupported) || errors.Is(err, ErrOfficialInstallationPolicyBlocked)
 }
 
 func (s *platformService) ResolveOfficialReleaseRevision(

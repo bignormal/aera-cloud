@@ -188,6 +188,7 @@ type ServiceRepository interface {
 }
 
 type OfficialEligibilityEvaluator interface {
+	GetOfficialAgent(context.Context, Principal, uuid.UUID, OfficialEligibilityContext) (OfficialAgentCatalogEntry, error)
 	ResolveOfficialReleaseRevision(context.Context, Principal, uuid.UUID, uuid.UUID, OfficialEligibilityContext) (OfficialManagedTarget, error)
 	EvaluateOfficialEligibilityRecord(Principal, OfficialEligibilityContext, OfficialEligibilityRecord, bool) (OfficialManagedTarget, error)
 }
@@ -260,6 +261,12 @@ type SelectInstallationVersionRequest struct {
 	InstallationID uuid.UUID
 	VersionID      uuid.UUID
 	RequestID      string
+}
+
+type GetManagedOfficialUpdateRequest struct {
+	InstallationID  uuid.UUID
+	OfficialContext OfficialEligibilityContext
+	RequestID       string
 }
 
 type ManagedUpdateRequest struct {
@@ -1009,6 +1016,58 @@ func (s *Service) ApplyManagedOfficialUpdate(
 	return cloneInstallation(selected), nil
 }
 
+func (s *Service) GetManagedOfficialUpdate(
+	ctx context.Context,
+	principal Principal,
+	request GetManagedOfficialUpdateRequest,
+) (OfficialManagedUpdate, error) {
+	if s == nil || s.officialEligibility == nil || !validPrincipal(principal) ||
+		request.InstallationID == uuid.Nil || !validOfficialEligibilityContext(principal, request.OfficialContext) ||
+		!validRequestID(request.RequestID) {
+		return OfficialManagedUpdate{}, ErrInvalidRequest
+	}
+	installation, found, err := s.repository.FindInstallation(ctx, principal, request.InstallationID)
+	if err != nil {
+		return OfficialManagedUpdate{}, err
+	}
+	if !found || installation.DeviceID != principal.DeviceID {
+		if auditErr := s.recordDenied(ctx, principal, "agent_installation", request.InstallationID, request.RequestID); auditErr != nil {
+			return OfficialManagedUpdate{}, auditErr
+		}
+		return OfficialManagedUpdate{}, ErrNotFound
+	}
+	if installation.UpdatePolicy != installationUpdatePolicyManaged || installation.OfficialReleaseID == nil ||
+		installation.SelectedReleaseRevisionID == nil {
+		return OfficialManagedUpdate{}, ErrOfficialManagedUpdateConflict
+	}
+	if installation.Status == InstallationStatusArchived {
+		return OfficialManagedUpdate{}, ErrInstallationArchived
+	}
+	if installation.Status != InstallationStatusActive {
+		return OfficialManagedUpdate{}, ErrActivationConflict
+	}
+	agent, err := s.officialEligibility.GetOfficialAgent(
+		ctx, principal, installation.DefinitionID, request.OfficialContext,
+	)
+	if err != nil {
+		return OfficialManagedUpdate{}, err
+	}
+	if agent.Target.ReleaseID != *installation.OfficialReleaseID {
+		return OfficialManagedUpdate{}, ErrOfficialAgentNotEligible
+	}
+	if agent.Target.DefinitionID != installation.DefinitionID || agent.Target.VersionID != agent.Version.ID {
+		return OfficialManagedUpdate{}, ErrCloudUnavailable
+	}
+	if *installation.SelectedReleaseRevisionID == agent.Target.ReleaseRevisionID {
+		return OfficialManagedUpdate{UpdateAvailable: false}, nil
+	}
+	return OfficialManagedUpdate{
+		UpdateAvailable: true, InstallationID: installation.ID,
+		ExpectedSelectedReleaseRevisionID: *installation.SelectedReleaseRevisionID,
+		Target:                            agent.Target, Version: cloneVersion(agent.Version),
+	}, nil
+}
+
 func (s *Service) ArchiveInstallation(
 	ctx context.Context,
 	principal Principal,
@@ -1390,6 +1449,23 @@ func cloneVersion(value Version) Version {
 	value.CanonicalManifest = append([]byte(nil), value.CanonicalManifest...)
 	value.Bundle = append([]byte(nil), value.Bundle...)
 	value.Signature = append([]byte(nil), value.Signature...)
+	return value
+}
+
+func cloneOfficialAgentCatalog(values []OfficialAgentCatalogEntry) []OfficialAgentCatalogEntry {
+	if values == nil {
+		return nil
+	}
+	result := make([]OfficialAgentCatalogEntry, len(values))
+	for index, value := range values {
+		result[index] = cloneOfficialAgentCatalogEntry(value)
+	}
+	return result
+}
+
+func cloneOfficialAgentCatalogEntry(value OfficialAgentCatalogEntry) OfficialAgentCatalogEntry {
+	value.IconData = append([]byte(nil), value.IconData...)
+	value.Version = cloneVersion(value.Version)
 	return value
 }
 

@@ -981,6 +981,92 @@ func (r *PostgresRepository) GetOfficialRelease(
 	return value, true, nil
 }
 
+func (r *PostgresRepository) ListOfficialReleaseIDs(
+	ctx context.Context,
+	platformID uuid.UUID,
+	channel OfficialChannel,
+) ([]uuid.UUID, error) {
+	if r == nil || r.postgres == nil || platformID == uuid.Nil ||
+		(channel != OfficialChannelInternal && channel != OfficialChannelStable) {
+		return nil, ErrInvalidRepositoryCommand
+	}
+	const maximumOfficialCatalogSize = 100
+	rows, err := r.postgres.Query(ctx, `
+		SELECT release.id
+		FROM official_releases release
+		WHERE release.platform_id = $1 AND release.channel = $2
+		ORDER BY release.definition_id, release.id
+		LIMIT $3
+	`, platformID, channel, maximumOfficialCatalogSize+1)
+	if err != nil {
+		return nil, ErrServiceUnavailable
+	}
+	defer rows.Close()
+	values := make([]uuid.UUID, 0, maximumOfficialCatalogSize)
+	for rows.Next() {
+		var releaseID uuid.UUID
+		if err := rows.Scan(&releaseID); err != nil || releaseID == uuid.Nil {
+			return nil, ErrServiceUnavailable
+		}
+		values = append(values, releaseID)
+	}
+	if rows.Err() != nil || len(values) > maximumOfficialCatalogSize {
+		return nil, ErrCloudUnavailable
+	}
+	return values, nil
+}
+
+func (r *PostgresRepository) FindOfficialReleaseID(
+	ctx context.Context,
+	platformID uuid.UUID,
+	definitionID uuid.UUID,
+	channel OfficialChannel,
+) (uuid.UUID, bool, error) {
+	if r == nil || r.postgres == nil || platformID == uuid.Nil || definitionID == uuid.Nil ||
+		(channel != OfficialChannelInternal && channel != OfficialChannelStable) {
+		return uuid.Nil, false, ErrInvalidRepositoryCommand
+	}
+	var releaseID uuid.UUID
+	err := r.postgres.QueryRow(ctx, `
+		SELECT id FROM official_releases
+		WHERE platform_id = $1 AND definition_id = $2 AND channel = $3
+	`, platformID, definitionID, channel).Scan(&releaseID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, false, nil
+	}
+	if err != nil || releaseID == uuid.Nil {
+		return uuid.Nil, false, ErrServiceUnavailable
+	}
+	return releaseID, true, nil
+}
+
+func (r *PostgresRepository) FindOfficialInstallation(
+	ctx context.Context,
+	principal Principal,
+	releaseID uuid.UUID,
+) (Installation, bool, error) {
+	if r == nil || r.postgres == nil || !validPrincipal(principal) || releaseID == uuid.Nil {
+		return Installation{}, false, ErrInvalidRepositoryCommand
+	}
+	installation, err := scanInstallation(r.postgres.QueryRow(ctx, `
+		SELECT id, device_id, device_installation_id, definition_id, selected_version_id,
+		       runtime_profile_id, policy_snapshot_id, official_release_id, selected_release_revision_id,
+		       update_policy, status, created_at, updated_at, activated_at, archived_at
+		FROM installations
+		WHERE tenant_id = $1 AND owner_scope = 'USER' AND owner_id = $2 AND device_id = $3
+		  AND update_policy = 'managed' AND official_release_id = $4 AND status <> 'archived'
+		ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, created_at DESC, id DESC
+		LIMIT 1
+	`, principal.PersonalSpaceID, principal.UserID, principal.DeviceID, releaseID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Installation{}, false, nil
+	}
+	if err != nil {
+		return Installation{}, false, ErrServiceUnavailable
+	}
+	return installation, true, nil
+}
+
 func (r *PostgresRepository) GetOfficialEligibility(
 	ctx context.Context,
 	platformID uuid.UUID,

@@ -141,6 +141,14 @@ func TestManagedOfficialSelectionAdvancesAndRollsBackWithoutChangingProfile(t *t
 
 	v2 := fixture.publishNextOfficialVersion(t, release.DefinitionID, v1, 0xc8)
 	v2Active := fixture.activateOfficialRelease(t, v1Active, v2, nil, 0xcb)
+	available, err := service.GetManagedOfficialUpdate(fixture.ctx, principal, GetManagedOfficialUpdateRequest{
+		InstallationID: created.Installation.ID, OfficialContext: contextValue, RequestID: "managed-read-v2",
+	})
+	if err != nil || !available.UpdateAvailable || available.InstallationID != created.Installation.ID ||
+		available.ExpectedSelectedReleaseRevisionID != v1Active.CurrentRevision.ID ||
+		available.Target.ReleaseRevisionID != v2Active.CurrentRevision.ID || available.Version.ID != v2 {
+		t.Fatalf("managed v2 target = %+v, %v", available, err)
+	}
 	selected, err := service.ApplyManagedOfficialUpdate(fixture.ctx, principal, ManagedUpdateRequest{
 		InstallationID: created.Installation.ID, ExpectedSelectedRevisionID: v1Active.CurrentRevision.ID,
 		TargetReleaseRevisionID: v2Active.CurrentRevision.ID, OfficialContext: contextValue,
@@ -149,6 +157,12 @@ func TestManagedOfficialSelectionAdvancesAndRollsBackWithoutChangingProfile(t *t
 	if err != nil || selected.SelectedVersionID != v2 || selected.SelectedReleaseRevisionID == nil ||
 		*selected.SelectedReleaseRevisionID != v2Active.CurrentRevision.ID || selected.RuntimeProfileID == nil || *selected.RuntimeProfileID != profileID {
 		t.Fatalf("managed v2 selection = %+v, %v", selected, err)
+	}
+	current, err := service.GetManagedOfficialUpdate(fixture.ctx, principal, GetManagedOfficialUpdateRequest{
+		InstallationID: created.Installation.ID, OfficialContext: contextValue, RequestID: "managed-read-current",
+	})
+	if err != nil || current.UpdateAvailable {
+		t.Fatalf("managed current target = %+v, %v", current, err)
 	}
 	if _, err := service.ApplyManagedOfficialUpdate(fixture.ctx, principal, ManagedUpdateRequest{
 		InstallationID: created.Installation.ID, ExpectedSelectedRevisionID: v1Active.CurrentRevision.ID,
@@ -166,6 +180,43 @@ func TestManagedOfficialSelectionAdvancesAndRollsBackWithoutChangingProfile(t *t
 	if err != nil || rolledBack.SelectedVersionID != v1 || rolledBack.SelectedReleaseRevisionID == nil ||
 		*rolledBack.SelectedReleaseRevisionID != rollback.CurrentRevision.ID || rolledBack.RuntimeProfileID == nil || *rolledBack.RuntimeProfileID != profileID {
 		t.Fatalf("managed rollback selection = %+v, %v", rolledBack, err)
+	}
+}
+
+func TestManagedOfficialUpdateRejectsAReleaseFromAnotherTrustedChannel(t *testing.T) {
+	fixture := newAgentControlServiceFixture(t)
+	releaseID, selectedRevisionID := uuid.New(), uuid.New()
+	installation := Installation{
+		ID: uuid.New(), DeviceID: fixture.principal.DeviceID,
+		DefinitionID: uuid.New(), UpdatePolicy: installationUpdatePolicyManaged,
+		OfficialReleaseID: &releaseID, SelectedReleaseRevisionID: &selectedRevisionID,
+		Status: InstallationStatusActive,
+	}
+	fixture.repository.findInstallation = func(
+		_ context.Context,
+		_ Principal,
+		_ uuid.UUID,
+	) (Installation, bool, error) {
+		return installation, true, nil
+	}
+	targetVersionID := uuid.New()
+	fixture.service.officialEligibility = &stubOfficialCatalogHTTPService{entry: OfficialAgentCatalogEntry{
+		DefinitionID: installation.DefinitionID,
+		Target: OfficialManagedTarget{
+			PlatformID: uuid.New(), ReleaseID: uuid.New(), ReleaseRevisionID: uuid.New(),
+			DefinitionID: installation.DefinitionID, VersionID: targetVersionID, Channel: OfficialChannelInternal,
+		},
+		Version: Version{ID: targetVersionID, DefinitionID: installation.DefinitionID, VersionNumber: 2},
+	}}
+	contextValue := OfficialEligibilityContext{
+		Channel: OfficialChannelInternal, DesktopVersion: "v1.0.0",
+		Selector: OfficialProductSelector{Scope: OwnerScopeUser, PersonalSpaceID: fixture.principal.PersonalSpaceID},
+	}
+	_, err := fixture.service.GetManagedOfficialUpdate(context.Background(), fixture.principal, GetManagedOfficialUpdateRequest{
+		InstallationID: installation.ID, OfficialContext: contextValue, RequestID: "managed-channel-mismatch",
+	})
+	if !errors.Is(err, ErrOfficialAgentNotEligible) {
+		t.Fatalf("managed update release mismatch error = %v", err)
 	}
 }
 

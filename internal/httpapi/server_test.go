@@ -211,10 +211,15 @@ func TestAgentControlRoutesAreMountedWithoutCapturingOtherAPIRoutes(t *testing.T
 		path   string
 	}{
 		{method: http.MethodGet, path: "/api/v1/agent-definitions"},
+		{method: http.MethodGet, path: "/api/v1/official-agents"},
+		{method: http.MethodGet, path: "/api/v1/official-agents/definition-id"},
+		{method: http.MethodGet, path: "/api/v1/official-agents/definition-id/release"},
 		{method: http.MethodGet, path: "/api/v1/agent-definitions/definition-id"},
 		{method: http.MethodGet, path: "/api/v1/agent-versions/version-id"},
 		{method: http.MethodPost, path: "/api/v1/agent-installations"},
 		{method: http.MethodPost, path: "/api/v1/agent-installations/installation-id/activate"},
+		{method: http.MethodGet, path: "/api/v1/agent-installations/installation-id/managed-update"},
+		{method: http.MethodPost, path: "/api/v1/agent-installations/installation-id/apply-managed-update"},
 		{method: http.MethodGet, path: "/api/v1/policy-snapshots/policy-id"},
 		{method: http.MethodPost, path: "/api/v1/runtime-binding-records"},
 	}
@@ -238,6 +243,16 @@ func TestAgentControlRoutesAreMountedWithoutCapturingOtherAPIRoutes(t *testing.T
 	handler.ServeHTTP(unrelated, httptest.NewRequest(http.MethodGet, "/api/v1/accounts/me", nil))
 	if unrelated.Code != http.StatusNotFound {
 		t.Fatalf("unrelated API status = %d, want %d", unrelated.Code, http.StatusNotFound)
+	}
+	for _, path := range []string{
+		"/api/v1/official-agent-drafts", "/api/v1/official-agent-reviews", "/api/v1/official-agent-releases",
+		"/internal/admin/v1/official-agent-definitions",
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("private official path %s status = %d", path, response.Code)
+		}
 	}
 }
 

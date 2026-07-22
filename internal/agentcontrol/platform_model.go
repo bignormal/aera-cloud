@@ -136,6 +136,39 @@ type OfficialManagedTarget struct {
 	HeadRevision      int64
 }
 
+type OfficialInstallationState string
+
+const (
+	OfficialInstallationNotInstalled OfficialInstallationState = "not_installed"
+	OfficialInstallationInstalled    OfficialInstallationState = "installed"
+)
+
+type OfficialUpdateState string
+
+const (
+	OfficialUpdateCurrent   OfficialUpdateState = "current"
+	OfficialUpdateAvailable OfficialUpdateState = "update_available"
+)
+
+type OfficialAgentCatalogEntry struct {
+	DefinitionID      uuid.UUID
+	DisplayName       string
+	IconMediaType     string
+	IconData          []byte
+	Version           Version
+	Target            OfficialManagedTarget
+	InstallationState OfficialInstallationState
+	UpdateState       OfficialUpdateState
+}
+
+type OfficialManagedUpdate struct {
+	UpdateAvailable                   bool
+	InstallationID                    uuid.UUID
+	ExpectedSelectedReleaseRevisionID uuid.UUID
+	Target                            OfficialManagedTarget
+	Version                           Version
+}
+
 type OfficialEligibilityRecord struct {
 	AccountDeviceActive  bool
 	PlatformActive       bool
