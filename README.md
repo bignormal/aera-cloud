@@ -40,6 +40,27 @@ The API provides masked exact-identity lookup plus bounded user, device, session
 
 Do not add certificate paths, key material, or service identities to `.env.example`. Supply all enabled-listener settings through the deployment secret manager and follow the [private staging runbook](docs/runbooks/private-staging.md) for configuration, deployment order, rollback, and verification.
 
+## Official managed Agent development
+
+Official managed Agents are disabled by default. Development or test processes expose no official catalog, PLATFORM publication workflow, or managed update path unless `AGENTERA_CLOUD_OFFICIAL_AGENTS_ENABLED=true` and the complete platform identity plus rollout-key configuration is present. Partial configuration fails startup. Keep the rollout HMAC ring independent from every signing, identity, session, and rate-limit key; `.env.example` intentionally contains no enabled rollout secret.
+
+The public API exposes only eligible published catalog entries and USER-owned managed Installations. Drafts, submissions, reviews, release controls, and official audit history exist only on the separately authenticated Internal Admin listener. Official Agent mutations persist their domain change, idempotency record, operation result, and audit evidence atomically. Version selection is derived by Cloud from the current immutable release revision; clients cannot submit PLATFORM ownership or an arbitrary managed version.
+
+Cloud stores no physical Hermes Profile path and receives no Memory, conversation, session, credential, private Skill, Curator, or local-learning data. Each official Installation remains USER-owned, while `runtime_binding_records` contain only opaque profile identity and sanitized release provenance. Publishing, pausing, rollout changes, and rollback do not mutate an existing local RuntimeBinding or private adaptive state.
+
+After starting the disposable Compose PostgreSQL and Redis services, run the complete development gate with the checked-in non-production configuration:
+
+```bash
+set -a
+source ./.env.example
+set +a
+go test ./... -count=1
+go vet ./...
+AERA_INTEGRATION_TESTS=1 go test -p 1 ./... -count=1
+```
+
+The integration gate includes deterministic rollout, immutable publication, atomic failure rollback, actor-bound Internal Admin operations, strict public/internal OpenAPI separation, and private-state boundary checks. These commands verify local development behavior only; they do not authorize production keys, deployment, publication, or release.
+
 Run unit tests without services:
 
 ```bash
