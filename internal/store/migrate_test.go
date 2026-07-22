@@ -16,16 +16,16 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func TestEmbeddedMigrationsIncludeOrganizationAgentV1(t *testing.T) {
+func TestEmbeddedMigrationsIncludeInternalAdminAPI(t *testing.T) {
 	loaded, err := loadMigrations(migrations.FS)
 	if err != nil {
 		t.Fatalf("loadMigrations() error = %v", err)
 	}
-	if len(loaded) != 14 {
-		t.Fatalf("embedded migration count = %d, want 14", len(loaded))
+	if len(loaded) != 15 {
+		t.Fatalf("embedded migration count = %d, want 15", len(loaded))
 	}
 	last := loaded[len(loaded)-1]
-	if last.version != 14 || last.name != "000014_organization_agent_scope.sql" {
+	if last.version != 15 || last.name != "000015_internal_admin_api.sql" {
 		t.Fatalf("last embedded migration = %d/%s", last.version, last.name)
 	}
 }
@@ -82,6 +82,7 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 		"organization_idempotency_records",
 		"organization_agent_submissions",
 		"organization_agent_reviews",
+		"admin_operations",
 	}
 	for _, table := range tables {
 		var exists bool
@@ -161,6 +162,9 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	assertCheckConstraintContains(t, ctx, postgres, "organization_invitations", "organization_invitations_token_digest_length_check", "octet_length(token_digest) = 32")
 	assertCheckConstraintContains(t, ctx, postgres, "organization_invitations", "organization_invitations_expiry_check", "7 days")
 	assertCheckConstraintContains(t, ctx, postgres, "organization_invitations", "organization_invitations_lifecycle_check", "accepted_at IS NOT NULL")
+	for _, status := range []string{"executing", "succeeded", "failed", "conflict"} {
+		assertCheckConstraintContains(t, ctx, postgres, "admin_operations", "admin_operations_status_check", status)
+	}
 	assertCheckConstraintExcludes(t, ctx, postgres, "organization_invitations", "organization_invitations_lifecycle_check", "accepted_by_user_id IS NOT NULL")
 	assertCheckConstraintContains(t, ctx, postgres, "organization_policy_snapshots", "organization_policy_snapshots_schema_version_check", "schema_version = 1")
 	assertCheckConstraintContains(t, ctx, postgres, "organization_policy_snapshots", "organization_policy_snapshots_content_digest_length_check", "octet_length(content_digest) = 32")
@@ -307,6 +311,16 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 		"reviewed_content_digest", "reviewed_at",
 	})
 	assertColumns(t, ctx, postgres, "audit_events", []string{"organization_id"})
+	assertColumns(t, ctx, postgres, "users", []string{"administrative_revision"})
+	assertColumns(t, ctx, postgres, "admin_operations", []string{
+		"operation_id", "idempotency_key_id", "idempotency_key_hmac", "request_fingerprint",
+		"service_subject", "actor_admin_id", "approval_id", "request_id", "action", "target_type",
+		"target_id", "expected_revision", "result_revision", "status", "error_code", "reason_code",
+		"ticket_reference", "created_at", "updated_at", "completed_at",
+	})
+	assertNoColumns(t, ctx, postgres, "admin_operations", []string{
+		"note", "idempotency_key", "email", "phone", "token", "certificate",
+	})
 	assertColumnNullable(t, ctx, postgres, "experience_candidates", "submitted_by_user_id", true)
 	assertColumnNullable(t, ctx, postgres, "experience_candidates", "submitted_from_device_id", true)
 	assertColumnNullable(t, ctx, postgres, "experience_candidate_reviews", "reviewed_by_user_id", true)
@@ -342,8 +356,8 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	if err := postgres.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if applied != 14 {
-		t.Fatalf("applied migration count = %d, want 14", applied)
+	if applied != 15 {
+		t.Fatalf("applied migration count = %d, want 15", applied)
 	}
 	var receiptConsumedColumn bool
 	if err := postgres.QueryRow(ctx, `
@@ -857,6 +871,36 @@ func assertColumns(t *testing.T, ctx context.Context, postgres *pgxpool.Pool, ta
 		if _, ok := actual[column]; !ok {
 			t.Errorf("table %s is missing column %s", table, column)
 		}
+	}
+}
+
+func assertNoColumns(t *testing.T, ctx context.Context, postgres *pgxpool.Pool, table string, forbidden []string) {
+	t.Helper()
+	rows, err := postgres.Query(ctx, `
+		SELECT column_name
+		FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = $1
+	`, table)
+	if err != nil {
+		t.Fatalf("read columns for %s: %v", table, err)
+	}
+	defer rows.Close()
+
+	forbiddenSet := make(map[string]struct{}, len(forbidden))
+	for _, column := range forbidden {
+		forbiddenSet[column] = struct{}{}
+	}
+	for rows.Next() {
+		var column string
+		if err := rows.Scan(&column); err != nil {
+			t.Fatalf("scan column for %s: %v", table, err)
+		}
+		if _, found := forbiddenSet[column]; found {
+			t.Errorf("table %s contains forbidden column %s", table, column)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate columns for %s: %v", table, err)
 	}
 }
 
