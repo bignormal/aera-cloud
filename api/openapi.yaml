@@ -3005,6 +3005,27 @@ paths:
           $ref: '#/components/responses/EncryptedBackupQuotaExceeded'
         '503':
           $ref: '#/components/responses/EncryptedBackupServiceUnavailable'
+  /api/v1/encrypted-profile-backups/devices:
+    get:
+      operationId: listEncryptedBackupDevices
+      description: Lists the same account's latest signed X25519 backup public registrations; no private key or registration signature is returned.
+      security:
+        - desktopAccessToken: []
+      responses:
+        '200':
+          description: Account-scoped backup device registrations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EncryptedBackupDeviceList'
+        '400':
+          $ref: '#/components/responses/EncryptedBackupInvalidRequest'
+        '401':
+          $ref: '#/components/responses/EncryptedBackupAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/EncryptedBackupForbidden'
+        '503':
+          $ref: '#/components/responses/EncryptedBackupServiceUnavailable'
   /api/v1/encrypted-profile-backups/devices/current:
     put:
       operationId: registerCurrentEncryptedBackupDevice
@@ -6410,6 +6431,59 @@ components:
     EncryptedBackupState:
       type: string
       enum: [initiated, uploading, sealed, deleting, deleted, expired]
+    EncryptedBackupDeviceList:
+      type: object
+      additionalProperties: false
+      required: [devices]
+      properties:
+        devices:
+          type: array
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/EncryptedBackupDevice'
+    EncryptedBackupDevice:
+      type: object
+      additionalProperties: false
+      required:
+        - device_id
+        - key_epoch
+        - revision
+        - status
+        - public_key
+        - registered_at
+        - updated_at
+        - revoked_at
+      properties:
+        device_id:
+          type: string
+          format: uuid
+        key_epoch:
+          type: integer
+          format: int64
+          minimum: 1
+        revision:
+          type: integer
+          format: int64
+          minimum: 1
+        status:
+          type: string
+          enum: [active, revoked]
+        public_key:
+          type: string
+          description: Raw-base64url 32-byte X25519 public key; no private key or registration signature is returned.
+          minLength: 43
+          maxLength: 43
+          pattern: '^[A-Za-z0-9_-]{43}$'
+        registered_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
     EncryptedBackupDeviceRegistrationRequest:
       type: object
       additionalProperties: false

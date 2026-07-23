@@ -679,6 +679,7 @@ func TestOpenAPIContainsCiphertextOnlyEncryptedProfileBackupContract(t *testing.
 	for _, path := range []string{
 		"/api/v1/encrypted-profile-backups:",
 		"/api/v1/encrypted-profile-backups/devices/current:",
+		"/api/v1/encrypted-profile-backups/devices:",
 		"/api/v1/encrypted-profile-backups/devices/{device_id}:",
 		"/api/v1/encrypted-profile-backups/{backup_id}:",
 		"/api/v1/encrypted-profile-backups/{backup_id}/chunks/{chunk_index}:",

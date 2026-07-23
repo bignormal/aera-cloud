@@ -273,6 +273,43 @@ func (repository *PostgresRepository) LatestBackupDeviceStatus(
 	return status, nil
 }
 
+func (repository *PostgresRepository) ListBackupDevices(
+	ctx context.Context,
+	userID uuid.UUID,
+) ([]BackupDevice, error) {
+	if repository == nil || repository.postgres == nil || userID == uuid.Nil {
+		return nil, ErrInvalidRequest
+	}
+	rows, err := repository.postgres.Query(ctx, `
+		SELECT DISTINCT ON (device_id)
+		       id, user_id, device_id, key_epoch, public_key,
+		       registration_signature, revision, status,
+		       created_at, updated_at, revoked_at
+		FROM backup_devices
+		WHERE user_id = $1
+		ORDER BY device_id ASC, revision DESC, key_epoch DESC
+	`, userID)
+	if err != nil {
+		return nil, ErrEncryptedUnavailable
+	}
+	defer rows.Close()
+	devices := make([]BackupDevice, 0)
+	for rows.Next() {
+		device, _, err := scanBackupDevice(rows)
+		if err != nil {
+			return nil, ErrEncryptedUnavailable
+		}
+		if device.UserID != userID {
+			return nil, ErrEncryptedUnavailable
+		}
+		devices = append(devices, device)
+	}
+	if rows.Err() != nil {
+		return nil, ErrEncryptedUnavailable
+	}
+	return devices, nil
+}
+
 func (repository *PostgresRepository) Initiate(
 	ctx context.Context,
 	record InitiateRecord,

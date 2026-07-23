@@ -21,6 +21,7 @@ type Repository interface {
 	RevokeBackupDevice(context.Context, uuid.UUID, uuid.UUID, time.Time) error
 	BackupDevice(context.Context, uuid.UUID, uuid.UUID, int64) (BackupDevice, error)
 	LatestBackupDeviceStatus(context.Context, uuid.UUID, uuid.UUID) (string, error)
+	ListBackupDevices(context.Context, uuid.UUID) ([]BackupDevice, error)
 	Initiate(context.Context, InitiateRecord) (Backup, bool, error)
 	ChunkUploadTarget(context.Context, uuid.UUID, uuid.UUID, int) (UploadTarget, error)
 	ManifestUploadTarget(context.Context, uuid.UUID, uuid.UUID) (UploadTarget, error)
@@ -126,6 +127,37 @@ func (service *Service) RevokeDevice(
 		targetDeviceID,
 		service.clock().UTC(),
 	)
+}
+
+func (service *Service) ListDevices(
+	ctx context.Context,
+	principal Principal,
+) ([]BackupDevice, error) {
+	if service == nil || !principal.valid() {
+		return nil, ErrInvalidRequest
+	}
+	if _, err := service.activeAuthenticationDevice(ctx, principal); err != nil {
+		return nil, err
+	}
+	if err := service.ensureBackupDeviceNotRevoked(ctx, principal); err != nil {
+		return nil, err
+	}
+	devices, err := service.repository.ListBackupDevices(ctx, principal.UserID)
+	if err != nil {
+		return nil, err
+	}
+	for index := range devices {
+		if devices[index].UserID != principal.UserID ||
+			devices[index].DeviceID == uuid.Nil ||
+			devices[index].KeyEpoch <= 0 ||
+			devices[index].Revision <= 0 ||
+			len(devices[index].PublicKey) != 32 ||
+			(devices[index].Status != "active" && devices[index].Status != "revoked") {
+			return nil, ErrEncryptedUnavailable
+		}
+		devices[index].PublicKey = append([]byte(nil), devices[index].PublicKey...)
+	}
+	return devices, nil
 }
 
 func (service *Service) Initiate(

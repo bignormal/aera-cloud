@@ -32,6 +32,7 @@ const (
 type BackupHTTPService interface {
 	RegisterDevice(context.Context, Principal, RegisterDeviceCommand) (BackupDevice, bool, error)
 	RevokeDevice(context.Context, Principal, uuid.UUID) error
+	ListDevices(context.Context, Principal) ([]BackupDevice, error)
 	Initiate(context.Context, InitiateCommand) (InitiateResult, error)
 	UploadChunk(context.Context, Principal, uuid.UUID, int, io.Reader, int64, [sha256.Size]byte) error
 	UploadManifest(context.Context, Principal, uuid.UUID, io.Reader, int64, [sha256.Size]byte) error
@@ -130,6 +131,17 @@ type keyEnvelopeHTTPResponse struct {
 	RootKeyEnvelopeDigest string    `json:"root_key_envelope_digest"`
 }
 
+type backupDeviceHTTPResponse struct {
+	DeviceID     uuid.UUID  `json:"device_id"`
+	KeyEpoch     int64      `json:"key_epoch"`
+	Revision     int64      `json:"revision"`
+	Status       string     `json:"status"`
+	PublicKey    string     `json:"public_key"`
+	RegisteredAt time.Time  `json:"registered_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	RevokedAt    *time.Time `json:"revoked_at"`
+}
+
 type backupDetailHTTPResponse struct {
 	backupSummaryHTTPResponse
 	Manifest                   objectHTTPSpec           `json:"manifest"`
@@ -150,6 +162,7 @@ func NewHandler(config HTTPConfig) http.Handler {
 		accessTokens: config.AccessTokens,
 	}
 	router := chi.NewRouter()
+	router.Get("/api/v1/encrypted-profile-backups/devices", handler.listDevices)
 	router.Put("/api/v1/encrypted-profile-backups/devices/current", handler.registerCurrentDevice)
 	router.Delete("/api/v1/encrypted-profile-backups/devices/{deviceID}", handler.revokeDevice)
 	router.Post("/api/v1/encrypted-profile-backups", handler.initiate)
@@ -162,6 +175,37 @@ func NewHandler(config HTTPConfig) http.Handler {
 	router.Post("/api/v1/encrypted-profile-backups/{backupID}/device-envelopes", handler.addDeviceEnvelope)
 	router.Delete("/api/v1/encrypted-profile-backups/{backupID}", handler.delete)
 	return router
+}
+
+func (handler *backupHTTPHandler) listDevices(
+	response http.ResponseWriter,
+	request *http.Request,
+) {
+	principal, ok := handler.authorize(response, request)
+	if !ok {
+		return
+	}
+	devices, err := handler.service.ListDevices(request.Context(), principal)
+	if err != nil {
+		writeBackupServiceError(response, err)
+		return
+	}
+	items := make([]backupDeviceHTTPResponse, 0, len(devices))
+	for _, device := range devices {
+		items = append(items, backupDeviceHTTPResponse{
+			DeviceID:     device.DeviceID,
+			KeyEpoch:     device.KeyEpoch,
+			Revision:     device.Revision,
+			Status:       device.Status,
+			PublicKey:    encodeBackupBase64(device.PublicKey),
+			RegisteredAt: device.CreatedAt,
+			UpdatedAt:    device.UpdatedAt,
+			RevokedAt:    device.RevokedAt,
+		})
+	}
+	writeBackupJSON(response, http.StatusOK, struct {
+		Devices []backupDeviceHTTPResponse `json:"devices"`
+	}{Devices: items})
 }
 
 func (handler *backupHTTPHandler) registerCurrentDevice(

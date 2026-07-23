@@ -90,6 +90,51 @@ func TestHTTPRegistersCurrentBackupDeviceWithStrictOpaqueFields(t *testing.T) {
 	}
 }
 
+func TestHTTPListsBackupDevicePublicRegistrationsWithoutSignatures(t *testing.T) {
+	principal := Principal{UserID: uuid.New(), DeviceID: uuid.New()}
+	now := time.Date(2026, 7, 23, 3, 0, 0, 0, time.UTC)
+	targetID := uuid.New()
+	service := &stubBackupHTTPService{
+		devices: []BackupDevice{{
+			ID: uuid.New(), UserID: principal.UserID, DeviceID: targetID,
+			KeyEpoch: 2, Revision: 3, PublicKey: testBytes(32, 0x43),
+			Status: "active", CreatedAt: now, UpdatedAt: now,
+		}},
+	}
+	handler := testBackupHandler(service, principal)
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/encrypted-profile-backups/devices",
+		nil,
+	)
+	request.Header.Set("Authorization", "Bearer valid")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("list devices status = %d, body=%s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Devices []struct {
+			DeviceID  uuid.UUID `json:"device_id"`
+			KeyEpoch  int64     `json:"key_epoch"`
+			PublicKey string    `json:"public_key"`
+			Revision  int64     `json:"revision"`
+			Status    string    `json:"status"`
+		} `json:"devices"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if len(payload.Devices) != 1 || payload.Devices[0].DeviceID != targetID ||
+		payload.Devices[0].PublicKey != encodeBackupBase64(testBytes(32, 0x43)) {
+		t.Fatalf("device list = %#v", payload)
+	}
+	if strings.Contains(response.Body.String(), "signature") ||
+		strings.Contains(response.Body.String(), "private") {
+		t.Fatalf("device list exposed forbidden material: %s", response.Body.String())
+	}
+}
+
 func TestHTTPInitiatesSignedCiphertextInventory(t *testing.T) {
 	principal := Principal{UserID: uuid.New(), DeviceID: uuid.New()}
 	service := &stubBackupHTTPService{}
@@ -294,6 +339,7 @@ func TestHTTPMapsLifecycleErrorsAndUnavailableFeature(t *testing.T) {
 
 type stubBackupHTTPService struct {
 	registered           BackupDevice
+	devices              []BackupDevice
 	registerPrincipal    Principal
 	registerCommand      RegisterDeviceCommand
 	initiateCommand      InitiateCommand
@@ -320,6 +366,13 @@ func (service *stubBackupHTTPService) RegisterDevice(
 
 func (service *stubBackupHTTPService) RevokeDevice(context.Context, Principal, uuid.UUID) error {
 	return nil
+}
+
+func (service *stubBackupHTTPService) ListDevices(
+	context.Context,
+	Principal,
+) ([]BackupDevice, error) {
+	return append([]BackupDevice(nil), service.devices...), nil
 }
 
 func (service *stubBackupHTTPService) Initiate(

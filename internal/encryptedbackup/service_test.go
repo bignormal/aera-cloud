@@ -227,6 +227,31 @@ func TestServiceScopesRestoreAndNeverReceivesRecoveryPhrase(t *testing.T) {
 	}
 }
 
+func TestServiceListsOnlySameAccountBackupDevicePublicRegistrations(t *testing.T) {
+	service, repository, _, _, principal, now := newServiceFixture(t)
+	target := BackupDevice{
+		ID: uuid.New(), UserID: principal.UserID, DeviceID: uuid.New(),
+		KeyEpoch: 1, PublicKey: testBytes(32, 0x76), Revision: 1,
+		Status: "active", CreatedAt: now, UpdatedAt: now,
+	}
+	repository.deviceList = []BackupDevice{repository.backupDevice, target}
+
+	devices, err := service.ListDevices(context.Background(), principal)
+	if err != nil {
+		t.Fatalf("ListDevices() error = %v", err)
+	}
+	if len(devices) != 2 || devices[1].DeviceID != target.DeviceID ||
+		!bytes.Equal(devices[1].PublicKey, target.PublicKey) {
+		t.Fatalf("ListDevices() = %#v", devices)
+	}
+
+	other := principal
+	other.UserID = uuid.New()
+	if _, err := service.ListDevices(context.Background(), other); err != ErrUnauthorized {
+		t.Fatalf("cross-account ListDevices() error = %v, want %v", err, ErrUnauthorized)
+	}
+}
+
 func TestServiceDestroysEnvelopesBeforeObjectCleanupAndLeavesDeletingOnFailure(t *testing.T) {
 	service, repository, objects, _, principal, _ := newServiceFixture(t)
 	objects.deleteError = ErrObjectStoreUnavailable
@@ -264,6 +289,7 @@ type memoryBackupRepository struct {
 	chunkTarget           UploadTarget
 	manifestTarget        UploadTarget
 	detail                BackupDetail
+	deviceList            []BackupDevice
 	listResult            []Backup
 	lastDownloadUserID    uuid.UUID
 	sealCount             int
@@ -341,6 +367,18 @@ func (repository *memoryBackupRepository) LatestBackupDeviceStatus(
 		return "", nil
 	}
 	return repository.backupDevice.Status, nil
+}
+
+func (repository *memoryBackupRepository) ListBackupDevices(
+	_ context.Context,
+	userID uuid.UUID,
+) ([]BackupDevice, error) {
+	for _, device := range repository.deviceList {
+		if device.UserID != userID {
+			return nil, ErrUnauthorized
+		}
+	}
+	return append([]BackupDevice(nil), repository.deviceList...), nil
 }
 
 func (repository *memoryBackupRepository) Initiate(
