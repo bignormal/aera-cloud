@@ -78,7 +78,7 @@ jobs:
         env:
           AERA_RELEASE_MANIFEST: ${{ runner.temp }}/cloud-candidate/manifest.json
           AERA_RELEASE_EXPECTED_SHA: ${{ inputs.source_sha }}
-          AERA_RELEASE_CERTIFICATE_IDENTITY_REGEXP: ^https://github.com/bignormal/aera-cloud/.github/workflows/candidate.yml@
+          AERA_RELEASE_CERTIFICATE_IDENTITY_REGEXP: ^https://github\.com/bignormal/aera-cloud/\.github/workflows/candidate\.yml@refs/heads/main$
           AERA_RELEASE_CERTIFICATE_OIDC_ISSUER: https://token.actions.githubusercontent.com
           AERA_RELEASE_STATE_DIR: ${{ vars.AERA_CLOUD_RELEASE_STATE_DIR }}
           AERA_RELEASE_COMPOSE_FILE: deploy/compose.production.yaml
