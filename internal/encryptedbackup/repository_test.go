@@ -3,11 +3,14 @@ package encryptedbackup_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	backup "github.com/bignormal/aera-cloud/internal/encryptedbackup"
 	"github.com/bignormal/aera-cloud/internal/store"
 	"github.com/bignormal/aera-cloud/internal/testkit"
 	"github.com/google/uuid"
@@ -297,5 +300,160 @@ func TestEncryptedBackupDeletionDestroysEnvelopesBeforeObjectCleanup(t *testing.
 	}
 	if deviceEnvelope != nil {
 		t.Fatal("device root-key envelope remained after deletion began")
+	}
+}
+
+func TestPostgresRepositoryRegistersMonotonicDeviceKeys(t *testing.T) {
+	fixture := newBackupSchemaFixture(t)
+	repository := backup.NewPostgresRepository(fixture.postgres)
+	record := backup.RegistrationRecord{
+		BackupDeviceRegistration: backup.BackupDeviceRegistration{
+			UserID: fixture.userID, DeviceID: fixture.deviceID,
+			KeyEpoch: 1, Revision: 1, PublicKey: bytes.Repeat([]byte{0x51}, 32),
+		},
+		Signature: bytes.Repeat([]byte{0x52}, 64), RecordedAt: fixture.now,
+	}
+	created, replayed, err := repository.RegisterBackupDevice(fixture.ctx, record)
+	if err != nil {
+		t.Fatalf("RegisterBackupDevice() error = %v", err)
+	}
+	if replayed || created.Revision != 1 || created.Status != "active" {
+		t.Fatalf("RegisterBackupDevice() = %#v, replayed=%v", created, replayed)
+	}
+	replayedDevice, replayed, err := repository.RegisterBackupDevice(fixture.ctx, record)
+	if err != nil || !replayed || replayedDevice.ID != created.ID {
+		t.Fatalf("replayed RegisterBackupDevice() = %#v, %v, %v", replayedDevice, replayed, err)
+	}
+	stale := record
+	stale.PublicKey = bytes.Repeat([]byte{0x53}, 32)
+	stale.Signature = bytes.Repeat([]byte{0x54}, 64)
+	if _, _, err := repository.RegisterBackupDevice(fixture.ctx, stale); !errors.Is(err, backup.ErrBackupConflict) {
+		t.Fatalf("stale RegisterBackupDevice() error = %v", err)
+	}
+	replacement := stale
+	replacement.Revision = 2
+	replacement.RecordedAt = fixture.now.Add(time.Minute)
+	replaced, replayed, err := repository.RegisterBackupDevice(fixture.ctx, replacement)
+	if err != nil {
+		t.Fatalf("replacement RegisterBackupDevice() error = %v", err)
+	}
+	if replayed || replaced.ID != created.ID || replaced.Revision != 2 ||
+		!bytes.Equal(replaced.PublicKey, replacement.PublicKey) {
+		t.Fatalf("replacement RegisterBackupDevice() = %#v, replayed=%v", replaced, replayed)
+	}
+}
+
+func TestPostgresRepositoryPersistsImmutableUploadLifecycle(t *testing.T) {
+	fixture := newBackupSchemaFixture(t)
+	repository := backup.NewPostgresRepository(fixture.postgres)
+	device, _, err := repository.RegisterBackupDevice(fixture.ctx, backup.RegistrationRecord{
+		BackupDeviceRegistration: backup.BackupDeviceRegistration{
+			UserID: fixture.userID, DeviceID: fixture.deviceID,
+			KeyEpoch: 1, Revision: 1, PublicKey: bytes.Repeat([]byte{0x61}, 32),
+		},
+		Signature: bytes.Repeat([]byte{0x62}, 64), RecordedAt: fixture.now,
+	})
+	if err != nil {
+		t.Fatalf("register lifecycle backup device: %v", err)
+	}
+	backupID := uuid.New()
+	manifestDigest := sha256.Sum256([]byte("repository manifest ciphertext"))
+	chunkDigest := sha256.Sum256([]byte("repository chunk ciphertext"))
+	publicDigest := sha256.Sum256([]byte("repository public envelope"))
+	deviceEnvelopeDigest := sha256.Sum256(bytes.Repeat([]byte{0x6a}, 64))
+	record := backup.InitiateRecord{
+		Backup: backup.Backup{
+			ID: backupID, UserID: fixture.userID, SourceDeviceID: fixture.deviceID,
+			SourceInstallationID: fixture.installationID,
+			SourceDefinitionID: fixture.definitionID, SourceVersionID: fixture.versionID,
+			ProfileLineageID: uuid.New(), FormatVersion: backup.BackupFormatVersion,
+			CipherSuite: backup.BackupCipherSuite, State: backup.BackupStateInitiated,
+			KeyEpoch: 1, ChunkCount: 1, TotalCiphertextSize: 64,
+			Manifest: backup.ObjectSpec{
+				ObjectID: strings.Repeat("c", 64), CiphertextDigest: manifestDigest, CiphertextSize: 48,
+			},
+			PublicEnvelopeDigest: publicDigest, PublicSignature: bytes.Repeat([]byte{0x63}, 64),
+			Recovery: backup.RecoveryParameters{
+				Salt: bytes.Repeat([]byte{0x64}, 16), MemoryKiB: backup.RecoveryMemoryKiB,
+				Iterations: backup.RecoveryIterations, Parallelism: backup.RecoveryParallelism,
+			},
+			RecoveryRootKeyEnvelope: bytes.Repeat([]byte{0x65}, 64),
+			WrappedDataKey: bytes.Repeat([]byte{0x66}, 64),
+			CreatedAt: fixture.now, UpdatedAt: fixture.now,
+			UploadExpiresAt: fixture.now.Add(24 * time.Hour),
+		},
+		Chunks: []backup.ChunkSpec{{
+			Index: 0,
+			ObjectSpec: backup.ObjectSpec{
+				ObjectID: strings.Repeat("d", 64), CiphertextDigest: chunkDigest, CiphertextSize: 64,
+			},
+		}},
+		SourceDeviceEnvelope: backup.EnvelopeRecord{
+			ID: uuid.New(), BackupID: backupID, BackupDeviceID: device.ID, KeyEpoch: 1,
+			RootKeyEnvelope: bytes.Repeat([]byte{0x6a}, 64),
+			RootKeyEnvelopeDigest: deviceEnvelopeDigest, CreatedAt: fixture.now,
+		},
+		PublicEnvelopeDigest: publicDigest,
+	}
+	created, replayed, err := repository.Initiate(fixture.ctx, record)
+	if err != nil {
+		t.Fatalf("Initiate() error = %v", err)
+	}
+	if replayed || created.State != backup.BackupStateInitiated {
+		t.Fatalf("Initiate() = %#v, replayed=%v", created, replayed)
+	}
+	if _, replayed, err := repository.Initiate(fixture.ctx, record); err != nil || !replayed {
+		t.Fatalf("replayed Initiate() = replayed=%v, error=%v", replayed, err)
+	}
+	target, err := repository.ChunkUploadTarget(fixture.ctx, fixture.userID, backupID, 0)
+	if err != nil || target.Object.CiphertextDigest != chunkDigest {
+		t.Fatalf("ChunkUploadTarget() = %#v, %v", target, err)
+	}
+	if err := repository.MarkUploading(fixture.ctx, fixture.userID, backupID, fixture.now.Add(time.Minute)); err != nil {
+		t.Fatalf("MarkUploading() error = %v", err)
+	}
+	detail, err := repository.BackupForSeal(fixture.ctx, fixture.userID, backupID)
+	if err != nil {
+		t.Fatalf("BackupForSeal() error = %v", err)
+	}
+	if detail.State != backup.BackupStateUploading || len(detail.Chunks) != 1 || detail.KeyEpoch != 1 {
+		t.Fatalf("BackupForSeal() = %#v", detail)
+	}
+	sealed, replayed, err := repository.Seal(fixture.ctx, fixture.userID, backupID, fixture.now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("Seal() error = %v", err)
+	}
+	if replayed || sealed.State != backup.BackupStateSealed || sealed.SealedAt == nil {
+		t.Fatalf("Seal() = %#v, replayed=%v", sealed, replayed)
+	}
+	restorable, err := repository.GetSealed(fixture.ctx, fixture.userID, backupID, fixture.deviceID)
+	if err != nil {
+		t.Fatalf("GetSealed() error = %v", err)
+	}
+	if restorable.CurrentDeviceKey == nil ||
+		!bytes.Equal(restorable.RecoveryRootKeyEnvelope, record.RecoveryRootKeyEnvelope) {
+		t.Fatalf("GetSealed() missing encrypted recovery/device envelopes: %#v", restorable)
+	}
+	if _, err := repository.GetSealed(fixture.ctx, uuid.New(), backupID, fixture.deviceID); !errors.Is(err, backup.ErrBackupNotFound) {
+		t.Fatalf("cross-account GetSealed() error = %v", err)
+	}
+	deletion, err := repository.BeginDeletion(fixture.ctx, fixture.userID, backupID, fixture.now.Add(3*time.Minute))
+	if err != nil {
+		t.Fatalf("BeginDeletion() error = %v", err)
+	}
+	if deletion.State != backup.BackupStateDeleting || len(deletion.ObjectIDs) != 2 {
+		t.Fatalf("BeginDeletion() = %#v", deletion)
+	}
+	if err := repository.CompleteDeletion(fixture.ctx, fixture.userID, backupID, fixture.now.Add(4*time.Minute)); err != nil {
+		t.Fatalf("CompleteDeletion() error = %v", err)
+	}
+	var state string
+	if err := fixture.postgres.QueryRow(fixture.ctx, `
+		SELECT state FROM encrypted_profile_backups WHERE id = $1
+	`, backupID).Scan(&state); err != nil {
+		t.Fatalf("read completed deletion: %v", err)
+	}
+	if state != string(backup.BackupStateDeleted) {
+		t.Fatalf("completed deletion state = %q", state)
 	}
 }

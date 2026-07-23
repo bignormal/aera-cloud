@@ -21,6 +21,7 @@ import (
 	"github.com/bignormal/aera-cloud/internal/browser"
 	"github.com/bignormal/aera-cloud/internal/config"
 	"github.com/bignormal/aera-cloud/internal/device"
+	"github.com/bignormal/aera-cloud/internal/encryptedbackup"
 	"github.com/bignormal/aera-cloud/internal/entitlement"
 	"github.com/bignormal/aera-cloud/internal/httpapi"
 	"github.com/bignormal/aera-cloud/internal/jobs"
@@ -118,6 +119,15 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 	if err != nil {
 		return err
 	}
+	encryptedBackupHandler, err := buildEncryptedBackupHandler(
+		startupCtx,
+		cfg,
+		postgres,
+		redisStore.Client(),
+	)
+	if err != nil {
+		return err
+	}
 	workspaceHandler, err := buildWorkspaceHandler(cfg, postgres, redisStore.Client())
 	if err != nil {
 		return err
@@ -142,6 +152,7 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 		Devices:         deviceHandler,
 		AgentControl:    agentControlHandler,
 		OfficialQuality: officialQualityHandler,
+		EncryptedBackup: encryptedBackupHandler,
 		Workspace:       workspaceHandler,
 		Organization:    organizationHandler,
 		Web:             webui.New(),
@@ -161,6 +172,48 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 			"internal_admin_enabled", cfg.InternalAdmin.Enabled)
 		go maintenanceRunner.Run(maintenanceCtx)
 	})
+}
+
+func buildEncryptedBackupHandler(
+	ctx context.Context,
+	cfg config.Config,
+	postgres *pgxpool.Pool,
+	redisClient redis.UniversalClient,
+) (http.Handler, error) {
+	if !cfg.EncryptedBackup.Enabled {
+		return encryptedbackup.NewHandler(encryptedbackup.HTTPConfig{}), nil
+	}
+	if ctx == nil || postgres == nil || redisClient == nil {
+		return nil, errors.New("encrypted backup dependencies are unavailable")
+	}
+	objects, err := encryptedbackup.NewMinIOStore(ctx, encryptedbackup.MinIOStoreConfig{
+		Endpoint:  cfg.EncryptedBackup.Endpoint,
+		Bucket:    cfg.EncryptedBackup.Bucket,
+		Region:    cfg.EncryptedBackup.Region,
+		AccessKey: cfg.EncryptedBackup.AccessKey,
+		SecretKey: cfg.EncryptedBackup.SecretKey,
+		UseTLS:    cfg.EncryptedBackup.UseTLS,
+	})
+	if err != nil {
+		return nil, err
+	}
+	service, err := encryptedbackup.NewService(encryptedbackup.ServiceConfig{
+		Repository:     encryptedbackup.NewPostgresRepository(postgres),
+		Objects:        objects,
+		MaxBackupBytes: cfg.EncryptedBackup.MaxBackupBytes,
+		UploadTTL:      cfg.EncryptedBackup.IncompleteUploadTTL,
+	})
+	if err != nil {
+		return nil, err
+	}
+	accessTokens, err := buildAccessAuthenticator(cfg, postgres, redisClient)
+	if err != nil {
+		return nil, err
+	}
+	return encryptedbackup.NewHandler(encryptedbackup.HTTPConfig{
+		Service:      service,
+		AccessTokens: accessTokens,
+	}), nil
 }
 
 func buildOfficialQualityHandler(

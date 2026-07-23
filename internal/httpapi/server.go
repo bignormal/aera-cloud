@@ -25,6 +25,7 @@ type Dependencies struct {
 	Devices         http.Handler
 	AgentControl    http.Handler
 	OfficialQuality http.Handler
+	EncryptedBackup http.Handler
 	Workspace       http.Handler
 	Organization    http.Handler
 	Web             http.Handler
@@ -87,6 +88,10 @@ func New(dependencies Dependencies) http.Handler {
 	}
 	if dependencies.OfficialQuality != nil {
 		router.Handle("/api/v1/official-agent-quality/*", dependencies.OfficialQuality)
+	}
+	if dependencies.EncryptedBackup != nil {
+		router.Handle("/api/v1/encrypted-profile-backups", dependencies.EncryptedBackup)
+		router.Handle("/api/v1/encrypted-profile-backups/*", dependencies.EncryptedBackup)
 	}
 	if dependencies.Workspace != nil {
 		router.Handle("/api/v1/workspaces", dependencies.Workspace)

@@ -544,3 +544,38 @@ func integrationLookup(services testkit.Services) config.LookupEnv {
 		return value, ok
 	}
 }
+
+func TestBuildEncryptedBackupHandlerDisabledExposesNoObjectStoreDependency(t *testing.T) {
+	handler, err := buildEncryptedBackupHandler(context.Background(), config.Config{}, nil, nil)
+	if err != nil {
+		t.Fatalf("buildEncryptedBackupHandler() error = %v", err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/encrypted-profile-backups", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("disabled backup status = %d, body=%s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "access") ||
+		strings.Contains(response.Body.String(), "secret") {
+		t.Fatalf("disabled backup response exposed object credentials: %s", response.Body.String())
+	}
+}
+
+func TestBuildEncryptedBackupHandlerEnabledRejectsUnavailableDependencies(t *testing.T) {
+	cfg := config.Config{
+		EncryptedBackup: config.EncryptedBackupConfig{
+			Enabled:             true,
+			Endpoint:            "127.0.0.1:59010",
+			Bucket:              "aera-encrypted-backups",
+			Region:              "us-east-1",
+			AccessKey:           "backup-access",
+			SecretKey:           "backup-secret",
+			MaxBackupBytes:      1 << 30,
+			IncompleteUploadTTL: 24 * time.Hour,
+		},
+	}
+	if _, err := buildEncryptedBackupHandler(context.Background(), cfg, nil, nil); err == nil {
+		t.Fatal("buildEncryptedBackupHandler() accepted unavailable PostgreSQL/Redis")
+	}
+}
