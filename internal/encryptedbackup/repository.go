@@ -3,6 +3,7 @@ package encryptedbackup
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"errors"
 	"strings"
@@ -852,6 +853,33 @@ func (repository *PostgresRepository) readBackupDetail(
 	if rows.Err() != nil {
 		return BackupDetail{}, ErrEncryptedUnavailable
 	}
+	var sourceDevicePublicKey []byte
+	var sourceDeviceEnvelopeDigest [sha256.Size]byte
+	var sourceEnvelopeDigestBytes []byte
+	err = tx.QueryRow(ctx, `
+		SELECT authentication_device.public_key,
+		       envelope.root_key_envelope_digest
+		FROM devices AS authentication_device
+		JOIN backup_devices AS backup_device
+		  ON backup_device.user_id = authentication_device.user_id
+		 AND backup_device.device_id = authentication_device.id
+		JOIN encrypted_backup_key_envelopes AS envelope
+		  ON envelope.backup_device_id = backup_device.id
+		 AND envelope.backup_id = $1
+		WHERE authentication_device.user_id = $2
+		  AND authentication_device.id = $3
+		  AND envelope.key_epoch = $4
+		  AND envelope.root_key_envelope IS NOT NULL
+		LIMIT 1
+	`, backupID, userID, found.SourceDeviceID, found.KeyEpoch).Scan(
+		&sourceDevicePublicKey,
+		&sourceEnvelopeDigestBytes,
+	)
+	if err != nil ||
+		len(sourceDevicePublicKey) != ed25519.PublicKeySize ||
+		!copyDigest(&sourceDeviceEnvelopeDigest, sourceEnvelopeDigestBytes) {
+		return BackupDetail{}, ErrEncryptedUnavailable
+	}
 	var currentEnvelope *KeyEnvelope
 	if currentDeviceID != uuid.Nil {
 		var value KeyEnvelope
@@ -892,9 +920,11 @@ func (repository *PostgresRepository) readBackupDetail(
 		return BackupDetail{}, ErrEncryptedUnavailable
 	}
 	return BackupDetail{
-		Backup:           found,
-		Chunks:           chunks,
-		CurrentDeviceKey: currentEnvelope,
+		Backup:                     found,
+		Chunks:                     chunks,
+		SourceDevicePublicKey:      bytes.Clone(sourceDevicePublicKey),
+		SourceDeviceEnvelopeDigest: sourceDeviceEnvelopeDigest,
+		CurrentDeviceKey:           currentEnvelope,
 	}, nil
 }
 

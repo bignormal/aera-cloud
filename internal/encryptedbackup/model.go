@@ -239,8 +239,10 @@ type KeyEnvelope struct {
 
 type BackupDetail struct {
 	Backup
-	Chunks           []ChunkSpec
-	CurrentDeviceKey *KeyEnvelope
+	Chunks                     []ChunkSpec
+	SourceDevicePublicKey      []byte
+	SourceDeviceEnvelopeDigest [sha256.Size]byte
+	CurrentDeviceKey           *KeyEnvelope
 }
 
 type UploadTarget struct {

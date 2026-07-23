@@ -3,6 +3,7 @@ package encryptedbackup_test
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -365,7 +366,7 @@ func TestPostgresRepositoryPersistsImmutableUploadLifecycle(t *testing.T) {
 		Backup: backup.Backup{
 			ID: backupID, UserID: fixture.userID, SourceDeviceID: fixture.deviceID,
 			SourceInstallationID: fixture.installationID,
-			SourceDefinitionID: fixture.definitionID, SourceVersionID: fixture.versionID,
+			SourceDefinitionID:   fixture.definitionID, SourceVersionID: fixture.versionID,
 			ProfileLineageID: uuid.New(), FormatVersion: backup.BackupFormatVersion,
 			CipherSuite: backup.BackupCipherSuite, State: backup.BackupStateInitiated,
 			KeyEpoch: 1, ChunkCount: 1, TotalCiphertextSize: 64,
@@ -378,8 +379,8 @@ func TestPostgresRepositoryPersistsImmutableUploadLifecycle(t *testing.T) {
 				Iterations: backup.RecoveryIterations, Parallelism: backup.RecoveryParallelism,
 			},
 			RecoveryRootKeyEnvelope: bytes.Repeat([]byte{0x65}, 64),
-			WrappedDataKey: bytes.Repeat([]byte{0x66}, 64),
-			CreatedAt: fixture.now, UpdatedAt: fixture.now,
+			WrappedDataKey:          bytes.Repeat([]byte{0x66}, 64),
+			CreatedAt:               fixture.now, UpdatedAt: fixture.now,
 			UploadExpiresAt: fixture.now.Add(24 * time.Hour),
 		},
 		Chunks: []backup.ChunkSpec{{
@@ -390,7 +391,7 @@ func TestPostgresRepositoryPersistsImmutableUploadLifecycle(t *testing.T) {
 		}},
 		SourceDeviceEnvelope: backup.EnvelopeRecord{
 			ID: uuid.New(), BackupID: backupID, BackupDeviceID: device.ID, KeyEpoch: 1,
-			RootKeyEnvelope: bytes.Repeat([]byte{0x6a}, 64),
+			RootKeyEnvelope:       bytes.Repeat([]byte{0x6a}, 64),
 			RootKeyEnvelopeDigest: deviceEnvelopeDigest, CreatedAt: fixture.now,
 		},
 		PublicEnvelopeDigest: publicDigest,
@@ -431,6 +432,8 @@ func TestPostgresRepositoryPersistsImmutableUploadLifecycle(t *testing.T) {
 		t.Fatalf("GetSealed() error = %v", err)
 	}
 	if restorable.CurrentDeviceKey == nil ||
+		len(restorable.SourceDevicePublicKey) != ed25519.PublicKeySize ||
+		restorable.SourceDeviceEnvelopeDigest != deviceEnvelopeDigest ||
 		!bytes.Equal(restorable.RecoveryRootKeyEnvelope, record.RecoveryRootKeyEnvelope) {
 		t.Fatalf("GetSealed() missing encrypted recovery/device envelopes: %#v", restorable)
 	}

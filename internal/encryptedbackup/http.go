@@ -132,14 +132,16 @@ type keyEnvelopeHTTPResponse struct {
 
 type backupDetailHTTPResponse struct {
 	backupSummaryHTTPResponse
-	Manifest                objectHTTPSpec           `json:"manifest"`
-	Chunks                  []chunkHTTPSpec          `json:"chunks"`
-	PublicEnvelopeDigest    string                   `json:"public_envelope_digest"`
-	PublicSignature         string                   `json:"public_signature"`
-	Recovery                recoveryHTTPParameters   `json:"recovery"`
-	RecoveryRootKeyEnvelope string                   `json:"recovery_root_key_envelope"`
-	WrappedDataKey          string                   `json:"wrapped_data_key"`
-	CurrentDeviceEnvelope   *keyEnvelopeHTTPResponse `json:"current_device_envelope"`
+	Manifest                   objectHTTPSpec           `json:"manifest"`
+	Chunks                     []chunkHTTPSpec          `json:"chunks"`
+	PublicEnvelopeDigest       string                   `json:"public_envelope_digest"`
+	PublicSignature            string                   `json:"public_signature"`
+	SourceDevicePublicKey      string                   `json:"source_device_public_key"`
+	SourceDeviceEnvelopeDigest string                   `json:"source_device_envelope_digest"`
+	Recovery                   recoveryHTTPParameters   `json:"recovery"`
+	RecoveryRootKeyEnvelope    string                   `json:"recovery_root_key_envelope"`
+	WrappedDataKey             string                   `json:"wrapped_data_key"`
+	CurrentDeviceEnvelope      *keyEnvelopeHTTPResponse `json:"current_device_envelope"`
 }
 
 func NewHandler(config HTTPConfig) http.Handler {
@@ -911,11 +913,13 @@ func encodeBackupDetail(detail BackupDetail) backupDetailHTTPResponse {
 		}
 	}
 	return backupDetailHTTPResponse{
-		backupSummaryHTTPResponse: encodeBackupSummary(detail.Backup),
-		Manifest:                  encodeHTTPObject(detail.Manifest),
-		Chunks:                    chunks,
-		PublicEnvelopeDigest:      encodeBackupBase64(detail.PublicEnvelopeDigest[:]),
-		PublicSignature:           encodeBackupBase64(detail.PublicSignature),
+		backupSummaryHTTPResponse:  encodeBackupSummary(detail.Backup),
+		Manifest:                   encodeHTTPObject(detail.Manifest),
+		Chunks:                     chunks,
+		PublicEnvelopeDigest:       encodeBackupBase64(detail.PublicEnvelopeDigest[:]),
+		PublicSignature:            encodeBackupBase64(detail.PublicSignature),
+		SourceDevicePublicKey:      encodeBackupBase64(detail.SourceDevicePublicKey),
+		SourceDeviceEnvelopeDigest: encodeBackupBase64(detail.SourceDeviceEnvelopeDigest[:]),
 		Recovery: recoveryHTTPParameters{
 			Salt:        encodeBackupBase64(detail.Recovery.Salt),
 			MemoryKiB:   detail.Recovery.MemoryKiB,

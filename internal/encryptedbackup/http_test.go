@@ -221,7 +221,9 @@ func TestHTTPGetReturnsOnlyCiphertextMetadataAndOpaqueEnvelopes(t *testing.T) {
 				CreatedAt:               now, UpdatedAt: sealedAt, UploadExpiresAt: now.Add(24 * time.Hour),
 				SealedAt: &sealedAt,
 			},
-			Chunks: envelope.Chunks,
+			Chunks:                     envelope.Chunks,
+			SourceDevicePublicKey:      testBytes(32, 0x76),
+			SourceDeviceEnvelopeDigest: envelope.SourceDeviceEnvelopeDigest,
 			CurrentDeviceKey: &KeyEnvelope{
 				DeviceID: principal.DeviceID, KeyEpoch: 1,
 				RootKeyEnvelope:       testBytes(64, 0x75),
@@ -251,7 +253,9 @@ func TestHTTPGetReturnsOnlyCiphertextMetadataAndOpaqueEnvelopes(t *testing.T) {
 		}
 	}
 	if !strings.Contains(lower, "recovery_root_key_envelope") ||
-		!strings.Contains(lower, "current_device_envelope") {
+		!strings.Contains(lower, "current_device_envelope") ||
+		!strings.Contains(lower, "source_device_public_key") ||
+		!strings.Contains(lower, "source_device_envelope_digest") {
 		t.Fatalf("get response omitted opaque restore envelopes: %s", response.Body.String())
 	}
 }

@@ -6747,6 +6747,8 @@ components:
         - chunks
         - public_envelope_digest
         - public_signature
+        - source_device_public_key
+        - source_device_envelope_digest
         - recovery
         - recovery_root_key_envelope
         - wrapped_data_key
@@ -6814,6 +6816,14 @@ components:
           $ref: '#/components/schemas/EncryptedBackupDigest'
         public_signature:
           $ref: '#/components/schemas/EncryptedBackupSignature'
+        source_device_public_key:
+          type: string
+          description: Raw-base64url 32-byte Ed25519 key used only to verify the immutable public envelope signature.
+          minLength: 43
+          maxLength: 43
+          pattern: '^[A-Za-z0-9_-]{43}$'
+        source_device_envelope_digest:
+          $ref: '#/components/schemas/EncryptedBackupDigest'
         recovery:
           $ref: '#/components/schemas/EncryptedBackupRecoveryParameters'
         recovery_root_key_envelope:
