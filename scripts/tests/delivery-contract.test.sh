@@ -31,6 +31,9 @@ for file in \
   docs/runbooks/account-recovery.md \
   scripts/smoke-auth.sh \
   scripts/check-secrets.sh \
+  scripts/release/build-manifest.sh \
+  scripts/release/verify-manifest.sh \
+  .github/workflows/candidate.yml \
   .github/workflows/ci.yml; do
   require_file "$file"
 done
@@ -84,5 +87,18 @@ require_text scripts/smoke-auth.sh 'TestSmokeAuthLifecycle'
 require_text .github/workflows/ci.yml 'check-secrets\.sh'
 require_text .github/workflows/ci.yml 'smoke-auth\.sh'
 require_text .github/workflows/ci.yml 'docker build'
+require_text .github/workflows/candidate.yml 'inputs\.source_sha'
+require_text .github/workflows/candidate.yml 'inputs\.ci_run_id'
+require_text .github/workflows/candidate.yml 'docker buildx build'
+require_text .github/workflows/candidate.yml 'steps\.image\.outputs\.digest'
+require_text .github/workflows/candidate.yml 'syft'
+require_text .github/workflows/candidate.yml 'cosign sign --yes'
+require_text .github/workflows/candidate.yml 'attest-build-provenance@v2'
+require_text .github/workflows/candidate.yml 'build-manifest\.sh'
+require_text .github/workflows/candidate.yml 'verify-manifest\.sh'
+require_text .github/workflows/candidate.yml 'encrypted-backup-minio'
+require_text scripts/release/verify-manifest.sh 'cosign verify'
+require_text scripts/release/verify-manifest.sh 'verify-attestation'
+require_text scripts/release/build-manifest.sh 'git status --porcelain'
 
 printf 'delivery contract tests passed\n'

@@ -1,0 +1,205 @@
+name: Cloud candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact verified Cloud commit SHA
+        required: true
+      ci_run_id:
+        description: Successful AgentEra cloud CI run ID for source_sha
+        required: true
+
+permissions:
+  actions: read
+  attestations: write
+  contents: read
+  id-token: write
+  packages: write
+
+concurrency:
+  group: cloud-candidate-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_REPOSITORY: ghcr.io/${{ github.repository }}
+
+jobs:
+  candidate:
+    name: Verify once and build immutable image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+
+      - name: Verify exact successful CI source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ inputs.source_sha }}
+          CI_RUN_ID: ${{ inputs.ci_run_id }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain=v1)"
+          run=$(gh run view "$CI_RUN_ID" --json headSha,conclusion,jobs)
+          test "$(jq -r '.headSha' <<<"$run")" = "$EXPECTED_SHA"
+          test "$(jq -r '.conclusion' <<<"$run")" = success
+          test "$(jq '[.jobs[] | select(.conclusion == "success") | .steps[] | select(.conclusion != "skipped")] | length' <<<"$run")" -gt 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.13.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Run delivery and application verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/tests/check-secrets.test.sh
+          bash scripts/tests/delivery-contract.test.sh
+          bash scripts/tests/release-manifest.test.sh
+          ./scripts/check-secrets.sh
+          go test -count=1 ./...
+          go test -race ./internal/secure ./internal/account ./internal/oauth ./internal/device ./internal/session ./internal/jobs ./internal/encryptedbackup
+          go vet ./...
+          npm --prefix web ci --ignore-scripts --no-audit --no-fund
+          npm --prefix web test -- --run
+          npm --prefix web run typecheck
+          npm --prefix web run build
+
+      - name: Start isolated integration services
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose up -d --wait postgres redis encrypted-backup-minio
+          docker compose run --rm --no-deps encrypted-backup-minio-init
+
+      - name: Run PostgreSQL, Redis, and MinIO integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -a
+          source .env.example
+          set +a
+          AERA_INTEGRATION_TESTS=1 go test -count=1 -p 1 ./...
+          AERA_INTEGRATION_TESTS=1 go test -count=1 -tags e2e ./cmd/aera-cloud-e2e
+
+      - name: Log in to GHCR
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build and push image once
+        id: image
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/cloud-candidate"
+          mkdir -p "$evidence"
+          docker buildx build \
+            --platform linux/amd64 \
+            --pull \
+            --provenance=false \
+            --tag "$IMAGE_REPOSITORY:$SOURCE_SHA" \
+            --push \
+            --metadata-file "$evidence/build-metadata.json" \
+            .
+          digest=$(jq -r '."containerimage.digest"' "$evidence/build-metadata.json")
+          case "$digest" in sha256:????????????????????????????????????????????????????????????????) ;; *) exit 1 ;; esac
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "reference=$IMAGE_REPOSITORY@$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Install exact supply-chain tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          tool_bin="$RUNNER_TEMP/release-tools"
+          mkdir -p "$tool_bin"
+          GOBIN="$tool_bin" go install github.com/sigstore/cosign/v2/cmd/cosign@v2.5.3
+          GOBIN="$tool_bin" go install github.com/anchore/syft/cmd/syft@v1.29.0
+          echo "$tool_bin" >> "$GITHUB_PATH"
+
+      - name: Sign image and generate SBOM/provenance
+        shell: bash
+        env:
+          IMAGE_REFERENCE: ${{ steps.image.outputs.reference }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/cloud-candidate"
+          cosign sign --yes "$IMAGE_REFERENCE"
+          syft "$IMAGE_REFERENCE" -o spdx-json="$evidence/sbom.spdx.json"
+          jq -cnS \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg sourceSha "$SOURCE_SHA" \
+            --arg image "$IMAGE_REFERENCE" \
+            --arg digest "$IMAGE_DIGEST" \
+            --arg runUrl "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            '{repository:$repository,sourceSha:$sourceSha,image:$image,digest:$digest,runUrl:$runUrl}' \
+            > "$evidence/provenance.json"
+          sha256sum "$evidence/sbom.spdx.json" "$evidence/provenance.json" \
+            > "$evidence/SHA256SUMS"
+
+      - name: Attest image build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.IMAGE_REPOSITORY }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+
+      - name: Build, verify, and sign canonical candidate manifest
+        shell: bash
+        env:
+          AERA_RELEASE_REPOSITORY: ${{ github.repository }}
+          AERA_RELEASE_COMMIT_SHA: ${{ inputs.source_sha }}
+          AERA_RELEASE_IMAGE: ${{ env.IMAGE_REPOSITORY }}
+          AERA_RELEASE_IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          AERA_RELEASE_WORKFLOW: ${{ github.workflow }}
+          AERA_RELEASE_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          AERA_RELEASE_SCHEMA_MIN: "17"
+          AERA_RELEASE_SCHEMA_MAX: "18"
+          AERA_RELEASE_HIGHEST_MIGRATION: "18"
+          AERA_RELEASE_EXPECTED_SHA: ${{ inputs.source_sha }}
+          AERA_RELEASE_CERTIFICATE_IDENTITY_REGEXP: ^https://github.com/bignormal/aera-cloud/.github/workflows/candidate.yml@
+          AERA_RELEASE_CERTIFICATE_OIDC_ISSUER: https://token.actions.githubusercontent.com
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/cloud-candidate"
+          export AERA_RELEASE_SBOM_DIGEST="sha256:$(sha256sum "$evidence/sbom.spdx.json" | cut -d' ' -f1)"
+          export AERA_RELEASE_PROVENANCE_DIGEST="sha256:$(sha256sum "$evidence/provenance.json" | cut -d' ' -f1)"
+          export AERA_RELEASE_CREATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          scripts/release/build-manifest.sh "$evidence/manifest.json"
+          scripts/release/verify-manifest.sh "$evidence/manifest.json"
+          cosign sign-blob --yes \
+            --bundle "$evidence/manifest.sigstore.json" \
+            "$evidence/manifest.json"
+
+      - name: Upload immutable candidate evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-candidate-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/cloud-candidate
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Stop integration services
+        if: always()
+        run: docker compose down -v --remove-orphans
