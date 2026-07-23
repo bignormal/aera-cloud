@@ -18,6 +18,29 @@ import { useI18n } from "../i18n";
 import { usePublicConfig } from "../public-config";
 import { Link, useRouter } from "../router";
 
+function validDirectEmail(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (
+    normalized.length === 0 ||
+    normalized.length > 254 ||
+    /[\s\u0000-\u001f\u007f]/u.test(normalized)
+  ) {
+    return false;
+  }
+  const parts = normalized.split("@");
+  if (parts.length !== 2) return false;
+  const [local, domain] = parts;
+  return (
+    local.length > 0 &&
+    local.length <= 64 &&
+    domain.length > 0 &&
+    domain.includes(".") &&
+    !domain.startsWith(".") &&
+    !domain.endsWith(".") &&
+    !domain.includes("..")
+  );
+}
+
 export function RegisterPage() {
   const { t } = useI18n();
   const { navigate } = useRouter();
@@ -107,6 +130,11 @@ export function RegisterPage() {
       setError(t("legalRequired"));
       return;
     }
+    const normalizedEmail = destination.trim().toLowerCase();
+    if (directRegistration && !validDirectEmail(normalizedEmail)) {
+      setError(t("invalidInternalBetaEmail"));
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -120,7 +148,7 @@ export function RegisterPage() {
         await registerAccount({
           ...shared,
           kind: "email",
-          identity: destination.trim().toLowerCase(),
+          identity: normalizedEmail,
         });
       } else {
         await registerAccount({

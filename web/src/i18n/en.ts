@@ -20,6 +20,7 @@ export const en = {
   internalBetaLoginEmail: "Internal Beta sign-in email (unverified)",
   internalBetaRecoveryUnavailable:
     "This internal Beta account does not verify mailbox ownership. Password reset, identity binding, and deletion recovery are unavailable. Keep the password safe.",
+  invalidInternalBetaEmail: "Enter a valid internal Beta sign-in email.",
   verificationUnavailableTitle:
     "This feature is unavailable in the current Beta",
   registrationUnavailable: "Account registration is currently closed.",

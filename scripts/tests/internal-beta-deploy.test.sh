@@ -52,6 +52,7 @@ require_text "$compose_file" 'cap_drop: \[ALL\]'
 require_text "$compose_file" 'cpus: "[0-9]'
 require_text "$compose_file" 'mem_limit: [0-9]'
 require_text "$compose_file" 'encrypted-backup-minio:'
+require_text "$compose_file" 'MC_CONFIG_DIR: /tmp/\.mc'
 require_text "$compose_file" 'aera-cloud-minio-internal-beta:/data'
 require_text "$compose_file" 'aera-cloud-admin-private:'
 require_text "$compose_file" 'external: true'
@@ -71,6 +72,8 @@ require_text "$caddy_file" '/\.well-known/acme-challenge/\*'
 require_text "$caddy_file" 'root \* /var/lib/aera-certbot'
 require_text "$caddy_file" 'redir https://\{\$AERA_INTERNAL_BETA_IP\}\{uri\}'
 require_text "$caddy_file" 'tls /etc/letsencrypt/live/\{\$AERA_INTERNAL_BETA_CERTIFICATE_NAME\}/fullchain\.pem /etc/letsencrypt/live/\{\$AERA_INTERNAL_BETA_CERTIFICATE_NAME\}/privkey\.pem'
+require_text "$caddy_file" 'X-Frame-Options "DENY"'
+require_text "$caddy_file" "Content-Security-Policy \"frame-ancestors 'none'\""
 require_text "$caddy_file" 'reverse_proxy 127\.0\.0\.1:18086'
 forbid_text "$caddy_file" '^[[:space:]]*log[[:space:]]*\{'
 
@@ -310,7 +313,7 @@ LISTEN 0 4096 0.0.0.0:80 0.0.0.0:*
 LISTEN 0 4096 [::]:443 [::]:*
 LISTEN 0 4096 127.0.0.1:18086 0.0.0.0:*
 EOF
-printf 'aera-cloud-app\t127.0.0.1:18086->8086/tcp\n' >"$tmp/docker-good"
+printf 'aera-cloud-app\t8443/tcp, 127.0.0.1:18086->8086/tcp\n' >"$tmp/docker-good"
 export AERA_INTERNAL_BETA_SS_FIXTURE="$tmp/ss-good"
 export AERA_INTERNAL_BETA_DOCKER_FIXTURE="$tmp/docker-good"
 "$exposure_script"
@@ -323,7 +326,7 @@ if "$exposure_script" >"$tmp/ss-bad.out" 2>"$tmp/ss-bad.err"; then
   fail 'public PostgreSQL listener unexpectedly passed exposure audit'
 fi
 
-printf 'postgres\t0.0.0.0:6379->6379/tcp\n' >"$tmp/docker-bad"
+printf 'postgres\t127.0.0.1:16379->6379/tcp\n' >"$tmp/docker-bad"
 export AERA_INTERNAL_BETA_SS_FIXTURE="$tmp/ss-good"
 export AERA_INTERNAL_BETA_DOCKER_FIXTURE="$tmp/docker-bad"
 if "$exposure_script" >"$tmp/docker-bad.out" 2>"$tmp/docker-bad.err"; then

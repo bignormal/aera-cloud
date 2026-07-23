@@ -39,4 +39,15 @@ func TestOpenPostgresAndRedis(t *testing.T) {
 	if err := redisStore.Ping(ctx); err != nil {
 		t.Fatalf("Redis Ping() error = %v", err)
 	}
+	options := redisStore.client.Options()
+	if options.DialTimeout <= 0 || options.DialTimeout > 5*time.Second ||
+		options.ReadTimeout <= 0 || options.ReadTimeout > 5*time.Second ||
+		options.WriteTimeout <= 0 || options.WriteTimeout > 5*time.Second {
+		t.Fatalf(
+			"Redis timeouts = dial:%s read:%s write:%s",
+			options.DialTimeout,
+			options.ReadTimeout,
+			options.WriteTimeout,
+		)
+	}
 }

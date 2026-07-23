@@ -283,7 +283,7 @@ func (h *httpHandler) register(response http.ResponseWriter, request *http.Reque
 		writeAccountError(response, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	ctx := WithLoginIPAddress(request.Context(), remoteIP(request.RemoteAddr))
+	ctx := WithLoginIPAddress(request.Context(), requestIP(request))
 	registration, err := h.accounts.Register(ctx, RegisterCommand{
 		Kind: payload.Kind, Identity: payload.Identity,
 		VerificationReceipt: payload.VerificationReceipt, Password: payload.Password,
@@ -305,7 +305,7 @@ func (h *httpHandler) login(response http.ResponseWriter, request *http.Request)
 		writeAccountError(response, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	ctx := WithLoginIPAddress(request.Context(), remoteIP(request.RemoteAddr))
+	ctx := WithLoginIPAddress(request.Context(), requestIP(request))
 	principal, err := h.accounts.AuthenticatePassword(ctx, payload.Identity, payload.Password)
 	if err != nil {
 		writeMappedAccountError(response, err)
@@ -489,4 +489,21 @@ func remoteIP(remoteAddress string) string {
 		return host
 	}
 	return strings.TrimSpace(remoteAddress)
+}
+
+func requestIP(request *http.Request) string {
+	directAddress := remoteIP(request.RemoteAddr)
+	directIP := net.ParseIP(directAddress)
+	if directIP == nil || (!directIP.IsLoopback() && !directIP.IsPrivate()) {
+		return directAddress
+	}
+	forwardedValues := request.Header.Values("X-Forwarded-For")
+	if len(forwardedValues) != 1 || strings.Contains(forwardedValues[0], ",") {
+		return directAddress
+	}
+	forwardedIP := net.ParseIP(strings.TrimSpace(forwardedValues[0]))
+	if forwardedIP == nil {
+		return directAddress
+	}
+	return forwardedIP.String()
 }

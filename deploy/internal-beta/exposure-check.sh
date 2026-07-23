@@ -32,10 +32,15 @@ while IFS=$'\t' read -r container ports; do
   if [[ $ports == *"0.0.0.0:"* || $ports == *":::"* || $ports == *"[::]:"* ]]; then
     fail "container $container publishes a port on every interface"
   fi
-  if [[ $ports =~ (5432|6379|9000|9001|8443|2375|2376)/tcp ]] &&
-    [[ $ports == *"->"* ]]; then
-    fail "container $container publishes a protected data or control port"
-  fi
+  while IFS= read -r mapping; do
+    mapping=${mapping#"${mapping%%[![:space:]]*}"}
+    mapping=${mapping%"${mapping##*[![:space:]]}"}
+    [[ $mapping == *"->"* ]] || continue
+    container_port=${mapping##*->}
+    if [[ $container_port =~ ^(5432|6379|9000|9001|8443|2375|2376)/tcp$ ]]; then
+      fail "container $container publishes a protected data or control port"
+    fi
+  done < <(tr ',' '\n' <<<"$ports")
 done < <(docker ps --format '{{.Names}}\t{{.Ports}}')
 
 printf 'internal beta exposure check passed\n'

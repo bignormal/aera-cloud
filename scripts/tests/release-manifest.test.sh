@@ -64,6 +64,9 @@ case "$1" in
       }')
     payload=$(printf '%s' "$statement" | base64 | tr -d '\n')
     jq -cn --arg payload "$payload" '{payload:$payload}'
+    if test "${COSIGN_TEST_APPEND_UNRELATED_ATTESTATION:-0}" = 1; then
+      printf '%s\n' '{"payload":"bm90LWpzb24="}'
+    fi
     ;;
   verify-blob)
     has_pair --certificate-identity-regexp "$COSIGN_TEST_EXPECTED_IDENTITY" "$@"
@@ -128,6 +131,7 @@ export COSIGN_TEST_WRONG_PREDICATE_FILE="$tmp/wrong-provenance.json"
 export COSIGN_TEST_MANIFEST_SHA
 COSIGN_TEST_MANIFEST_SHA=$(sha256sum "$manifest" | cut -d' ' -f1)
 "$verify" "$manifest"
+COSIGN_TEST_APPEND_UNRELATED_ATTESTATION=1 "$verify" "$manifest"
 jq -e '
   .repository == "bignormal/aera-cloud" and
   .commitSha == $sha and

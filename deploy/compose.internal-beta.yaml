@@ -82,6 +82,7 @@ services:
     depends_on:
       encrypted-backup-minio: {condition: service_healthy}
     environment:
+      MC_CONFIG_DIR: /tmp/.mc
       MINIO_ROOT_USER: ${AGENTERA_CLOUD_ENCRYPTED_BACKUP_ACCESS_KEY:?set the dedicated encrypted-backup access key}
       MINIO_ROOT_PASSWORD: ${AGENTERA_CLOUD_ENCRYPTED_BACKUP_SECRET_KEY:?set the dedicated encrypted-backup secret key}
     entrypoint:

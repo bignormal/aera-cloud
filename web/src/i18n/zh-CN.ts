@@ -19,6 +19,7 @@ export const zhCN = {
   internalBetaLoginEmail: "内测登录邮箱（未验证）",
   internalBetaRecoveryUnavailable:
     "此内测账号不会验证邮箱所有权；暂不支持找回密码、身份绑定或注销恢复。请妥善保管密码。",
+  invalidInternalBetaEmail: "请输入有效的内测登录邮箱。",
   verificationUnavailableTitle: "当前内测暂不支持此功能",
   registrationUnavailable: "当前未开放账户注册。",
   identityUnverified: "未验证",

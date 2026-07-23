@@ -100,6 +100,68 @@ func TestHTTPHandlerDirectRegistrationAcceptsOnlyRawEmailIdentity(t *testing.T) 
 	}
 }
 
+func TestHTTPHandlerUsesForwardedIPOnlyFromPrivateProxy(t *testing.T) {
+	tests := []struct {
+		name       string
+		remoteAddr string
+		forwarded  string
+		wantIP     string
+	}{
+		{
+			name:       "caddy private gateway",
+			remoteAddr: "172.18.0.1:43210",
+			forwarded:  "203.0.113.10",
+			wantIP:     "203.0.113.10",
+		},
+		{
+			name:       "untrusted public peer",
+			remoteAddr: "198.51.100.20:43210",
+			forwarded:  "203.0.113.10",
+			wantIP:     "198.51.100.20",
+		},
+		{
+			name:       "ambiguous forwarded chain",
+			remoteAddr: "172.18.0.1:43210",
+			forwarded:  "203.0.113.10, 198.51.100.20",
+			wantIP:     "172.18.0.1",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service := &stubAccountService{
+				registration: Registration{UserID: uuid.New(), PersonalSpaceID: uuid.New()},
+			}
+			config := HTTPConfig{
+				Accounts: service, BrowserSessions: &stubBrowserSessions{}, Legal: currentLegal(t),
+			}
+			setHTTPConfigField(t, &config, "DirectRegistration", true)
+			handler := NewHandler(config)
+			request := accountJSONRequest(http.MethodPost, "/api/v1/accounts/register", `{
+				"kind":"email",
+				"identity":"alice@example.com",
+				"password":"correct horse battery staple",
+				"terms_version":"terms-2026-07",
+				"privacy_version":"privacy-2026-07"
+			}`)
+			request.RemoteAddr = test.remoteAddr
+			request.Header.Set("X-Forwarded-For", test.forwarded)
+			response := httptest.NewRecorder()
+
+			handler.ServeHTTP(response, request)
+
+			if response.Code != http.StatusCreated || service.registerIP != test.wantIP {
+				t.Fatalf(
+					"response = %d %s; IP=%q, want %q",
+					response.Code,
+					response.Body.String(),
+					service.registerIP,
+					test.wantIP,
+				)
+			}
+		})
+	}
+}
+
 func TestHTTPHandlerDirectRegistrationRejectsVerificationOrPhone(t *testing.T) {
 	tests := []string{
 		`{"kind":"email","identity":"alice@example.com","verification_receipt":"forbidden","password":"correct horse battery staple","terms_version":"terms-2026-07","privacy_version":"privacy-2026-07"}`,

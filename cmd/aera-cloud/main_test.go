@@ -135,7 +135,7 @@ func TestBuildVerificationHandlerWiresVersionedRoute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildVerificationHandler() error = %v", err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/verification/challenges", strings.NewReader(`{
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/verification/challenges", strings.NewReader(`{
 		"kind":"email",
 		"destination":"invalid",
 		"purpose":"registration"
@@ -167,7 +167,8 @@ func TestBuildVerificationHandlerIsUnavailableInDirectRegistrationMode(t *testin
 	if err != nil {
 		t.Fatalf("buildVerificationHandler() error = %v", err)
 	}
-	request := httptest.NewRequest(
+	request := httptest.NewRequestWithContext(
+		t.Context(),
 		http.MethodPost,
 		"/api/v1/verification/challenges",
 		strings.NewReader(`{"kind":"email","destination":"alice@example.com","purpose":"registration"}`),

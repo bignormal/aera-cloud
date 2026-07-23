@@ -145,12 +145,13 @@ cosign verify-attestation \
   fail "image provenance attestation verification failed"
 
 if ! jq -e \
+  --slurp \
   --slurpfile expected "$provenance" \
   --arg image "$base_image" \
   --arg digest "$digest_hex" \
   '
     [
-      .. |
+      .[] | .. |
       objects |
       select((.payload? | type) == "string") |
       (try (.payload | @base64d | fromjson) catch empty) |

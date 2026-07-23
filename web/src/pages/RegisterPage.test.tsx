@@ -240,3 +240,44 @@ test("direct internal beta submits an unverified normalized email identifier wit
   });
   expect(calls[0].body).not.toHaveProperty("verification_receipt");
 });
+
+test("direct internal beta rejects an invalid email before account creation", async () => {
+  let registrationCalls = 0;
+  vi.spyOn(window, "fetch").mockImplementation(async (input) => {
+    const url = String(input);
+    if (url === "/api/v1/public/config") {
+      return jsonResponse(directConfig);
+    }
+    if (url === "/api/v1/legal/current") {
+      return jsonResponse({
+        terms_version: "2026-07",
+        privacy_version: "2026-07",
+      });
+    }
+    if (url === "/api/v1/accounts/register") {
+      registrationCalls += 1;
+      return jsonResponse({}, 201);
+    }
+    throw new Error(`unexpected request: ${url}`);
+  });
+
+  renderRegistration();
+
+  fireEvent.change(
+    await screen.findByRole("textbox", {
+      name: "内测登录邮箱（未验证）",
+    }),
+    { target: { value: "not-an-email" } },
+  );
+  fireEvent.change(screen.getByLabelText("设置密码"), {
+    target: { value: "correct horse battery" },
+  });
+  fireEvent.change(screen.getByLabelText("确认密码"), {
+    target: { value: "correct horse battery" },
+  });
+  fireEvent.click(screen.getByLabelText("我已阅读并同意服务条款和隐私政策"));
+  fireEvent.click(screen.getByRole("button", { name: "创建 AgentEra 账户" }));
+
+  expect(await screen.findByText("请输入有效的内测登录邮箱。")).toBeVisible();
+  expect(registrationCalls).toBe(0);
+});
