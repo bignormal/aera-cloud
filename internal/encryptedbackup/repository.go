@@ -377,7 +377,7 @@ func (repository *PostgresRepository) Initiate(
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8,
 			$9, $10, $11, $12, $13, $14, $15, $16,
-			$17, $18, $19, $20, $21, $22, $23, $24, $25, $25, $26
+			$17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27
 		)
 	`, record.ID, record.UserID, record.SourceDeviceID, record.SourceInstallationID,
 		record.SourceDefinitionID, record.SourceVersionID, record.ProfileLineageID,
@@ -387,7 +387,7 @@ func (repository *PostgresRepository) Initiate(
 		record.PublicEnvelopeDigest[:], record.PublicSignature,
 		record.Recovery.Salt, record.Recovery.MemoryKiB, record.Recovery.Iterations,
 		record.Recovery.Parallelism, record.RecoveryRootKeyEnvelope, record.WrappedDataKey,
-		record.CreatedAt, record.UploadExpiresAt)
+		record.CreatedAt, record.UpdatedAt, record.UploadExpiresAt)
 	if err != nil {
 		return Backup{}, false, classifyBackupWriteError(err)
 	}

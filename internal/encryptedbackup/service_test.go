@@ -66,7 +66,7 @@ func TestServiceRunsSignedUploadLifecycleAndSealsOnlyCompleteCiphertext(t *testi
 	service, repository, objects, identityPrivate, principal, now := newServiceFixture(t)
 	envelope := testPublicEnvelope()
 	envelope.SourceDeviceID = principal.DeviceID
-	envelope.CreatedAt = now
+	envelope.CreatedAt = now.Add(-137 * time.Millisecond)
 	signature := ed25519.Sign(identityPrivate, PublicEnvelopeSigningDigest(envelope))
 	recoveryEnvelope := []byte("recovery-envelope-ciphertext-that-is-at-least-forty-eight-bytes")
 	wrappedDataKey := []byte("wrapped-data-key-ciphertext-that-is-at-least-forty-eight-bytes")
@@ -90,8 +90,11 @@ func TestServiceRunsSignedUploadLifecycleAndSealsOnlyCompleteCiphertext(t *testi
 		t.Fatalf("Initiate() error = %v", err)
 	}
 	if initiated.State != BackupStateInitiated || initiated.Replayed ||
-		!initiated.UploadExpiresAt.Equal(now.Add(24*time.Hour)) {
+		!initiated.UploadExpiresAt.Equal(envelope.CreatedAt.Add(24*time.Hour)) {
 		t.Fatalf("Initiate() = %#v", initiated)
+	}
+	if !repository.detail.CreatedAt.Equal(envelope.CreatedAt) {
+		t.Fatalf("stored created_at = %v, want signed %v", repository.detail.CreatedAt, envelope.CreatedAt)
 	}
 	replayed, err := service.Initiate(context.Background(), command)
 	if err != nil || !replayed.Replayed {

@@ -4,11 +4,49 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+func TestPublicEnvelopeSigningDigestMatchesDesktopV1Vector(t *testing.T) {
+	envelope := PublicEnvelope{
+		FormatVersion:        BackupFormatVersion,
+		CipherSuite:          BackupCipherSuite,
+		BackupID:             uuid.MustParse("70000000-0000-4000-8000-000000000001"),
+		ProfileLineageID:     uuid.MustParse("30000000-0000-4000-8000-000000000001"),
+		SourceDeviceID:       uuid.MustParse("20000000-0000-4000-8000-000000000001"),
+		SourceInstallationID: uuid.MustParse("40000000-0000-4000-8000-000000000001"),
+		SourceDefinitionID:   uuid.MustParse("50000000-0000-4000-8000-000000000001"),
+		SourceVersionID:      uuid.MustParse("60000000-0000-4000-8000-000000000001"),
+		BaseOwnerScope:       "USER",
+		KeyEpoch:             7,
+		CreatedAt:            time.Date(2026, 7, 23, 1, 2, 3, 456000000, time.UTC),
+		Manifest: ObjectSpec{
+			ObjectID:         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			CiphertextDigest: filledDigest(0x01),
+			CiphertextSize:   123,
+		},
+		Chunks: []ChunkSpec{{
+			Index: 0,
+			ObjectSpec: ObjectSpec{
+				ObjectID:         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+				CiphertextDigest: filledDigest(0x02),
+				CiphertextSize:   456,
+			},
+		}},
+		TotalCiphertextSize:        579,
+		RecoveryEnvelopeDigest:     filledDigest(0x03),
+		WrappedDataKeyDigest:       filledDigest(0x04),
+		SourceDeviceEnvelopeDigest: filledDigest(0x05),
+	}
+	const desktopDigest = "aed5ce6e654ef8f55e209fe40d285cebb59636b02d16a484aca94d8cf632d604"
+	if got := hex.EncodeToString(PublicEnvelopeSigningDigest(envelope)); got != desktopDigest {
+		t.Fatalf("PublicEnvelopeSigningDigest() = %s, want Desktop digest %s", got, desktopDigest)
+	}
+}
 
 func TestPublicEnvelopeSignatureIsCanonicalAndRejectsTampering(t *testing.T) {
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
@@ -51,6 +89,14 @@ func TestBackupDeviceRegistrationSignatureBindsRevisionAndKey(t *testing.T) {
 	if err := VerifyBackupDeviceRegistrationSignature(publicKey, registration, signature); err != ErrInvalidSignature {
 		t.Fatalf("replayed revision error = %v, want %v", err, ErrInvalidSignature)
 	}
+}
+
+func filledDigest(fill byte) [sha256.Size]byte {
+	var digest [sha256.Size]byte
+	for index := range digest {
+		digest[index] = fill
+	}
+	return digest
 }
 
 func testPublicEnvelope() PublicEnvelope {

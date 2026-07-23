@@ -194,6 +194,10 @@ func (service *Service) Initiate(
 	); err != nil {
 		return InitiateResult{}, err
 	}
+	recordedAt := now
+	if command.Envelope.CreatedAt.After(recordedAt) {
+		recordedAt = command.Envelope.CreatedAt
+	}
 	backupDevice, err := service.repository.BackupDevice(
 		ctx,
 		command.Principal.UserID,
@@ -235,9 +239,9 @@ func (service *Service) Initiate(
 			Recovery:                cloneRecovery(command.Recovery),
 			RecoveryRootKeyEnvelope: append([]byte(nil), command.RecoveryRootKeyEnvelope...),
 			WrappedDataKey:          append([]byte(nil), command.WrappedDataKey...),
-			CreatedAt:               now,
-			UpdatedAt:               now,
-			UploadExpiresAt:         now.Add(service.uploadTTL),
+			CreatedAt:               command.Envelope.CreatedAt,
+			UpdatedAt:               recordedAt,
+			UploadExpiresAt:         command.Envelope.CreatedAt.Add(service.uploadTTL),
 		},
 		Chunks: append([]ChunkSpec(nil), command.Envelope.Chunks...),
 		SourceDeviceEnvelope: EnvelopeRecord{
@@ -247,7 +251,7 @@ func (service *Service) Initiate(
 			KeyEpoch:              backupDevice.KeyEpoch,
 			RootKeyEnvelope:       append([]byte(nil), command.SourceDeviceRootKeyEnvelope...),
 			RootKeyEnvelopeDigest: command.Envelope.SourceDeviceEnvelopeDigest,
-			CreatedAt:             now,
+			CreatedAt:             recordedAt,
 		},
 		PublicEnvelopeDigest: storedDigest,
 	}
