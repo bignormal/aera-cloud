@@ -16,16 +16,16 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func TestEmbeddedMigrationsIncludeOfficialQualityFeedbackV1(t *testing.T) {
+func TestEmbeddedMigrationsIncludeEncryptedProfileBackupV1(t *testing.T) {
 	loaded, err := loadMigrations(migrations.FS)
 	if err != nil {
 		t.Fatalf("loadMigrations() error = %v", err)
 	}
-	if len(loaded) != 17 {
-		t.Fatalf("embedded migration count = %d, want 17", len(loaded))
+	if len(loaded) != 18 {
+		t.Fatalf("embedded migration count = %d, want 18", len(loaded))
 	}
 	last := loaded[len(loaded)-1]
-	if last.version != 17 || last.name != "000017_official_quality_feedback_v1.sql" {
+	if last.version != 18 || last.name != "000018_e2ee_profile_backup_v1.sql" {
 		t.Fatalf("last embedded migration = %d/%s", last.version, last.name)
 	}
 }
@@ -98,6 +98,11 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 		"official_quality_proposals",
 		"official_quality_proposal_aggregates",
 		"official_quality_proposal_reviews",
+		"backup_devices",
+		"encrypted_profile_backups",
+		"encrypted_backup_chunks",
+		"encrypted_backup_key_envelopes",
+		"encrypted_backup_operations",
 	}
 	for _, table := range tables {
 		var exists bool
@@ -146,6 +151,12 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	assertTriggerExists(t, ctx, postgres, "official_quality_events", "official_quality_event_immutable_trigger")
 	assertTriggerExists(t, ctx, postgres, "official_quality_proposal_aggregates", "official_quality_proposal_aggregate_immutable_trigger")
 	assertTriggerExists(t, ctx, postgres, "official_quality_proposal_reviews", "official_quality_proposal_review_immutable_trigger")
+	assertTriggerExists(t, ctx, postgres, "encrypted_profile_backups", "encrypted_profile_backup_guard_trigger")
+	assertTriggerExists(t, ctx, postgres, "encrypted_backup_chunks", "encrypted_backup_chunk_immutable_trigger")
+	assertCheckConstraintContains(t, ctx, postgres, "encrypted_profile_backups", "encrypted_profile_backups_size_check", "1073741824")
+	assertCheckConstraintContains(t, ctx, postgres, "encrypted_profile_backups", "encrypted_profile_backups_state_check", "deleting")
+	assertCheckConstraintContains(t, ctx, postgres, "encrypted_profile_backups", "encrypted_profile_backups_cipher_suite_check", "HPKE-X25519-HKDF-SHA256-AES256GCM")
+	assertCheckConstraintContains(t, ctx, postgres, "backup_devices", "backup_devices_public_key_length_check", "octet_length(public_key) = 32")
 	assertCheckConstraintExcludes(t, ctx, postgres, "installations", "installations_lifecycle_check", "policy_snapshot_id IS NULL")
 	assertCheckConstraintContains(t, ctx, postgres, "installations", "installations_status_check", "pending")
 	assertCheckConstraintContains(t, ctx, postgres, "installations", "installations_update_policy_check", "manual")
@@ -320,6 +331,18 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 		"minimum_desktop_version", "bucket_algorithm_version", "rollout_key_id", "action",
 		"previous_revision_id", "rollback_target_revision_id", "actor_admin_id", "actor_admin_role",
 	})
+	assertColumns(t, ctx, postgres, "encrypted_profile_backups", []string{
+		"id", "user_id", "source_device_id", "source_installation_id", "source_definition_id",
+		"source_version_id", "profile_lineage_id", "parent_backup_id", "format_version", "cipher_suite",
+		"state", "chunk_count", "total_ciphertext_size", "manifest_object_key", "manifest_ciphertext_digest",
+		"manifest_ciphertext_size", "public_envelope_digest", "public_signature", "recovery_salt",
+		"recovery_memory_kib", "recovery_iterations", "recovery_parallelism", "recovery_root_key_envelope",
+		"wrapped_data_key", "created_at", "updated_at", "upload_expires_at", "sealed_at",
+		"deletion_started_at", "deleted_at",
+	})
+	assertNoColumns(t, ctx, postgres, "encrypted_profile_backups", []string{
+		"manifest", "filename", "file_path", "profile_path", "recovery_phrase", "root_key", "data_encryption_key",
+	})
 	assertColumns(t, ctx, postgres, "workspaces", []string{
 		"id", "owner_user_id", "display_name", "status", "revision", "created_at", "updated_at", "archived_at",
 	})
@@ -431,8 +454,8 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	if err := postgres.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if applied != 17 {
-		t.Fatalf("applied migration count = %d, want 17", applied)
+	if applied != 18 {
+		t.Fatalf("applied migration count = %d, want 18", applied)
 	}
 	var receiptConsumedColumn bool
 	if err := postgres.QueryRow(ctx, `
