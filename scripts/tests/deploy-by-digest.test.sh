@@ -145,13 +145,38 @@ export AERA_RELEASE_PREVIOUS_MANIFEST="$tmp/previous.json"
 export AERA_RELEASE_EXPECTED_SHA="$previous_sha"
 export AERA_RELEASE_ROLLBACK_REASON="candidate regression"
 export AERA_RELEASE_ROLLBACK_TICKET="OPS-1234"
+export AERA_RELEASE_REHEARSAL_RESTORE_CURRENT=true
+export AERA_RELEASE_CURRENT_MANIFEST="$tmp/current.json"
+export AERA_RELEASE_EXPECTED_CURRENT_SHA="$current_sha"
 "$rollback"
 grep -q '^AGENTERA_CLOUD_OFFICIAL_AGENTS_ENABLED=false$' "$feature_env"
 grep -q '^AGENTERA_CLOUD_OFFICIAL_QUALITY_ENABLED=false$' "$feature_env"
 grep -q '^AGENTERA_CLOUD_ENCRYPTED_BACKUP_ENABLED=false$' "$feature_env"
-jq -e '.rollback.fromDigest == $from and .rollback.toDigest == $to and .rollback.ticket == "OPS-1234"' \
+jq -e '
+  .rollback.fromDigest == $from and
+  .rollback.toDigest == $to and
+  .rollback.ticket == "OPS-1234" and
+  .rollback.featuresDisabledBeforeRollback == true
+' \
   --arg from "$(digest a)" --arg to "$(digest d)" \
   "$tmp/state/rollback-evidence.json" >/dev/null
+jq -e '
+  .environment == "staging" and
+  .restoredFromDigest == $from and
+  .restoredToDigest == $to and
+  .healthAfterRestore == "passed"
+' --arg from "$(digest d)" --arg to "$(digest a)" \
+  "$tmp/state/rehearsal-restore-evidence.json" >/dev/null
+jq -e '
+  .environment == "staging" and
+  .current.imageDigest == $digest and
+  .features.officialAgents == false and
+  .features.officialQuality == false and
+  .features.encryptedBackup == false
+' --arg digest "$(digest a)" "$tmp/state/deployment-state.json" >/dev/null
+unset AERA_RELEASE_REHEARSAL_RESTORE_CURRENT
+unset AERA_RELEASE_CURRENT_MANIFEST
+unset AERA_RELEASE_EXPECTED_CURRENT_SHA
 
 jq '.image.reference = "ghcr.io/bignormal/aera-cloud:latest"' \
   "$tmp/current.json" > "$tmp/mutable.json"

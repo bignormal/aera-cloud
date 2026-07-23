@@ -124,5 +124,11 @@ require_text .github/workflows/promote-production.yml 'cloud-production-enabled-
 require_text .github/workflows/promote-production.yml 'deployment-state\.json'
 require_text .github/workflows/promote-production.yml 'current-manifest\.json'
 require_text .github/workflows/rollback-production.yml 'rollback-by-digest\.sh'
+require_text .github/workflows/rollback-production.yml 'target_environment'
+require_text .github/workflows/rollback-production.yml 'restore_current_after_rehearsal'
+require_text .github/workflows/rollback-production.yml 'AERA_RELEASE_REHEARSAL_RESTORE_CURRENT'
+require_text .github/workflows/rollback-production.yml 'rehearsal-restore-evidence\.json'
+require_text scripts/release/rollback-by-digest.sh 'healthBefore'
+require_text scripts/release/rollback-by-digest.sh 'downMigrationExecuted'
 
 printf 'delivery contract tests passed\n'
