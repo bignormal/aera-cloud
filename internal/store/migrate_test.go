@@ -16,17 +16,21 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func TestEmbeddedMigrationsIncludeEncryptedProfileBackupV1(t *testing.T) {
+func TestEmbeddedMigrationsIncludeInternalBetaDirectRegistration(t *testing.T) {
 	loaded, err := loadMigrations(migrations.FS)
 	if err != nil {
 		t.Fatalf("loadMigrations() error = %v", err)
 	}
-	if len(loaded) != 18 {
-		t.Fatalf("embedded migration count = %d, want 18", len(loaded))
+	if len(loaded) != 19 {
+		t.Fatalf("embedded migration count = %d, want 19", len(loaded))
 	}
 	last := loaded[len(loaded)-1]
-	if last.version != 18 || last.name != "000018_e2ee_profile_backup_v1.sql" {
+	if last.version != 19 || last.name != "000019_internal_beta_direct_registration.sql" {
 		t.Fatalf("last embedded migration = %d/%s", last.version, last.name)
+	}
+	const expected = "ALTER TABLE identities\n    ALTER COLUMN verified_at DROP NOT NULL;"
+	if strings.TrimSpace(string(last.contents)) != expected {
+		t.Fatalf("migration 19 contents = %q, want only verified_at nullability change", last.contents)
 	}
 }
 
@@ -454,8 +458,8 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	if err := postgres.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if applied != 18 {
-		t.Fatalf("applied migration count = %d, want 18", applied)
+	if applied != 19 {
+		t.Fatalf("applied migration count = %d, want 19", applied)
 	}
 	var receiptConsumedColumn bool
 	if err := postgres.QueryRow(ctx, `

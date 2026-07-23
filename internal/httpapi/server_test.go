@@ -478,6 +478,29 @@ func TestOrganizationAgentRoutesReachAgentControlBeforeOrganizationWildcard(t *t
 	}
 }
 
+func TestPublicServerMountsPublicConfigBeforeSPAFallback(t *testing.T) {
+	publicConfig := NewPublicConfigHandler(PublicConfig{
+		Environment:                   "internal_beta",
+		PublicRegistrationEnabled:     true,
+		RegistrationMode:              "direct",
+		RegistrationIdentityKinds:     []string{"email"},
+		IdentityVerificationAvailable: false,
+	})
+	handler := New(Dependencies{
+		PostgreSQL: &stubHealthChecker{}, Redis: &stubHealthChecker{},
+		PublicConfig: publicConfig,
+		Web: http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+			t.Fatal("public config fell through to SPA")
+		}),
+	})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/public/config", nil))
+	if response.Code != http.StatusOK ||
+		!strings.Contains(response.Body.String(), `"registration_mode":"direct"`) {
+		t.Fatalf("response = %d %q", response.Code, response.Body.String())
+	}
+}
+
 func TestWebAccountCenterHandlesOnlyUnmatchedNonServiceRoutes(t *testing.T) {
 	web := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.WriteHeader(http.StatusOK)

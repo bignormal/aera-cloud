@@ -9,8 +9,8 @@ const (
 	envRegistrationMode             = "AGENTERA_CLOUD_REGISTRATION_MODE"
 	envDirectRegistrationIPLimit    = "AGENTERA_CLOUD_DIRECT_REGISTRATION_IP_LIMIT"
 	envDirectRegistrationWindow     = "AGENTERA_CLOUD_DIRECT_REGISTRATION_WINDOW"
-	registrationModeVerified        = "verified"
-	registrationModeDirect          = "direct"
+	RegistrationModeVerified        = "verified"
+	RegistrationModeDirect          = "direct"
 	maximumDirectRegistrationWindow = 24 * time.Hour
 )
 
@@ -21,12 +21,12 @@ func loadRegistrationMode(
 ) (string, int64, time.Duration, error) {
 	mode, ok := lookup(envRegistrationMode)
 	if !ok || mode == "" {
-		mode = registrationModeVerified
+		mode = RegistrationModeVerified
 	}
 	switch mode {
-	case registrationModeVerified:
+	case RegistrationModeVerified:
 		return mode, 0, 0, nil
-	case registrationModeDirect:
+	case RegistrationModeDirect:
 		if !IsInternalBeta(environment) {
 			return "", 0, 0, fmt.Errorf("%s=direct is allowed only in internal_beta", envRegistrationMode)
 		}

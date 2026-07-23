@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -68,6 +69,54 @@ func TestHTTPHandlerFailsClosedWhenPublicRegistrationIsDisabled(t *testing.T) {
 	assertErrorEnvelope(t, response, http.StatusServiceUnavailable, "service_unavailable")
 	if service.registerCalls != 0 {
 		t.Fatalf("Register() calls = %d, want 0", service.registerCalls)
+	}
+}
+
+func TestHTTPHandlerDirectRegistrationAcceptsOnlyRawEmailIdentity(t *testing.T) {
+	service := &stubAccountService{registration: Registration{UserID: uuid.New(), PersonalSpaceID: uuid.New()}}
+	config := HTTPConfig{Accounts: service, BrowserSessions: &stubBrowserSessions{}, Legal: currentLegal(t)}
+	setHTTPConfigField(t, &config, "DirectRegistration", true)
+	handler := NewHandler(config)
+	request := accountJSONRequest(http.MethodPost, "/api/v1/accounts/register", `{
+		"kind":"email",
+		"identity":"Alice@Example.COM",
+		"password":"correct horse battery staple",
+		"nickname":"Alice",
+		"terms_version":"terms-2026-07",
+		"privacy_version":"privacy-2026-07"
+	}`)
+	request.RemoteAddr = "203.0.113.10:43210"
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if service.registerCalls != 1 || service.registerIP != "203.0.113.10" ||
+		reflectedString(t, service.lastRegister, "Identity") != "Alice@Example.COM" ||
+		service.lastRegister.VerificationReceipt != "" {
+		t.Fatalf("Register command = %+v; IP=%q", service.lastRegister, service.registerIP)
+	}
+}
+
+func TestHTTPHandlerDirectRegistrationRejectsVerificationOrPhone(t *testing.T) {
+	tests := []string{
+		`{"kind":"email","identity":"alice@example.com","verification_receipt":"forbidden","password":"correct horse battery staple","terms_version":"terms-2026-07","privacy_version":"privacy-2026-07"}`,
+		`{"kind":"phone","identity":"+8613800138000","password":"correct horse battery staple","terms_version":"terms-2026-07","privacy_version":"privacy-2026-07"}`,
+		`{"kind":"email","identity":"","password":"correct horse battery staple","terms_version":"terms-2026-07","privacy_version":"privacy-2026-07"}`,
+	}
+	for _, body := range tests {
+		service := &stubAccountService{}
+		config := HTTPConfig{Accounts: service, BrowserSessions: &stubBrowserSessions{}, Legal: currentLegal(t)}
+		setHTTPConfigField(t, &config, "DirectRegistration", true)
+		handler := NewHandler(config)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, accountJSONRequest(http.MethodPost, "/api/v1/accounts/register", body))
+		assertErrorEnvelope(t, response, http.StatusBadRequest, "invalid_request")
+		if service.registerCalls != 0 {
+			t.Fatalf("invalid direct registration reached service: %s", body)
+		}
 	}
 }
 
@@ -308,6 +357,7 @@ type stubAccountService struct {
 	registration    Registration
 	registerErr     error
 	registerCalls   int
+	registerIP      string
 	lastRegister    RegisterCommand
 	principal       Principal
 	loginErr        error
@@ -331,10 +381,29 @@ type stubAccountService struct {
 	recoverReceipt  string
 }
 
-func (s *stubAccountService) Register(_ context.Context, command RegisterCommand) (Registration, error) {
+func (s *stubAccountService) Register(ctx context.Context, command RegisterCommand) (Registration, error) {
 	s.registerCalls++
+	s.registerIP = loginIPAddress(ctx)
 	s.lastRegister = command
 	return s.registration, s.registerErr
+}
+
+func setHTTPConfigField(t *testing.T, target any, name string, value any) {
+	t.Helper()
+	field := reflect.ValueOf(target).Elem().FieldByName(name)
+	if !field.IsValid() {
+		t.Fatalf("%T.%s does not exist", target, name)
+	}
+	field.Set(reflect.ValueOf(value))
+}
+
+func reflectedString(t *testing.T, target any, name string) string {
+	t.Helper()
+	field := reflect.ValueOf(target).FieldByName(name)
+	if !field.IsValid() || field.Kind() != reflect.String {
+		t.Fatalf("%T.%s is not a string", target, name)
+	}
+	return field.String()
 }
 
 func (s *stubAccountService) AuthenticatePassword(ctx context.Context, _, _ string) (Principal, error) {

@@ -20,6 +20,7 @@ import (
 	"github.com/bignormal/aera-cloud/internal/oauth"
 	"github.com/bignormal/aera-cloud/internal/store"
 	"github.com/bignormal/aera-cloud/internal/testkit"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -148,6 +149,101 @@ func TestBuildVerificationHandlerWiresVersionedRoute(t *testing.T) {
 
 	if response.Code != http.StatusBadRequest || strings.TrimSpace(response.Body.String()) != `{"error":"invalid_request"}` {
 		t.Fatalf("response = %d %q", response.Code, response.Body.String())
+	}
+}
+
+func TestBuildVerificationHandlerIsUnavailableInDirectRegistrationMode(t *testing.T) {
+	cfg, err := config.Load(directInternalBetaLookup(testkit.Services{
+		DatabaseURL:   "postgres://aera_cloud:secret@127.0.0.1:55434/aera_cloud?sslmode=disable",
+		RedisAddr:     "127.0.0.1:56381",
+		RedisUsername: "aera_cloud",
+		RedisPassword: "secret",
+		RedisDB:       9,
+	}))
+	if err != nil {
+		t.Fatalf("config.Load() error = %v", err)
+	}
+	handler, err := buildVerificationHandler(cfg, nil, nil)
+	if err != nil {
+		t.Fatalf("buildVerificationHandler() error = %v", err)
+	}
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/verification/challenges",
+		strings.NewReader(`{"kind":"email","destination":"alice@example.com","purpose":"registration"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable ||
+		strings.TrimSpace(response.Body.String()) != `{"error":"temporarily_unavailable"}` {
+		t.Fatalf("response = %d %q", response.Code, response.Body.String())
+	}
+}
+
+func TestBuildAccountHandlerEnablesDirectRegistrationMode(t *testing.T) {
+	cfg, err := config.Load(directInternalBetaLookup(testkit.Services{
+		DatabaseURL:   "postgres://aera_cloud:secret@127.0.0.1:55434/aera_cloud?sslmode=disable",
+		RedisAddr:     "127.0.0.1:56381",
+		RedisUsername: "aera_cloud",
+		RedisPassword: "secret",
+		RedisDB:       9,
+	}))
+	if err != nil {
+		t.Fatalf("config.Load() error = %v", err)
+	}
+	redisClient := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
+	defer func() { _ = redisClient.Close() }()
+	postgres, err := pgxpool.New(context.Background(), cfg.DatabaseURL)
+	if err != nil {
+		t.Fatalf("pgxpool.New() error = %v", err)
+	}
+	defer postgres.Close()
+	handler, err := buildAccountHandler(cfg, postgres, redisClient)
+	if err != nil {
+		t.Fatalf("buildAccountHandler() error = %v", err)
+	}
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/accounts/register",
+		strings.NewReader(`{
+			"kind":"email",
+			"identity":"alice@example.com",
+			"password":"correct horse battery staple",
+			"terms_version":"terms-2026-07",
+			"privacy_version":"privacy-2026-07"
+		}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	request.RemoteAddr = "203.0.113.10:43210"
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable ||
+		!strings.Contains(response.Body.String(), `"code":"service_unavailable"`) ||
+		strings.Contains(response.Body.String(), "alice@example.com") {
+		t.Fatalf("response = %d %q", response.Code, response.Body.String())
+	}
+}
+
+func TestBuildPublicConfigReportsDirectRegistrationWithoutVerification(t *testing.T) {
+	cfg, err := config.Load(directInternalBetaLookup(testkit.Services{
+		DatabaseURL:   "postgres://aera_cloud:secret@127.0.0.1:55434/aera_cloud?sslmode=disable",
+		RedisAddr:     "127.0.0.1:56381",
+		RedisUsername: "aera_cloud",
+		RedisPassword: "secret",
+		RedisDB:       9,
+	}))
+	if err != nil {
+		t.Fatalf("config.Load() error = %v", err)
+	}
+	document := buildPublicConfig(cfg)
+	if document.Environment != "internal_beta" ||
+		!document.PublicRegistrationEnabled ||
+		document.RegistrationMode != "direct" ||
+		document.IdentityVerificationAvailable ||
+		len(document.RegistrationIdentityKinds) != 1 ||
+		document.RegistrationIdentityKinds[0] != "email" {
+		t.Fatalf("public config = %+v", document)
 	}
 }
 
@@ -542,6 +638,40 @@ func integrationLookup(services testkit.Services) config.LookupEnv {
 	return func(key string) (string, bool) {
 		value, ok := values[key]
 		return value, ok
+	}
+}
+
+func directInternalBetaLookup(services testkit.Services) config.LookupEnv {
+	base := integrationLookup(services)
+	overrides := map[string]string{
+		"AGENTERA_CLOUD_ENVIRONMENT":                  "internal_beta",
+		"AGENTERA_CLOUD_PUBLIC_URL":                   "https://192.0.2.10",
+		"AGENTERA_CLOUD_PUBLIC_REGISTRATION_ENABLED":  "true",
+		"AGENTERA_CLOUD_REGISTRATION_MODE":            "direct",
+		"AGENTERA_CLOUD_DIRECT_REGISTRATION_IP_LIMIT": "30",
+		"AGENTERA_CLOUD_DIRECT_REGISTRATION_WINDOW":   "1h",
+	}
+	disabledProviders := map[string]struct{}{
+		"AGENTERA_CLOUD_SMTP_HOST":         {},
+		"AGENTERA_CLOUD_SMTP_PORT":         {},
+		"AGENTERA_CLOUD_SMTP_USERNAME":     {},
+		"AGENTERA_CLOUD_SMTP_PASSWORD":     {},
+		"AGENTERA_CLOUD_SMTP_FROM_ADDRESS": {},
+		"AGENTERA_CLOUD_SMTP_FROM_NAME":    {},
+		"AGENTERA_CLOUD_SMS_ENDPOINT":      {},
+		"AGENTERA_CLOUD_SMS_API_KEY":       {},
+		"AGENTERA_CLOUD_SMS_SENDER_ID":     {},
+		"AGENTERA_CLOUD_CAPTCHA_ENDPOINT":  {},
+		"AGENTERA_CLOUD_CAPTCHA_SECRET":    {},
+	}
+	return func(key string) (string, bool) {
+		if value, ok := overrides[key]; ok {
+			return value, true
+		}
+		if _, disabled := disabledProviders[key]; disabled {
+			return "", false
+		}
+		return base(key)
 	}
 }
 

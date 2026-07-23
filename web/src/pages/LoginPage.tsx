@@ -4,16 +4,21 @@ import { setCSRFToken } from "../auth/csrf";
 import { Card, PageFrame, StatusMessage } from "../components/Layout";
 import { errorKey } from "../components/forms";
 import { useI18n } from "../i18n";
+import { usePublicConfig } from "../public-config";
 import { isSafeInternalTarget, Link, useRouter } from "../router";
 
 export function LoginPage() {
   const { t } = useI18n();
   const { location, navigate } = useRouter();
+  const { config } = usePublicConfig();
   const [identity, setIdentity] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const params = new URLSearchParams(location.search);
+  const verificationAvailable =
+    config?.identity_verification_available === true;
+  const directRegistration = config?.registration_mode === "direct";
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -23,9 +28,14 @@ export function LoginPage() {
       const result = await login(identity, password);
       setCSRFToken(result.csrf_token);
       const requested = params.get("next") ?? "";
-      navigate(isSafeInternalTarget(requested) ? requested : "/account", { replace: true });
+      navigate(isSafeInternalTarget(requested) ? requested : "/account", {
+        replace: true,
+      });
     } catch (caught) {
-      if (caught instanceof APIError && caught.code === "account_pending_deletion") {
+      if (
+        caught instanceof APIError &&
+        caught.code === "account_pending_deletion"
+      ) {
         setError("account_pending_deletion");
       } else {
         setError(t(errorKey(caught)));
@@ -41,13 +51,32 @@ export function LoginPage() {
         <div className="eyebrow">AGENTERA ID</div>
         <h1>{t("loginTitle")}</h1>
         <p className="lede">{t("loginSubtitle")}</p>
-        {params.get("registered") === "1" && <StatusMessage tone="success">{t("registered")}</StatusMessage>}
+        {params.get("registered") === "1" && (
+          <StatusMessage tone="success">{t("registered")}</StatusMessage>
+        )}
         {error === "account_pending_deletion" ? (
-          <StatusMessage tone="warning"><Link href="/delete-account?mode=recover">{t("recoverDeletion")}</Link></StatusMessage>
-        ) : error ? <StatusMessage tone="error">{error}</StatusMessage> : null}
+          <StatusMessage tone="warning">
+            {verificationAvailable ? (
+              <Link href="/delete-account?mode=recover">
+                {t("recoverDeletion")}
+              </Link>
+            ) : (
+              t("internalBetaRecoveryUnavailable")
+            )}
+          </StatusMessage>
+        ) : error ? (
+          <StatusMessage tone="error">{error}</StatusMessage>
+        ) : null}
+        {directRegistration && (
+          <StatusMessage tone="warning">
+            {t("internalBetaRecoveryUnavailable")}
+          </StatusMessage>
+        )}
         <form onSubmit={submit} className="form-stack">
           <label>
-            <span>{t("identity")}</span>
+            <span>
+              {directRegistration ? t("internalBetaLoginEmail") : t("identity")}
+            </span>
             <input
               value={identity}
               onChange={(event) => setIdentity(event.target.value)}
@@ -69,13 +98,25 @@ export function LoginPage() {
               required
             />
           </label>
-          <button className="primary-button" type="submit" disabled={busy}>{t("login")}</button>
+          <button className="primary-button" type="submit" disabled={busy}>
+            {t("login")}
+          </button>
         </form>
         <div className="link-row">
-          <Link href="/register">{t("createAccount")}</Link>
-          <Link href="/forgot-password">{t("forgotPassword")}</Link>
+          {config?.public_registration_enabled === true && (
+            <Link href="/register">{t("createAccount")}</Link>
+          )}
+          {verificationAvailable && (
+            <Link href="/forgot-password">{t("forgotPassword")}</Link>
+          )}
         </div>
-        <div className="secondary-link"><Link href="/delete-account?mode=recover">{t("recoverDeletion")}</Link></div>
+        {verificationAvailable && (
+          <div className="secondary-link">
+            <Link href="/delete-account?mode=recover">
+              {t("recoverDeletion")}
+            </Link>
+          </div>
+        )}
       </Card>
     </PageFrame>
   );

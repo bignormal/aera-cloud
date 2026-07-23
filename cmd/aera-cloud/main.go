@@ -149,6 +149,7 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 	publicHandler := httpapi.New(httpapi.Dependencies{
 		PostgreSQL:      postgres,
 		Redis:           redisStore,
+		PublicConfig:    httpapi.NewPublicConfigHandler(buildPublicConfig(cfg)),
 		Verification:    verificationHandler,
 		Accounts:        accountHandler,
 		OAuth:           oauthHandler,
@@ -175,6 +176,22 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 			"internal_admin_enabled", cfg.InternalAdmin.Enabled)
 		go maintenanceRunner.Run(maintenanceCtx)
 	})
+}
+
+func buildPublicConfig(cfg config.Config) httpapi.PublicConfig {
+	identityKinds := []string{"email", "phone"}
+	verificationAvailable := true
+	if cfg.RegistrationMode == config.RegistrationModeDirect {
+		identityKinds = []string{"email"}
+		verificationAvailable = false
+	}
+	return httpapi.PublicConfig{
+		Environment:                   cfg.Environment,
+		PublicRegistrationEnabled:     cfg.PublicRegistrationEnabled,
+		RegistrationMode:              cfg.RegistrationMode,
+		RegistrationIdentityKinds:     identityKinds,
+		IdentityVerificationAvailable: verificationAvailable,
+	}
 }
 
 func buildEncryptedBackupHandler(
@@ -347,6 +364,9 @@ func buildVerificationHandler(
 	postgres *pgxpool.Pool,
 	redisClient redis.UniversalClient,
 ) (http.Handler, error) {
+	if cfg.RegistrationMode == config.RegistrationModeDirect {
+		return verification.NewHandler(unavailableVerificationService{}), nil
+	}
 	identityCodec, receiptCodec, err := buildIdentityCodecs(cfg)
 	if err != nil {
 		return nil, err
@@ -403,6 +423,19 @@ func buildVerificationHandler(
 	return verification.NewHandler(service), nil
 }
 
+type unavailableVerificationService struct{}
+
+func (unavailableVerificationService) Send(context.Context, verification.SendRequest) error {
+	return errors.New("identity verification is unavailable")
+}
+
+func (unavailableVerificationService) Verify(
+	context.Context,
+	verification.VerifyRequest,
+) (verification.VerificationResult, error) {
+	return verification.VerificationResult{}, errors.New("identity verification is unavailable")
+}
+
 func buildAccountHandler(
 	cfg config.Config,
 	postgres *pgxpool.Pool,
@@ -428,18 +461,35 @@ func buildAccountHandler(
 	if err != nil {
 		return nil, err
 	}
+	var directRegistrationLimiter account.DirectRegistrationLimiter
+	directRegistration := cfg.RegistrationMode == config.RegistrationModeDirect
+	if directRegistration {
+		directRegistrationLimiter, err = account.NewRedisDirectRegistrationLimiter(
+			redisClient,
+			cfg.LoginRateHMACKey,
+			account.DirectRegistrationRatePolicy{
+				IPLimit: cfg.DirectRegistrationIPLimit,
+				Window:  cfg.DirectRegistrationWindow,
+			},
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
 	auditor, err := audit.NewPostgresRecorder(postgres)
 	if err != nil {
 		return nil, err
 	}
 	accountService, err := account.NewService(account.ServiceConfig{
-		Repository:    account.NewPostgresRepository(postgres, identityCodec),
-		IdentityCodec: identityCodec,
-		Receipts:      receiptCodec,
-		Passwords:     passwords,
-		Legal:         legalService,
-		LoginLimiter:  loginLimiter,
-		Auditor:       auditor,
+		Repository:                account.NewPostgresRepository(postgres, identityCodec),
+		IdentityCodec:             identityCodec,
+		Receipts:                  receiptCodec,
+		Passwords:                 passwords,
+		Legal:                     legalService,
+		LoginLimiter:              loginLimiter,
+		DirectRegistration:        directRegistration,
+		DirectRegistrationLimiter: directRegistrationLimiter,
+		Auditor:                   auditor,
 	})
 	if err != nil {
 		return nil, err
@@ -455,6 +505,7 @@ func buildAccountHandler(
 	return account.NewHandler(account.HTTPConfig{
 		Accounts: accountService, BrowserSessions: browserSessions, Legal: legalService,
 		AccessTokens: accessAuthenticator, RegistrationDisabled: !cfg.PublicRegistrationEnabled,
+		DirectRegistration: directRegistration,
 	}), nil
 }
 

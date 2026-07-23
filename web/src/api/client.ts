@@ -29,6 +29,14 @@ export interface LegalDocuments {
   privacy_version: string;
 }
 
+export interface PublicConfig {
+  environment: "development" | "test" | "internal_beta" | "production";
+  public_registration_enabled: boolean;
+  registration_mode: "verified" | "direct";
+  registration_identity_kinds: IdentityKind[];
+  identity_verification_available: boolean;
+}
+
 export interface VerificationReceipt {
   status: "verified";
   receipt: string;
@@ -66,7 +74,10 @@ export class APIError extends Error {
   }
 }
 
-async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+async function request<T>(
+  path: string,
+  options: RequestOptions = {},
+): Promise<T> {
   if (!path.startsWith("/") || path.startsWith("//")) {
     throw new APIError(0, "invalid_request");
   }
@@ -90,17 +101,27 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
       method: options.method ?? "GET",
       credentials: "same-origin",
       headers,
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      body:
+        options.body === undefined ? undefined : JSON.stringify(options.body),
     });
   } catch {
     throw new APIError(0, "network_error");
   }
   const payload = await parseJSON(response);
   if (!response.ok) {
-    const nested = isRecord(payload) && isRecord(payload.error) ? payload.error : undefined;
-    const directCode = isRecord(payload) && typeof payload.error === "string" ? payload.error : undefined;
-    const code = (nested && typeof nested.code === "string" ? nested.code : directCode) ?? "service_unavailable";
-    const requestID = nested && typeof nested.request_id === "string" ? nested.request_id : undefined;
+    const nested =
+      isRecord(payload) && isRecord(payload.error) ? payload.error : undefined;
+    const directCode =
+      isRecord(payload) && typeof payload.error === "string"
+        ? payload.error
+        : undefined;
+    const code =
+      (nested && typeof nested.code === "string" ? nested.code : directCode) ??
+      "service_unavailable";
+    const requestID =
+      nested && typeof nested.request_id === "string"
+        ? nested.request_id
+        : undefined;
     throw new APIError(response.status, code, requestID);
   }
   return payload as T;
@@ -135,7 +156,9 @@ function opaqueBrowserID(): string {
     generated = crypto.randomUUID();
   } else {
     const bytes = crypto.getRandomValues(new Uint8Array(16));
-    generated = Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+    generated = Array.from(bytes, (value) =>
+      value.toString(16).padStart(2, "0"),
+    ).join("");
   }
   try {
     window.localStorage.setItem("agentera.web_installation_id", generated);
@@ -161,7 +184,14 @@ export function getLegalDocuments(): Promise<LegalDocuments> {
   return request<LegalDocuments>("/api/v1/legal/current");
 }
 
-export function login(identity: string, password: string): Promise<BrowserLoginResponse> {
+export function getPublicConfig(): Promise<PublicConfig> {
+  return request<PublicConfig>("/api/v1/public/config");
+}
+
+export function login(
+  identity: string,
+  password: string,
+): Promise<BrowserLoginResponse> {
   return request<BrowserLoginResponse>("/api/v1/browser/login", {
     method: "POST",
     body: { identity, password },
@@ -169,7 +199,10 @@ export function login(identity: string, password: string): Promise<BrowserLoginR
 }
 
 export function logout(): Promise<void> {
-  return request<void>("/api/v1/browser/logout", { method: "POST", csrf: true });
+  return request<void>("/api/v1/browser/logout", {
+    method: "POST",
+    csrf: true,
+  });
 }
 
 export function sendVerification(
@@ -194,39 +227,66 @@ export function verifyIdentity(
   purpose: VerificationPurpose,
   code: string,
 ): Promise<VerificationReceipt> {
-  return request<VerificationReceipt>("/api/v1/verification/challenges/verify", {
-    method: "POST",
-    body: { kind, destination, purpose, code },
-  });
+  return request<VerificationReceipt>(
+    "/api/v1/verification/challenges/verify",
+    {
+      method: "POST",
+      body: { kind, destination, purpose, code },
+    },
+  );
 }
 
-export function registerAccount(input: {
+interface RegistrationBase {
   kind: IdentityKind;
-  verification_receipt: string;
   password: string;
   nickname: string;
   terms_version: string;
   privacy_version: string;
-}): Promise<{ user_id: string; personal_space_id: string }> {
+}
+
+type RegistrationInput = RegistrationBase &
+  (
+    | { verification_receipt: string; identity?: never }
+    | { kind: "email"; identity: string; verification_receipt?: never }
+  );
+
+export function registerAccount(
+  input: RegistrationInput,
+): Promise<{ user_id: string; personal_space_id: string }> {
   return request("/api/v1/accounts/register", { method: "POST", body: input });
 }
 
-export function resetPassword(verificationReceipt: string, newPassword: string): Promise<void> {
+export function resetPassword(
+  verificationReceipt: string,
+  newPassword: string,
+): Promise<void> {
   return request<void>("/api/v1/accounts/password/reset", {
     method: "POST",
-    body: { verification_receipt: verificationReceipt, new_password: newPassword },
+    body: {
+      verification_receipt: verificationReceipt,
+      new_password: newPassword,
+    },
   });
 }
 
-export function bindIdentity(currentPassword: string, verificationReceipt: string): Promise<void> {
+export function bindIdentity(
+  currentPassword: string,
+  verificationReceipt: string,
+): Promise<void> {
   return request<void>("/api/v1/accounts/identities/bind", {
     method: "POST",
     csrf: true,
-    body: { current_password: currentPassword, verification_receipt: verificationReceipt },
+    body: {
+      current_password: currentPassword,
+      verification_receipt: verificationReceipt,
+    },
   });
 }
 
-export function removeIdentity(kind: IdentityKind, currentPassword: string): Promise<void> {
+export function removeIdentity(
+  kind: IdentityKind,
+  currentPassword: string,
+): Promise<void> {
   return request<void>(`/api/v1/accounts/identities/${kind}`, {
     method: "DELETE",
     csrf: true,
@@ -246,22 +306,34 @@ export function revokeDevice(deviceID: string): Promise<void> {
   });
 }
 
-export function requestDeletion(currentPassword: string, verificationReceipt: string): Promise<void> {
+export function requestDeletion(
+  currentPassword: string,
+  verificationReceipt: string,
+): Promise<void> {
   return request<void>("/api/v1/accounts/deletion", {
     method: "POST",
     csrf: true,
-    body: { current_password: currentPassword, verification_receipt: verificationReceipt },
+    body: {
+      current_password: currentPassword,
+      verification_receipt: verificationReceipt,
+    },
   });
 }
 
-export function recoverDeletion(identity: string, password: string, verificationReceipt: string): Promise<void> {
+export function recoverDeletion(
+  identity: string,
+  password: string,
+  verificationReceipt: string,
+): Promise<void> {
   return request<void>("/api/v1/accounts/deletion/recover", {
     method: "POST",
     body: { identity, password, verification_receipt: verificationReceipt },
   });
 }
 
-export function approveAuthorization(requestID: string): Promise<{ redirect_uri: string }> {
+export function approveAuthorization(
+  requestID: string,
+): Promise<{ redirect_uri: string }> {
   return request<{ redirect_uri: string }>("/api/v1/oauth/authorize/approve", {
     method: "POST",
     csrf: true,

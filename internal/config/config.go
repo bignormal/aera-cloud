@@ -506,7 +506,7 @@ func Load(lookup LookupEnv) (Config, error) {
 		captchaEndpoint, captchaSecret                                      string
 		smtpPort                                                            int
 	)
-	if registrationMode == registrationModeVerified {
+	if registrationMode == RegistrationModeVerified {
 		smtpHost, err = required(lookup, envSMTPHost)
 		if err != nil {
 			return Config{}, err

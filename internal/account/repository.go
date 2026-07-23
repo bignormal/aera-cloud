@@ -33,14 +33,23 @@ func (r *PostgresRepository) Register(ctx context.Context, record RegistrationRe
 		!sealedMatchesClaims(r.identity, record.SealedIdentity, record.ReceiptClaims) {
 		return Registration{}, ErrInvalidRequest
 	}
+	if record.Direct {
+		if record.ReceiptClaims.ChallengeID != uuid.Nil || record.ReceiptClaims.Kind != secure.IdentityEmail {
+			return Registration{}, ErrInvalidRequest
+		}
+	} else if record.ReceiptClaims.ChallengeID == uuid.Nil {
+		return Registration{}, ErrInvalidRequest
+	}
 	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return Registration{}, ErrServiceUnavailable
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
-	if err := r.lockAvailableReceipt(ctx, tx, record.ReceiptClaims); err != nil {
-		return Registration{}, err
+	if !record.Direct {
+		if err := r.lockAvailableReceipt(ctx, tx, record.ReceiptClaims); err != nil {
+			return Registration{}, err
+		}
 	}
 	if err := r.lockIdentityScope(ctx, tx, record.ReceiptClaims); err != nil {
 		return Registration{}, err
@@ -56,14 +65,18 @@ func (r *PostgresRepository) Register(ctx context.Context, record RegistrationRe
 	`, record.UserID, record.Nickname, record.CreatedAt); err != nil {
 		return Registration{}, classifyWriteError(err)
 	}
+	var verifiedAt any = record.CreatedAt
+	if record.Direct {
+		verifiedAt = nil
+	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO identities (
 			id, user_id, kind, encryption_key_id, nonce, ciphertext,
 			lookup_key_id, lookup_hmac, verified_at, created_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	`, record.IdentityID, record.UserID, record.ReceiptClaims.Kind, record.SealedIdentity.EncryptionKeyID,
 		record.SealedIdentity.Nonce, record.SealedIdentity.Ciphertext, record.SealedIdentity.LookupKeyID,
-		record.SealedIdentity.LookupHMAC, record.CreatedAt); err != nil {
+		record.SealedIdentity.LookupHMAC, verifiedAt, record.CreatedAt); err != nil {
 		return Registration{}, classifyWriteError(err)
 	}
 	if _, err := tx.Exec(ctx, `
@@ -87,8 +100,10 @@ func (r *PostgresRepository) Register(ctx context.Context, record RegistrationRe
 	if err := insertAuditEvent(ctx, tx, record.AuditEventID, "account_registered", record.UserID, "user", record.UserID, record.CreatedAt); err != nil {
 		return Registration{}, classifyWriteError(err)
 	}
-	if err := markReceiptConsumed(ctx, tx, record.ReceiptClaims.ChallengeID, record.CreatedAt); err != nil {
-		return Registration{}, err
+	if !record.Direct {
+		if err := markReceiptConsumed(ctx, tx, record.ReceiptClaims.ChallengeID, record.CreatedAt); err != nil {
+			return Registration{}, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Registration{}, classifyWriteError(err)

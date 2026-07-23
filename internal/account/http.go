@@ -53,6 +53,7 @@ type HTTPConfig struct {
 	Legal                LegalPort
 	AccessTokens         AccessAuthenticator
 	RegistrationDisabled bool
+	DirectRegistration   bool
 }
 
 type httpHandler struct {
@@ -61,12 +62,14 @@ type httpHandler struct {
 	legal                LegalPort
 	accessTokens         AccessAuthenticator
 	registrationDisabled bool
+	directRegistration   bool
 }
 
 func NewHandler(config HTTPConfig) http.Handler {
 	handler := &httpHandler{
 		accounts: config.Accounts, browserSessions: config.BrowserSessions, legal: config.Legal,
 		accessTokens: config.AccessTokens, registrationDisabled: config.RegistrationDisabled,
+		directRegistration: config.DirectRegistration,
 	}
 	router := chi.NewRouter()
 	router.Post("/api/v1/accounts/register", handler.register)
@@ -259,6 +262,7 @@ func (h *httpHandler) register(response http.ResponseWriter, request *http.Reque
 	}
 	var payload struct {
 		Kind                secure.IdentityKind `json:"kind"`
+		Identity            string              `json:"identity"`
 		VerificationReceipt string              `json:"verification_receipt"`
 		Password            string              `json:"password"`
 		Nickname            string              `json:"nickname"`
@@ -269,8 +273,20 @@ func (h *httpHandler) register(response http.ResponseWriter, request *http.Reque
 		writeAccountError(response, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	registration, err := h.accounts.Register(request.Context(), RegisterCommand{
-		Kind: payload.Kind, VerificationReceipt: payload.VerificationReceipt, Password: payload.Password,
+	if h.directRegistration {
+		if payload.Kind != secure.IdentityEmail || strings.TrimSpace(payload.Identity) == "" ||
+			payload.VerificationReceipt != "" {
+			writeAccountError(response, http.StatusBadRequest, "invalid_request")
+			return
+		}
+	} else if strings.TrimSpace(payload.Identity) != "" {
+		writeAccountError(response, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	ctx := WithLoginIPAddress(request.Context(), remoteIP(request.RemoteAddr))
+	registration, err := h.accounts.Register(ctx, RegisterCommand{
+		Kind: payload.Kind, Identity: payload.Identity,
+		VerificationReceipt: payload.VerificationReceipt, Password: payload.Password,
 		Nickname: payload.Nickname, TermsVersion: payload.TermsVersion, PrivacyVersion: payload.PrivacyVersion,
 	})
 	if err != nil {

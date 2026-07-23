@@ -4,7 +4,8 @@ export const en = {
   languageEnglish: "English",
   languageChinese: "中文",
   loginTitle: "Sign in to AgentEra",
-  loginSubtitle: "Authenticate securely in your browser, then return to AgentEra Studio.",
+  loginSubtitle:
+    "Authenticate securely in your browser, then return to AgentEra Studio.",
   identity: "Email or phone",
   password: "Password",
   login: "Sign in",
@@ -16,6 +17,13 @@ export const en = {
   serviceError: "The service is temporarily unavailable. Try again later.",
   networkError: "Unable to reach the service. Check your network and retry.",
   registerTitle: "Create an AgentEra account",
+  internalBetaLoginEmail: "Internal Beta sign-in email (unverified)",
+  internalBetaRecoveryUnavailable:
+    "This internal Beta account does not verify mailbox ownership. Password reset, identity binding, and deletion recovery are unavailable. Keep the password safe.",
+  verificationUnavailableTitle:
+    "This feature is unavailable in the current Beta",
+  registrationUnavailable: "Account registration is currently closed.",
+  identityUnverified: "Unverified",
   email: "Email",
   phone: "Mainland China phone",
   useEmail: "Email",
@@ -30,13 +38,15 @@ export const en = {
   confirmPassword: "Confirm password",
   acceptLegal: "I agree to the Terms of Service and Privacy Policy",
   createAgentEraAccount: "Create AgentEra account",
-  registrationComplete: "Your account is ready. You can now sign in to AgentEra.",
+  registrationComplete:
+    "Your account is ready. You can now sign in to AgentEra.",
   backToLogin: "Back to sign in",
   passwordMismatch: "The passwords do not match.",
   legalRequired: "Accept the Terms of Service and Privacy Policy first.",
   forgotTitle: "Reset password",
   resetPassword: "Reset password",
-  passwordResetComplete: "Password reset. All previous device sessions were revoked.",
+  passwordResetComplete:
+    "Password reset. All previous device sessions were revoked.",
   accountOverview: "Account overview",
   personalSpace: "Personal space",
   boundIdentities: "Sign-in methods",
@@ -50,10 +60,12 @@ export const en = {
   identityRemoved: "Sign-in method removed.",
   lastIdentity: "Keep at least one sign-in method.",
   passwordSecurity: "Password security",
-  passwordDesktopNote: "Start password changes from AgentEra Studio to preserve the current device session.",
+  passwordDesktopNote:
+    "Start password changes from AgentEra Studio to preserve the current device session.",
   devices: "Devices",
   deviceLimit: "You have reached the five-active-device limit",
-  deviceLimitHelp: "Revoke an old device, then return to AgentEra Studio and retry.",
+  deviceLimitHelp:
+    "Revoke an old device, then return to AgentEra Studio and retry.",
   revokeDevice: "Revoke this device",
   confirmRevoke: "Confirm revoke",
   cancel: "Cancel",
@@ -61,23 +73,29 @@ export const en = {
   noDevices: "There are no active devices.",
   lastSeen: "Last active",
   authorizeTitle: "Allow AgentEra Studio to sign in",
-  authorizeSubtitle: "AgentEra Studio is requesting access to your personal space. Passwords, codes, and tokens never enter the desktop renderer.",
+  authorizeSubtitle:
+    "AgentEra Studio is requesting access to your personal space. Passwords, codes, and tokens never enter the desktop renderer.",
   signedInAs: "Signed in as",
   approve: "Allow and return to AgentEra Studio",
   authorizationCancelled: "Authorization cancelled. You can close this page.",
-  authorizationExpired: "This authorization request is invalid or expired. Return to AgentEra Studio and retry.",
+  authorizationExpired:
+    "This authorization request is invalid or expired. Return to AgentEra Studio and retry.",
   authorizationWorking: "Authorized. Returning securely to AgentEra Studio…",
   reauthenticate: "Sign in again to continue this security-sensitive action.",
   deleteTitle: "Delete AgentEra account",
-  deleteWarning: "Deletion immediately revokes cloud sessions and starts a seven-day cooling-off period. It does not delete local Hermes sessions, Memory, files, or learned state. Handle local data separately first.",
+  deleteWarning:
+    "Deletion immediately revokes cloud sessions and starts a seven-day cooling-off period. It does not delete local Hermes sessions, Memory, files, or learned state. Handle local data separately first.",
   ownedWorkspaceDeletionPrefix: "This account owns ",
-  ownedWorkspaceDeletionSuffix: " workspaces. They and their cloud workspace assets will be deleted when account deletion is finalized.",
+  ownedWorkspaceDeletionSuffix:
+    " workspaces. They and their cloud workspace assets will be deleted when account deletion is finalized.",
   deletionIdentity: "Bound email or phone for the verification code",
   sendDeletionCode: "Send deletion code",
   verifyDeletionIdentity: "Verify deletion identity",
-  confirmDeletion: "I understand cloud account deletion does not delete local Hermes data",
+  confirmDeletion:
+    "I understand cloud account deletion does not delete local Hermes data",
   deleteAccount: "Start seven-day deletion period",
-  deletionRequested: "Your account entered the seven-day deletion period and all cloud device sessions were revoked.",
+  deletionRequested:
+    "Your account entered the seven-day deletion period and all cloud device sessions were revoked.",
   recoverTitle: "Recover pending deletion",
   sendRecoveryCode: "Send recovery code",
   verifyRecoveryIdentity: "Verify recovery identity",

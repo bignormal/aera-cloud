@@ -41,33 +41,44 @@ type LoginLimiter interface {
 	Allow(context.Context, []byte, string) (bool, error)
 }
 
+type DirectRegistrationLimiter interface {
+	Allow(context.Context, string) (bool, error)
+}
+
 type ServiceConfig struct {
-	Repository    Repository
-	IdentityCodec *secure.IdentityCodec
-	Receipts      *verification.ReceiptCodec
-	Passwords     Passwords
-	Legal         *legal.Service
-	LoginLimiter  LoginLimiter
-	Auditor       audit.Recorder
-	Clock         func() time.Time
+	Repository                Repository
+	IdentityCodec             *secure.IdentityCodec
+	Receipts                  *verification.ReceiptCodec
+	Passwords                 Passwords
+	Legal                     *legal.Service
+	LoginLimiter              LoginLimiter
+	DirectRegistration        bool
+	DirectRegistrationLimiter DirectRegistrationLimiter
+	Auditor                   audit.Recorder
+	Clock                     func() time.Time
 }
 
 type Service struct {
-	repository   Repository
-	identity     *secure.IdentityCodec
-	receipts     *verification.ReceiptCodec
-	passwords    Passwords
-	legal        *legal.Service
-	loginLimiter LoginLimiter
-	auditor      audit.Recorder
-	clock        func() time.Time
-	dummyHash    string
+	repository                Repository
+	identity                  *secure.IdentityCodec
+	receipts                  *verification.ReceiptCodec
+	passwords                 Passwords
+	legal                     *legal.Service
+	loginLimiter              LoginLimiter
+	directRegistration        bool
+	directRegistrationLimiter DirectRegistrationLimiter
+	auditor                   audit.Recorder
+	clock                     func() time.Time
+	dummyHash                 string
 }
 
 func NewService(config ServiceConfig) (*Service, error) {
 	if config.Repository == nil || config.IdentityCodec == nil || config.Receipts == nil ||
 		config.Passwords == nil || config.Legal == nil || config.LoginLimiter == nil || config.Auditor == nil {
 		return nil, errors.New("account service dependencies are required")
+	}
+	if config.DirectRegistration && config.DirectRegistrationLimiter == nil {
+		return nil, errors.New("direct registration limiter is required")
 	}
 	clock := config.Clock
 	if clock == nil {
@@ -80,6 +91,7 @@ func NewService(config ServiceConfig) (*Service, error) {
 	return &Service{
 		repository: config.Repository, identity: config.IdentityCodec, receipts: config.Receipts,
 		passwords: config.Passwords, legal: config.Legal, loginLimiter: config.LoginLimiter,
+		directRegistration: config.DirectRegistration, directRegistrationLimiter: config.DirectRegistrationLimiter,
 		auditor: config.Auditor, clock: clock, dummyHash: dummyHash,
 	}, nil
 }
@@ -88,9 +100,36 @@ func (s *Service) Register(ctx context.Context, command RegisterCommand) (Regist
 	if s == nil || s.legal.Validate(command.TermsVersion, command.PrivacyVersion) != nil {
 		return Registration{}, ErrInvalidRequest
 	}
-	claims, err := s.receipts.Parse(command.VerificationReceipt, verification.PurposeRegistration)
-	if err != nil || claims.Kind != command.Kind {
-		return Registration{}, ErrVerificationRequired
+	var (
+		claims verification.ReceiptClaims
+		direct bool
+		err    error
+	)
+	if s.directRegistration {
+		if command.Kind != secure.IdentityEmail || strings.TrimSpace(command.Identity) == "" ||
+			command.VerificationReceipt != "" {
+			return Registration{}, ErrInvalidRequest
+		}
+		normalized, normalizeErr := secure.NormalizeIdentity(command.Kind, command.Identity)
+		if normalizeErr != nil {
+			return Registration{}, ErrInvalidRequest
+		}
+		allowed, limiterErr := s.directRegistrationLimiter.Allow(ctx, loginIPAddress(ctx))
+		if limiterErr != nil || !allowed {
+			return Registration{}, ErrServiceUnavailable
+		}
+		claims = verification.ReceiptClaims{
+			Kind: command.Kind, NormalizedIdentity: normalized, Purpose: verification.PurposeRegistration,
+		}
+		direct = true
+	} else {
+		if strings.TrimSpace(command.Identity) != "" {
+			return Registration{}, ErrInvalidRequest
+		}
+		claims, err = s.receipts.Parse(command.VerificationReceipt, verification.PurposeRegistration)
+		if err != nil || claims.Kind != command.Kind {
+			return Registration{}, ErrVerificationRequired
+		}
 	}
 	nickname, ok := normalizeNickname(command.Nickname)
 	if !ok {
@@ -109,7 +148,8 @@ func (s *Service) Register(ctx context.Context, command RegisterCommand) (Regist
 		return Registration{}, ErrServiceUnavailable
 	}
 	record := RegistrationRecord{
-		ReceiptClaims: claims, UserID: identifiers[0], IdentityID: identifiers[1], PersonalSpaceID: identifiers[2],
+		ReceiptClaims: claims, Direct: direct,
+		UserID: identifiers[0], IdentityID: identifiers[1], PersonalSpaceID: identifiers[2],
 		TermsAcceptanceID: identifiers[3], PrivacyAcceptanceID: identifiers[4], AuditEventID: identifiers[5],
 		Nickname: nickname, SealedIdentity: sealed, PasswordHash: passwordHash, PasswordParamsVersion: paramsVersion,
 		TermsVersion: command.TermsVersion, PrivacyVersion: command.PrivacyVersion, CreatedAt: s.clock().UTC(),
