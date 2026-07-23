@@ -73,4 +73,16 @@ Copy the encrypted archive and checksum to separate storage. At least monthly, r
 
 `rollback-production.yml` requires a previous candidate run ID/SHA, reason, ticket, and production approval. It disables every new feature, verifies the previous signature and schema maximum against the current highest migration, repeats backup/restore verification, switches to the exact previous digest, re-runs health/smoke, and records `rollback-evidence.json`. It never invokes a down migration or deletes new schema/data.
 
+The same workflow supports a protected `staging` rehearsal only when the exact current candidate run/SHA is also supplied and `restore_current_after_rehearsal=true`. Before switching images, it restarts the current digest with all new features disabled and re-runs health/smoke. It then records current B → previous A, verifies A, and re-verifies/deploys exact B disabled. Separate rollback and restoration artifacts must exist; a staging rehearsal that cannot restore B is failed.
+
+Production rollback keeps `restore_current_after_rehearsal=false` and never auto-restores the suspected image. The `production` environment approval, production runner, and production state directory remain distinct from staging.
+
+## Evidence-backed delivery status
+
+Report local code/tests, local commits, local merge, remote push, remote CI, signed candidate, staging deployment/acceptance, rollback rehearsal, production disabled deployment, feature rollout, and public release separately.
+
+The production workflow uploads disabled and enabled state artifacts. Desktop publication must verify their exact source SHA, manifest hash, image digest, `environment=production`, and actual feature values. A successful job conclusion without those state files is insufficient.
+
+The local deployment harness proves digest/signature/schema checks, encrypted backup/disposable restore hooks, disable-before-rollback behavior, B → A → B rehearsal restoration, and fail-closed rollout recovery. It does not prove a remote candidate, staging or production deployment, production provider, legal/domain approval, monitoring window, or public release.
+
 No push, deployment, DNS change, public exposure, or registration enablement is implied by this runbook; each is a separate authorized operation.
