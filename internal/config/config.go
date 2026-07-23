@@ -104,6 +104,7 @@ type Config struct {
 	InternalAdmin                  InternalAdminConfig
 	OfficialAgent                  OfficialAgentConfig
 	OfficialQuality                OfficialQualityConfig
+	EncryptedBackup               EncryptedBackupConfig
 	PublicURL                      string
 	DatabaseURL                    string
 	RedisAddr                      string
@@ -312,6 +313,10 @@ func Load(lookup LookupEnv) (Config, error) {
 		return Config{}, err
 	}
 	officialQuality, err := loadOfficialQuality(lookup, officialAgent.Enabled)
+	if err != nil {
+		return Config{}, err
+	}
+	encryptedBackup, err := loadEncryptedBackup(lookup, environment)
 	if err != nil {
 		return Config{}, err
 	}
@@ -543,6 +548,7 @@ func Load(lookup LookupEnv) (Config, error) {
 		InternalAdmin:                  internalAdmin,
 		OfficialAgent:                  officialAgent,
 		OfficialQuality:                officialQuality,
+		EncryptedBackup:               encryptedBackup,
 		PublicURL:                      publicURL,
 		DatabaseURL:                    databaseURL,
 		RedisAddr:                      redisAddr,
