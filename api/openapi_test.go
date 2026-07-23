@@ -565,10 +565,16 @@ func TestOpenAPIContainsStrictWorkspaceControlPlaneContract(t *testing.T) {
 			t.Fatalf("OpenAPI is missing Workspace error code %q", code)
 		}
 	}
+	start := strings.Index(document, "    WorkspaceRole:\n")
+	end := strings.Index(document, "    OrganizationRole:\n")
+	if start < 0 || end <= start {
+		t.Fatal("OpenAPI Workspace schema section has no deterministic boundary")
+	}
+	workspaceSchemas := document[start:end]
 	for _, forbidden := range []string{
 		"owner_scope:", "MEMORY", "USER:", "profile_path:", "session:", "credential:", "api_key:", "raw_token:",
 	} {
-		if strings.Contains(document, forbidden) {
+		if strings.Contains(workspaceSchemas, forbidden) {
 			t.Fatalf("OpenAPI exposed forbidden Workspace persistence field %q", forbidden)
 		}
 	}
@@ -649,7 +655,7 @@ func TestOpenAPIContainsStrictOrganizationFoundationContract(t *testing.T) {
 		}
 	}
 	start := strings.Index(document, "    OrganizationRole:\n")
-	end := strings.Index(document, "    SigningKeySet:\n")
+	end := strings.Index(document, "    EncryptedBackupDeviceRegistrationRequest:\n")
 	if start < 0 || end <= start {
 		t.Fatal("OpenAPI Organization schema section has no deterministic boundary")
 	}
@@ -660,6 +666,80 @@ func TestOpenAPIContainsStrictOrganizationFoundationContract(t *testing.T) {
 	} {
 		if strings.Contains(organizationSchemas, forbidden) {
 			t.Fatalf("OpenAPI exposed private/runtime Organization field %q", forbidden)
+		}
+	}
+}
+
+func TestOpenAPIContainsCiphertextOnlyEncryptedProfileBackupContract(t *testing.T) {
+	contents, err := os.ReadFile("openapi.yaml")
+	if err != nil {
+		t.Fatalf("read openapi.yaml: %v", err)
+	}
+	document := string(contents)
+	for _, path := range []string{
+		"/api/v1/encrypted-profile-backups:",
+		"/api/v1/encrypted-profile-backups/devices/current:",
+		"/api/v1/encrypted-profile-backups/devices/{device_id}:",
+		"/api/v1/encrypted-profile-backups/{backup_id}:",
+		"/api/v1/encrypted-profile-backups/{backup_id}/chunks/{chunk_index}:",
+		"/api/v1/encrypted-profile-backups/{backup_id}/manifest:",
+		"/api/v1/encrypted-profile-backups/{backup_id}/seal:",
+		"/api/v1/encrypted-profile-backups/{backup_id}/objects/{object_id}:",
+		"/api/v1/encrypted-profile-backups/{backup_id}/device-envelopes:",
+	} {
+		if !strings.Contains(document, path) {
+			t.Fatalf("OpenAPI is missing %s", path)
+		}
+	}
+	for _, contract := range []string{
+		"EncryptedBackupDeviceRegistrationRequest:",
+		"EncryptedBackupInitiateRequest:",
+		"EncryptedBackupPublicEnvelope:",
+		"EncryptedBackupObjectSpec:",
+		"EncryptedBackupDetail:",
+		"EncryptedBackupErrorEnvelope:",
+		"EncryptedBackupCiphertextSize:",
+		"EncryptedBackupCiphertextDigest:",
+		"application/octet-stream:",
+		"format: binary",
+		"pattern: '^[0-9a-f]{64}$'",
+		"pattern: '^[A-Za-z0-9_-]+$'",
+		"maximum: 1073741824",
+		"enum: [initiated, uploading, sealed, deleting, deleted, expired]",
+	} {
+		if !strings.Contains(document, contract) {
+			t.Fatalf("OpenAPI is missing encrypted backup contract %q", contract)
+		}
+	}
+	start := strings.Index(document, "    EncryptedBackupDeviceRegistrationRequest:\n")
+	end := strings.Index(document, "    SigningKeySet:\n")
+	if start < 0 || end <= start {
+		t.Fatal("OpenAPI encrypted backup schema section has no deterministic boundary")
+	}
+	backupSchemas := strings.ToLower(document[start:end])
+	for _, forbidden := range []string{
+		"recovery_phrase", "plaintext", "file_path", "profile_path", "filename",
+		"conversation", "memory_content", "private_key", "data_encryption_key",
+		"manifest_json", "content_json",
+	} {
+		if strings.Contains(backupSchemas, forbidden) {
+			t.Fatalf("OpenAPI exposed encrypted backup plaintext/private field %q", forbidden)
+		}
+	}
+	for _, schema := range []string{
+		"EncryptedBackupDeviceRegistrationRequest",
+		"EncryptedBackupInitiateRequest",
+		"EncryptedBackupPublicEnvelope",
+		"EncryptedBackupObjectSpec",
+		"EncryptedBackupChunkSpec",
+		"EncryptedBackupRecoveryParameters",
+		"EncryptedBackupAddDeviceEnvelopeRequest",
+		"EncryptedBackupDetail",
+		"EncryptedBackupErrorEnvelope",
+	} {
+		strictObject := "    " + schema + ":\n      type: object\n      additionalProperties: false"
+		if !strings.Contains(document, strictObject) {
+			t.Fatalf("OpenAPI is missing strict encrypted backup schema %q", schema)
 		}
 	}
 }

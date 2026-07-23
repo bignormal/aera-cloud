@@ -62,7 +62,9 @@ jobs:
           npx playwright test
 
       - name: Start isolated development infrastructure
-        run: docker compose up -d --wait postgres redis
+        run: |
+          docker compose up -d --wait postgres redis encrypted-backup-minio
+          docker compose run --rm encrypted-backup-minio-init
 
       - name: Run service integration and auth smoke tests
         run: |

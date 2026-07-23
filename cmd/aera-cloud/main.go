@@ -81,6 +81,9 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 		DB:       cfg.RedisDB,
 	})
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
 		return err
 	}
 	defer func() {
@@ -279,7 +282,30 @@ func buildMaintenanceRunner(
 	if err != nil {
 		return nil, err
 	}
-	var maintenance jobs.Maintenance = securityMaintenance
+	stages := []jobs.Maintenance{securityMaintenance}
+	if cfg.EncryptedBackup.Enabled {
+		objectStoreCtx, cancel := context.WithTimeout(context.Background(), startupTimeout)
+		defer cancel()
+		objects, err := encryptedbackup.NewMinIOStore(
+			objectStoreCtx,
+			encryptedbackup.MinIOStoreConfig{
+				Endpoint:  cfg.EncryptedBackup.Endpoint,
+				Bucket:    cfg.EncryptedBackup.Bucket,
+				Region:    cfg.EncryptedBackup.Region,
+				AccessKey: cfg.EncryptedBackup.AccessKey,
+				SecretKey: cfg.EncryptedBackup.SecretKey,
+				UseTLS:    cfg.EncryptedBackup.UseTLS,
+			},
+		)
+		if err != nil {
+			return nil, err
+		}
+		backupMaintenance, err := jobs.NewEncryptedBackupMaintenance(postgres, objects)
+		if err != nil {
+			return nil, err
+		}
+		stages = append(stages, backupMaintenance)
+	}
 	if cfg.OfficialQuality.Enabled {
 		pseudonyms, err := officialquality.NewPseudonymizer(
 			cfg.OfficialQuality.PseudonymHMACActiveKey,
@@ -297,7 +323,11 @@ func buildMaintenanceRunner(
 		if err != nil {
 			return nil, err
 		}
-		maintenance, err = jobs.NewSequentialMaintenance(securityMaintenance, qualityMaintenance)
+		stages = append(stages, qualityMaintenance)
+	}
+	var maintenance jobs.Maintenance = stages[0]
+	if len(stages) > 1 {
+		maintenance, err = jobs.NewSequentialMaintenance(stages...)
 		if err != nil {
 			return nil, err
 		}
