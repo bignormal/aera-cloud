@@ -5,18 +5,20 @@ import (
 	"testing"
 )
 
-func TestPublicRegistrationDefaultsOpenOnlyOutsideProduction(t *testing.T) {
+func TestPublicRegistrationDefaultsOpenOnlyInLocalEnvironments(t *testing.T) {
 	development, err := loadPublicRegistration(func(string) (string, bool) {
 		return "", false
 	}, "development")
 	if err != nil || !development {
 		t.Fatalf("development registration = %v, %v", development, err)
 	}
-	production, err := loadPublicRegistration(func(string) (string, bool) {
-		return "", false
-	}, "production")
-	if err != nil || production {
-		t.Fatalf("production registration = %v, %v", production, err)
+	for _, environment := range []string{"internal_beta", "production"} {
+		enabled, err := loadPublicRegistration(func(string) (string, bool) {
+			return "", false
+		}, environment)
+		if err != nil || enabled {
+			t.Fatalf("%s registration = %v, %v", environment, enabled, err)
+		}
 	}
 }
 

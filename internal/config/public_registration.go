@@ -7,7 +7,7 @@ const envPublicRegistrationEnabled = "AGENTERA_CLOUD_PUBLIC_REGISTRATION_ENABLED
 func loadPublicRegistration(lookup LookupEnv, environment string) (bool, error) {
 	raw, ok := lookup(envPublicRegistrationEnabled)
 	if !ok || raw == "" {
-		return environment != "production", nil
+		return !IsDeployedEnvironment(environment), nil
 	}
 	switch raw {
 	case "true":

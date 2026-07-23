@@ -27,6 +27,7 @@ const (
 var (
 	encryptedBackupBucketPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
 	encryptedBackupRegionPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+	privateServiceHostPattern    = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 )
 
 type EncryptedBackupConfig struct {
@@ -104,6 +105,13 @@ func loadEncryptedBackup(lookup LookupEnv, environment string) (EncryptedBackupC
 	}
 	if environment == "production" && !useTLS && !isLoopbackHost(host) {
 		return EncryptedBackupConfig{}, fmt.Errorf("%s cannot use a plaintext non-loopback endpoint in production", envEncryptedBackupEndpoint)
+	}
+	if IsInternalBeta(environment) && !useTLS &&
+		!isLoopbackHost(host) && !privateServiceHostPattern.MatchString(host) {
+		return EncryptedBackupConfig{}, fmt.Errorf(
+			"%s plaintext internal_beta endpoints must use a private service host",
+			envEncryptedBackupEndpoint,
+		)
 	}
 
 	defaults.Enabled = true
