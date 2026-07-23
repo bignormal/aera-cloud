@@ -95,9 +95,31 @@ if test "$mode" = "enable-approved"; then
     "${AERA_RELEASE_APPROVED_OFFICIAL_AGENTS:-false}" \
     "${AERA_RELEASE_APPROVED_OFFICIAL_QUALITY:-false}" \
     "${AERA_RELEASE_APPROVED_ENCRYPTED_BACKUP:-false}"
-  compose up -d --wait app
-  "$AERA_RELEASE_HEALTH_COMMAND"
-  "$AERA_RELEASE_SMOKE_COMMAND"
+  if ! (
+    compose up -d --wait app &&
+    "$AERA_RELEASE_HEALTH_COMMAND" &&
+    "$AERA_RELEASE_SMOKE_COMMAND"
+  ); then
+    write_flags false false false false
+    if ! (
+      compose up -d --wait app &&
+      "$AERA_RELEASE_HEALTH_COMMAND" &&
+      "$AERA_RELEASE_SMOKE_COMMAND"
+    ); then
+      compose stop app >/dev/null 2>&1 || true
+      fail "approved rollout failed, disable rollback failed, and the service was stopped"
+    fi
+    jq -cS \
+      '.features = {
+        publicRegistration: false,
+        officialAgents: false,
+        officialQuality: false,
+        encryptedBackup: false
+      }' "$state_file" > "$state_file.tmp"
+    mv "$state_file.tmp" "$state_file"
+    chmod 600 "$state_file" "$feature_env"
+    fail "approved rollout failed and was returned to disabled"
+  fi
   jq -cS \
     --argjson registration "${AERA_RELEASE_APPROVED_PUBLIC_REGISTRATION:-false}" \
     --argjson officialAgents "${AERA_RELEASE_APPROVED_OFFICIAL_AGENTS:-false}" \

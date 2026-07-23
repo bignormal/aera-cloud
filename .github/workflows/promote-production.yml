@@ -167,3 +167,13 @@ jobs:
           AERA_RELEASE_APPROVED_OFFICIAL_QUALITY: ${{ inputs.enable_official_quality }}
           AERA_RELEASE_APPROVED_ENCRYPTED_BACKUP: ${{ inputs.enable_encrypted_backup }}
         run: scripts/release/deploy-by-digest.sh enable-approved
+
+      - name: Upload enabled deployment evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-production-enabled-${{ inputs.source_sha }}
+          path: |
+            ${{ vars.AERA_CLOUD_RELEASE_STATE_DIR }}/deployment-state.json
+            ${{ vars.AERA_CLOUD_RELEASE_STATE_DIR }}/current-manifest.json
+          if-no-files-found: error
+          retention-days: 90

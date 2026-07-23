@@ -22,10 +22,19 @@ set -eu
 printf 'docker %s\n' "$*" >> "$AERA_RELEASE_TEST_LOG"
 SH
 for name in backup restore health smoke; do
+  failure_check=:
+  if test "$name" = smoke; then
+    failure_check='if test "${SMOKE_TEST_FAIL:-0}" = 1 &&
+  grep -q "^AGENTERA_CLOUD_OFFICIAL_AGENTS_ENABLED=true$" \
+    "$AERA_RELEASE_STATE_DIR/feature-flags.env"; then
+  exit 1
+fi'
+  fi
   cat > "$tmp/bin/$name" <<SH
 #!/bin/sh
 set -eu
 printf '$name\\n' >> "\$AERA_RELEASE_TEST_LOG"
+$failure_check
 SH
 done
 chmod +x "$tmp/bin/"*
@@ -105,6 +114,22 @@ grep -q '^health$' "$log"
 grep -q '^smoke$' "$log"
 jq -e '.current.imageDigest == $digest and .environment == "staging"' \
   --arg digest "$(digest a)" "$tmp/state/deployment-state.json" >/dev/null
+
+export SMOKE_TEST_FAIL=1
+if "$deploy" enable-approved >"$tmp/enable-failure.out" 2>"$tmp/enable-failure.err"; then
+  echo "failed Cloud rollout unexpectedly remained enabled" >&2
+  exit 1
+fi
+grep -q '^AGENTERA_CLOUD_OFFICIAL_AGENTS_ENABLED=false$' "$feature_env"
+grep -q '^AGENTERA_CLOUD_OFFICIAL_QUALITY_ENABLED=false$' "$feature_env"
+grep -q '^AGENTERA_CLOUD_ENCRYPTED_BACKUP_ENABLED=false$' "$feature_env"
+jq -e '
+  .features.publicRegistration == false and
+  .features.officialAgents == false and
+  .features.officialQuality == false and
+  .features.encryptedBackup == false
+' "$tmp/state/deployment-state.json" >/dev/null
+unset SMOKE_TEST_FAIL
 
 "$deploy" enable-approved
 grep -q '^AGENTERA_CLOUD_OFFICIAL_AGENTS_ENABLED=true$' "$feature_env"
