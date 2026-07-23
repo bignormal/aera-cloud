@@ -15,6 +15,44 @@ cat > "$tmp/bin/cosign" <<'SH'
 set -eu
 printf 'cosign %s\n' "$*" >> "$AERA_RELEASE_TEST_LOG"
 test "${COSIGN_TEST_FAIL:-0}" = 0
+case "$1" in
+  verify-attestation)
+    for argument in "$@"; do image_reference=$argument; done
+    predicate=
+    for candidate in "$COSIGN_TEST_ROOT"/*; do
+      test -f "$candidate/manifest.json" || continue
+      if jq -e --arg image "$image_reference" '.image.reference == $image' \
+        "$candidate/manifest.json" >/dev/null; then
+        predicate="$candidate/provenance.json"
+        break
+      fi
+    done
+    test -f "$predicate"
+    digest=${image_reference##*@sha256:}
+    image=${image_reference%@*}
+    statement=$(jq -cn \
+      --arg image "$image" \
+      --arg digest "$digest" \
+      --slurpfile predicate "$predicate" \
+      '{
+        _type:"https://in-toto.io/Statement/v1",
+        subject:[{name:$image,digest:{sha256:$digest}}],
+        predicateType:"https://slsa.dev/provenance/v1",
+        predicate:$predicate[0]
+      }')
+    payload=$(printf '%s' "$statement" | base64 | tr -d '\n')
+    jq -cn --arg payload "$payload" '{payload:$payload}'
+    ;;
+  verify-blob)
+    bundle=
+    previous=
+    for argument in "$@"; do
+      if test "$previous" = "--bundle"; then bundle=$argument; fi
+      previous=$argument
+    done
+    jq -e '.valid == true' "$bundle" >/dev/null
+    ;;
+esac
 SH
 cat > "$tmp/bin/docker" <<'SH'
 #!/bin/sh
@@ -39,6 +77,7 @@ SH
 done
 chmod +x "$tmp/bin/"*
 export PATH="$tmp/bin:$PATH"
+export COSIGN_TEST_ROOT="$tmp"
 
 digest() {
   character="$1"
@@ -47,18 +86,33 @@ digest() {
 }
 
 manifest() {
-  path="$1"
+  directory="$1"
   sha="$2"
   image_digest="$3"
   minimum="$4"
   maximum="$5"
   highest="$6"
+  mkdir -p "$directory"
+  path="$directory/manifest.json"
+  printf '{"SPDXID":"SPDXRef-DOCUMENT","spdxVersion":"SPDX-2.3"}\n' \
+    > "$directory/sbom.spdx.json"
+  AERA_PROVENANCE_REPOSITORY=bignormal/aera-cloud \
+  AERA_PROVENANCE_SOURCE_SHA="$sha" \
+  AERA_PROVENANCE_WORKFLOW_PATH=.github/workflows/candidate.yml \
+  AERA_PROVENANCE_WORKFLOW_REF=refs/heads/main \
+  AERA_PROVENANCE_RUN_URL=https://github.com/bignormal/aera-cloud/actions/runs/1234 \
+  AERA_PROVENANCE_BUILDER_ID=https://github.com/bignormal/aera-cloud/.github/workflows/candidate.yml@refs/heads/main \
+  AERA_PROVENANCE_IMAGE_DIGEST="$image_digest" \
+  AERA_PROVENANCE_IMAGE_REFERENCE="ghcr.io/bignormal/aera-cloud@$image_digest" \
+    "$root/scripts/release/build-provenance.sh" "$directory/provenance.json"
+  sbom_digest="sha256:$(sha256sum "$directory/sbom.spdx.json" | cut -d' ' -f1)"
+  provenance_digest="sha256:$(sha256sum "$directory/provenance.json" | cut -d' ' -f1)"
   jq -cnS \
     --arg sha "$sha" \
     --arg digest "$image_digest" \
     --arg image "ghcr.io/bignormal/aera-cloud@$image_digest" \
-    --arg sbom "$(digest b)" \
-    --arg provenance "$(digest c)" \
+    --arg sbom "$sbom_digest" \
+    --arg provenance "$provenance_digest" \
     --argjson minimum "$minimum" \
     --argjson maximum "$maximum" \
     --argjson highest "$highest" \
@@ -72,20 +126,21 @@ manifest() {
       supplyChain:{sbomDigest:$sbom,provenanceDigest:$provenance},
       features:{officialQualityEnabledByDefault:false,encryptedBackupEnabledByDefault:false},
       createdAt:"2026-07-23T09:00:00Z"
-    }' > "$path"
+  }' > "$path"
   printf '\n' >> "$path"
+  printf '{"valid":true}\n' > "$directory/manifest.sigstore.json"
 }
 
 current_sha=$(printf 'a%.0s' $(seq 40))
 previous_sha=$(printf 'd%.0s' $(seq 40))
-manifest "$tmp/current.json" "$current_sha" "$(digest a)" 17 18 18
-manifest "$tmp/previous.json" "$previous_sha" "$(digest d)" 17 18 17
+manifest "$tmp/current" "$current_sha" "$(digest a)" 17 19 19
+manifest "$tmp/previous" "$previous_sha" "$(digest d)" 17 19 18
 printf 'services: {}\n' > "$tmp/compose.yaml"
 printf 'production secrets fixture\n' > "$tmp/base.env"
 
-export AERA_RELEASE_MANIFEST="$tmp/current.json"
+export AERA_RELEASE_MANIFEST="$tmp/current/manifest.json"
 export AERA_RELEASE_EXPECTED_SHA="$current_sha"
-export AERA_RELEASE_CERTIFICATE_IDENTITY_REGEXP='^https://github.com/bignormal/aera-cloud/'
+export AERA_RELEASE_CERTIFICATE_IDENTITY_REGEXP='^https://github\.com/bignormal/aera-cloud/\.github/workflows/candidate\.yml@refs/heads/main$'
 export AERA_RELEASE_CERTIFICATE_OIDC_ISSUER=https://token.actions.githubusercontent.com
 export AERA_RELEASE_STATE_DIR="$tmp/state"
 export AERA_RELEASE_COMPOSE_FILE="$tmp/compose.yaml"
@@ -140,13 +195,13 @@ grep -q '^AGENTERA_CLOUD_PUBLIC_REGISTRATION_ENABLED=false$' "$feature_env"
 jq -cnS \
   --arg digest "$(digest a)" \
   '{current:{imageDigest:$digest}}' > "$tmp/state/deployment-state.json"
-cp "$tmp/current.json" "$tmp/state/current-manifest.json"
-export AERA_RELEASE_PREVIOUS_MANIFEST="$tmp/previous.json"
+cp "$tmp/current/manifest.json" "$tmp/state/current-manifest.json"
+export AERA_RELEASE_PREVIOUS_MANIFEST="$tmp/previous/manifest.json"
 export AERA_RELEASE_EXPECTED_SHA="$previous_sha"
 export AERA_RELEASE_ROLLBACK_REASON="candidate regression"
 export AERA_RELEASE_ROLLBACK_TICKET="OPS-1234"
 export AERA_RELEASE_REHEARSAL_RESTORE_CURRENT=true
-export AERA_RELEASE_CURRENT_MANIFEST="$tmp/current.json"
+export AERA_RELEASE_CURRENT_MANIFEST="$tmp/current/manifest.json"
 export AERA_RELEASE_EXPECTED_CURRENT_SHA="$current_sha"
 "$rollback"
 grep -q '^AGENTERA_CLOUD_OFFICIAL_AGENTS_ENABLED=false$' "$feature_env"
@@ -179,7 +234,7 @@ unset AERA_RELEASE_CURRENT_MANIFEST
 unset AERA_RELEASE_EXPECTED_CURRENT_SHA
 
 jq '.image.reference = "ghcr.io/bignormal/aera-cloud:latest"' \
-  "$tmp/current.json" > "$tmp/mutable.json"
+  "$tmp/current/manifest.json" > "$tmp/mutable.json"
 export AERA_RELEASE_MANIFEST="$tmp/mutable.json"
 export AERA_RELEASE_EXPECTED_SHA="$current_sha"
 if "$deploy" deploy >"$tmp/mutable.out" 2>"$tmp/mutable.err"; then
@@ -187,9 +242,9 @@ if "$deploy" deploy >"$tmp/mutable.out" 2>"$tmp/mutable.err"; then
   exit 1
 fi
 
-manifest "$tmp/incompatible.json" "$previous_sha" "$(digest e)" 16 17 17
-cp "$tmp/current.json" "$tmp/state/current-manifest.json"
-export AERA_RELEASE_PREVIOUS_MANIFEST="$tmp/incompatible.json"
+manifest "$tmp/incompatible" "$previous_sha" "$(digest e)" 16 17 17
+cp "$tmp/current/manifest.json" "$tmp/state/current-manifest.json"
+export AERA_RELEASE_PREVIOUS_MANIFEST="$tmp/incompatible/manifest.json"
 export AERA_RELEASE_EXPECTED_SHA="$previous_sha"
 if "$rollback" >"$tmp/incompatible.out" 2>"$tmp/incompatible.err"; then
   echo "schema-incompatible rollback unexpectedly passed" >&2

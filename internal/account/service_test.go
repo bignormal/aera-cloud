@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -67,6 +68,125 @@ func TestServiceRegisterAllowsEmptyNicknameAndRejectsStaleLegalDocuments(t *test
 	}
 	if len(fixture.repository.registrations) != 1 {
 		t.Fatal("stale legal acceptance reached repository")
+	}
+}
+
+func TestServiceDirectRegistrationStoresNormalizedUnverifiedEmailWithoutReceipt(t *testing.T) {
+	fixture := newAccountFixture(t)
+	directLimiter := &fakeDirectRegistrationLimiter{allowed: true}
+	config := ServiceConfig{
+		Repository: fixture.repository, IdentityCodec: fixture.identity, Receipts: fixture.receipts,
+		Passwords: fixture.passwords, Legal: currentLegalService(t), LoginLimiter: fixture.limiter,
+		Auditor: fixture.auditor, Clock: func() time.Time { return fixture.now },
+	}
+	setReflectedField(t, &config, "DirectRegistration", true)
+	setReflectedField(t, &config, "DirectRegistrationLimiter", directLimiter)
+	service, err := NewService(config)
+	if err != nil {
+		t.Fatalf("NewService(direct) error = %v", err)
+	}
+
+	command := RegisterCommand{
+		Kind: secure.IdentityEmail, Password: "correct horse battery staple", Nickname: "  Alice  ",
+		TermsVersion: "terms-2026-07", PrivacyVersion: "privacy-2026-07",
+	}
+	setReflectedField(t, &command, "Identity", " Alice@Example.COM ")
+	registration, err := service.Register(
+		WithLoginIPAddress(context.Background(), "203.0.113.10"),
+		command,
+	)
+	if err != nil || registration.UserID == uuid.Nil {
+		t.Fatalf("Register(direct) = %+v, %v", registration, err)
+	}
+	if directLimiter.calls != 1 || directLimiter.ipAddress != "203.0.113.10" {
+		t.Fatalf("direct limiter = calls:%d IP:%q", directLimiter.calls, directLimiter.ipAddress)
+	}
+	if len(fixture.repository.registrations) != 1 {
+		t.Fatalf("registration records = %d", len(fixture.repository.registrations))
+	}
+	record := fixture.repository.registrations[0]
+	if record.ReceiptClaims.ChallengeID != uuid.Nil ||
+		record.ReceiptClaims.Kind != secure.IdentityEmail ||
+		record.ReceiptClaims.NormalizedIdentity != "alice@example.com" ||
+		record.ReceiptClaims.Purpose != verification.PurposeRegistration {
+		t.Fatalf("direct registration claims = %+v", record.ReceiptClaims)
+	}
+	if !reflectedBool(t, record, "Direct") {
+		t.Fatal("direct registration record was not marked direct")
+	}
+	if len(fixture.repository.receiptsUsed) != 0 {
+		t.Fatalf("direct registration consumed receipts = %+v", fixture.repository.receiptsUsed)
+	}
+}
+
+func TestServiceDirectRegistrationFailsClosed(t *testing.T) {
+	fixture := newAccountFixture(t)
+	directLimiter := &fakeDirectRegistrationLimiter{allowed: true}
+	config := ServiceConfig{
+		Repository: fixture.repository, IdentityCodec: fixture.identity, Receipts: fixture.receipts,
+		Passwords: fixture.passwords, Legal: currentLegalService(t), LoginLimiter: fixture.limiter,
+		Auditor: fixture.auditor, Clock: func() time.Time { return fixture.now },
+	}
+	setReflectedField(t, &config, "DirectRegistration", true)
+	setReflectedField(t, &config, "DirectRegistrationLimiter", directLimiter)
+
+	directCommand := func() RegisterCommand {
+		command := RegisterCommand{
+			Kind: secure.IdentityEmail, Password: "correct horse battery staple",
+			TermsVersion: "terms-2026-07", PrivacyVersion: "privacy-2026-07",
+		}
+		setReflectedField(t, &command, "Identity", "alice@example.com")
+		return command
+	}
+	tests := []struct {
+		name    string
+		mutate  func(*RegisterCommand)
+		limiter *fakeDirectRegistrationLimiter
+		want    error
+	}{
+		{
+			name: "phone", mutate: func(command *RegisterCommand) {
+				command.Kind = secure.IdentityPhone
+				setReflectedField(t, command, "Identity", "+8613800138000")
+			}, limiter: directLimiter, want: ErrInvalidRequest,
+		},
+		{
+			name: "receipt supplied", mutate: func(command *RegisterCommand) {
+				command.VerificationReceipt = "must-not-be-accepted"
+			}, limiter: directLimiter, want: ErrInvalidRequest,
+		},
+		{
+			name: "invalid identity", mutate: func(command *RegisterCommand) {
+				setReflectedField(t, command, "Identity", "not-an-email")
+			}, limiter: directLimiter, want: ErrInvalidRequest,
+		},
+		{
+			name: "rate denied", mutate: func(*RegisterCommand) {},
+			limiter: &fakeDirectRegistrationLimiter{allowed: false}, want: ErrServiceUnavailable,
+		},
+		{
+			name: "rate store unavailable", mutate: func(*RegisterCommand) {},
+			limiter: &fakeDirectRegistrationLimiter{allowed: true, err: errors.New("redis detail")}, want: ErrServiceUnavailable,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			testConfig := config
+			setReflectedField(t, &testConfig, "DirectRegistrationLimiter", test.limiter)
+			testService, err := NewService(testConfig)
+			if err != nil {
+				t.Fatalf("NewService() error = %v", err)
+			}
+			command := directCommand()
+			test.mutate(&command)
+			_, err = testService.Register(
+				WithLoginIPAddress(context.Background(), "203.0.113.10"),
+				command,
+			)
+			if !errors.Is(err, test.want) {
+				t.Fatalf("Register() error = %v, want %v", err, test.want)
+			}
+		})
 	}
 }
 
@@ -186,6 +306,15 @@ func newAccountFixture(t *testing.T) *accountFixture {
 	return fixture
 }
 
+func currentLegalService(t *testing.T) *legal.Service {
+	t.Helper()
+	service, err := legal.NewService("terms-2026-07", "privacy-2026-07")
+	if err != nil {
+		t.Fatalf("legal.NewService() error = %v", err)
+	}
+	return service
+}
+
 func (f *accountFixture) receipt(t *testing.T, kind secure.IdentityKind, normalized string, purpose verification.Purpose) string {
 	t.Helper()
 	id, err := secure.RandomUUID()
@@ -241,13 +370,15 @@ func (f *fakeAccountRepository) Profile(context.Context, uuid.UUID) (Profile, bo
 }
 
 func (f *fakeAccountRepository) Register(_ context.Context, record RegistrationRecord) (Registration, error) {
-	if f.receiptsUsed == nil {
-		f.receiptsUsed = make(map[uuid.UUID]bool)
+	if !reflectedBoolValue(record, "Direct") {
+		if f.receiptsUsed == nil {
+			f.receiptsUsed = make(map[uuid.UUID]bool)
+		}
+		if f.receiptsUsed[record.ReceiptClaims.ChallengeID] {
+			return Registration{}, ErrReceiptUnavailable
+		}
+		f.receiptsUsed[record.ReceiptClaims.ChallengeID] = true
 	}
-	if f.receiptsUsed[record.ReceiptClaims.ChallengeID] {
-		return Registration{}, ErrReceiptUnavailable
-	}
-	f.receiptsUsed[record.ReceiptClaims.ChallengeID] = true
 	f.registrations = append(f.registrations, record)
 	return Registration{UserID: record.UserID, PersonalSpaceID: record.PersonalSpaceID}, nil
 }
@@ -308,6 +439,42 @@ func (f *fakeAccountRepository) RecoverDeletion(_ context.Context, record Deleti
 type fakeLoginLimiter struct {
 	allowed bool
 	err     error
+}
+
+type fakeDirectRegistrationLimiter struct {
+	allowed   bool
+	err       error
+	calls     int
+	ipAddress string
+}
+
+func (f *fakeDirectRegistrationLimiter) Allow(_ context.Context, rawIPAddress string) (bool, error) {
+	f.calls++
+	f.ipAddress = rawIPAddress
+	return f.allowed, f.err
+}
+
+func setReflectedField(t *testing.T, target any, name string, value any) {
+	t.Helper()
+	field := reflect.ValueOf(target).Elem().FieldByName(name)
+	if !field.IsValid() {
+		t.Fatalf("%T.%s does not exist", target, name)
+	}
+	field.Set(reflect.ValueOf(value))
+}
+
+func reflectedBool(t *testing.T, target any, name string) bool {
+	t.Helper()
+	field := reflect.ValueOf(target).FieldByName(name)
+	if !field.IsValid() || field.Kind() != reflect.Bool {
+		t.Fatalf("%T.%s is not a bool", target, name)
+	}
+	return field.Bool()
+}
+
+func reflectedBoolValue(target any, name string) bool {
+	field := reflect.ValueOf(target).FieldByName(name)
+	return field.IsValid() && field.Kind() == reflect.Bool && field.Bool()
 }
 
 func (f *fakeLoginLimiter) Allow(context.Context, []byte, string) (bool, error) {

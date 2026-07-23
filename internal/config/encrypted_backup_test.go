@@ -127,6 +127,35 @@ func TestEncryptedBackupConfigurationAllowsDevelopmentPlaintextLoopback(t *testi
 	assertEncryptedBackupField(t, cfg, "UseTLS", false)
 }
 
+func TestEncryptedBackupConfigurationAllowsInternalBetaPlaintextPrivateService(t *testing.T) {
+	env := completeEncryptedBackupEnvironment("internal_beta")
+	env[testEncryptedBackupEndpoint] = "aera-backup:9000"
+	env[testEncryptedBackupUseTLS] = "false"
+
+	cfg, err := Load(mapLookup(env))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	assertEncryptedBackupField(t, cfg, "Enabled", true)
+	assertEncryptedBackupField(t, cfg, "Endpoint", "aera-backup:9000")
+	assertEncryptedBackupField(t, cfg, "UseTLS", false)
+}
+
+func TestEncryptedBackupConfigurationRejectsInternalBetaPlaintextRoutableHost(t *testing.T) {
+	for _, endpoint := range []string{"backup.example.com:9000", "192.0.2.20:9000"} {
+		t.Run(endpoint, func(t *testing.T) {
+			env := completeEncryptedBackupEnvironment("internal_beta")
+			env[testEncryptedBackupEndpoint] = endpoint
+			env[testEncryptedBackupUseTLS] = "false"
+
+			_, err := Load(mapLookup(env))
+			if err == nil || !strings.Contains(err.Error(), "private service") {
+				t.Fatalf("Load() error = %v, want private-service rejection", err)
+			}
+		})
+	}
+}
+
 func completeEncryptedBackupEnvironment(environment string) map[string]string {
 	env := validEnvironment(environment)
 	env[testEncryptedBackupEnabled] = "true"

@@ -38,6 +38,7 @@ func (e *OrganizationOwnerTransferRequiredError) Unwrap() error {
 
 type RegisterCommand struct {
 	Kind                secure.IdentityKind
+	Identity            string
 	VerificationReceipt string
 	Password            string
 	Nickname            string
@@ -69,6 +70,7 @@ type Profile struct {
 
 type RegistrationRecord struct {
 	ReceiptClaims         verification.ReceiptClaims
+	Direct                bool
 	UserID                uuid.UUID
 	IdentityID            uuid.UUID
 	PersonalSpaceID       uuid.UUID

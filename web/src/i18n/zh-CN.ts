@@ -16,6 +16,13 @@ export const zhCN = {
   serviceError: "服务暂时不可用，请稍后重试。",
   networkError: "无法连接服务，请检查网络后重试。",
   registerTitle: "创建 AgentEra 账户",
+  internalBetaLoginEmail: "内测登录邮箱（未验证）",
+  internalBetaRecoveryUnavailable:
+    "此内测账号不会验证邮箱所有权；暂不支持找回密码、身份绑定或注销恢复。请妥善保管密码。",
+  invalidInternalBetaEmail: "请输入有效的内测登录邮箱。",
+  verificationUnavailableTitle: "当前内测暂不支持此功能",
+  registrationUnavailable: "当前未开放账户注册。",
+  identityUnverified: "未验证",
   email: "邮箱",
   phone: "中国大陆手机号",
   useEmail: "邮箱",
@@ -50,7 +57,8 @@ export const zhCN = {
   identityRemoved: "登录方式已解绑。",
   lastIdentity: "至少保留一种登录方式。",
   passwordSecurity: "密码安全",
-  passwordDesktopNote: "为保留当前设备会话，请从 AgentEra Studio 的账户菜单发起密码修改。",
+  passwordDesktopNote:
+    "为保留当前设备会话，请从 AgentEra Studio 的账户菜单发起密码修改。",
   devices: "设备管理",
   deviceLimit: "已达到 5 台活跃设备上限",
   deviceLimitHelp: "请明确撤销一台旧设备，再返回 AgentEra Studio 重试登录。",
@@ -61,7 +69,8 @@ export const zhCN = {
   noDevices: "当前没有活跃设备。",
   lastSeen: "最近活动",
   authorizeTitle: "允许 AgentEra Studio 登录",
-  authorizeSubtitle: "AgentEra Studio 正在请求访问你的个人空间。密码、验证码和令牌不会发送到桌面渲染进程。",
+  authorizeSubtitle:
+    "AgentEra Studio 正在请求访问你的个人空间。密码、验证码和令牌不会发送到桌面渲染进程。",
   signedInAs: "当前账户",
   approve: "允许并返回 AgentEra Studio",
   authorizationCancelled: "你已取消本次授权，可以关闭此页面。",
@@ -69,9 +78,11 @@ export const zhCN = {
   authorizationWorking: "授权完成，正在安全返回 AgentEra Studio…",
   reauthenticate: "请重新登录后继续安全操作。",
   deleteTitle: "注销 AgentEra 账户",
-  deleteWarning: "注销立即撤销云端会话并进入 7 天冷静期，但不会删除本机 Hermes 会话、Memory、文件或学习成果。请先单独备份或处理本地数据。",
+  deleteWarning:
+    "注销立即撤销云端会话并进入 7 天冷静期，但不会删除本机 Hermes 会话、Memory、文件或学习成果。请先单独备份或处理本地数据。",
   ownedWorkspaceDeletionPrefix: "此账户拥有 ",
-  ownedWorkspaceDeletionSuffix: " 个工作空间；注销最终完成时，这些工作空间及其云端资产将被删除。",
+  ownedWorkspaceDeletionSuffix:
+    " 个工作空间；注销最终完成时，这些工作空间及其云端资产将被删除。",
   deletionIdentity: "用于接收验证码的已绑定邮箱或手机号",
   sendDeletionCode: "发送注销验证码",
   verifyDeletionIdentity: "验证注销身份",

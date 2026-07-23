@@ -12,7 +12,6 @@ on:
 
 permissions:
   actions: read
-  attestations: write
   contents: read
   id-token: write
   packages: write
@@ -69,6 +68,7 @@ jobs:
           set -euo pipefail
           bash scripts/tests/check-secrets.test.sh
           bash scripts/tests/delivery-contract.test.sh
+          bash scripts/tests/provenance.test.sh
           bash scripts/tests/release-manifest.test.sh
           ./scripts/check-secrets.sh
           go test -count=1 ./...
@@ -132,11 +132,11 @@ jobs:
           set -euo pipefail
           tool_bin="$RUNNER_TEMP/release-tools"
           mkdir -p "$tool_bin"
-          GOBIN="$tool_bin" go install github.com/sigstore/cosign/v2/cmd/cosign@v2.5.3
-          GOBIN="$tool_bin" go install github.com/anchore/syft/cmd/syft@v1.29.0
+          GOBIN="$tool_bin" go install github.com/sigstore/cosign/v3/cmd/cosign@v3.0.6
+          GOBIN="$tool_bin" go install github.com/anchore/syft/cmd/syft@v1.44.0
           echo "$tool_bin" >> "$GITHUB_PATH"
 
-      - name: Sign image and generate SBOM/provenance
+      - name: Sign image and attest reviewed SLSA v1 provenance
         shell: bash
         env:
           IMAGE_REFERENCE: ${{ steps.image.outputs.reference }}
@@ -145,25 +145,25 @@ jobs:
         run: |
           set -euo pipefail
           evidence="$RUNNER_TEMP/cloud-candidate"
-          cosign sign --yes "$IMAGE_REFERENCE"
-          syft "$IMAGE_REFERENCE" -o spdx-json="$evidence/sbom.spdx.json"
-          jq -cnS \
-            --arg repository "$GITHUB_REPOSITORY" \
-            --arg sourceSha "$SOURCE_SHA" \
-            --arg image "$IMAGE_REFERENCE" \
-            --arg digest "$IMAGE_DIGEST" \
-            --arg runUrl "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-            '{repository:$repository,sourceSha:$sourceSha,image:$image,digest:$digest,runUrl:$runUrl}' \
-            > "$evidence/provenance.json"
-          sha256sum "$evidence/sbom.spdx.json" "$evidence/provenance.json" \
-            > "$evidence/SHA256SUMS"
+          workflow_locator=${GITHUB_WORKFLOW_REF#"$GITHUB_REPOSITORY/"}
+          workflow_path=${workflow_locator%@*}
+          workflow_ref=${workflow_locator#*@}
+          test "$workflow_path" = ".github/workflows/candidate.yml"
+          test "$workflow_ref" = "$GITHUB_REF"
 
-      - name: Attest image build provenance
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-name: ${{ env.IMAGE_REPOSITORY }}
-          subject-digest: ${{ steps.image.outputs.digest }}
-          push-to-registry: true
+          syft "$IMAGE_REFERENCE" -o spdx-json="$evidence/sbom.spdx.json"
+          export AERA_PROVENANCE_REPOSITORY="$GITHUB_REPOSITORY"
+          export AERA_PROVENANCE_SOURCE_SHA="$SOURCE_SHA"
+          export AERA_PROVENANCE_WORKFLOW_PATH="$workflow_path"
+          export AERA_PROVENANCE_WORKFLOW_REF="$workflow_ref"
+          export AERA_PROVENANCE_RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          export AERA_PROVENANCE_BUILDER_ID="https://github.com/$GITHUB_WORKFLOW_REF"
+          export AERA_PROVENANCE_IMAGE_REFERENCE="$IMAGE_REFERENCE"
+          export AERA_PROVENANCE_IMAGE_DIGEST="$IMAGE_DIGEST"
+          scripts/release/build-provenance.sh "$evidence/provenance.json"
+
+          cosign sign --yes --bundle "$evidence/image.sigstore.json" "$IMAGE_REFERENCE"
+          cosign attest --yes --type slsaprovenance1 --predicate "$evidence/provenance.json" --bundle "$evidence/provenance.sigstore.json" "$IMAGE_REFERENCE"
 
       - name: Build, verify, and sign canonical candidate manifest
         shell: bash
@@ -175,22 +175,30 @@ jobs:
           AERA_RELEASE_WORKFLOW: ${{ github.workflow }}
           AERA_RELEASE_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           AERA_RELEASE_SCHEMA_MIN: "17"
-          AERA_RELEASE_SCHEMA_MAX: "18"
-          AERA_RELEASE_HIGHEST_MIGRATION: "18"
+          AERA_RELEASE_SCHEMA_MAX: "19"
+          AERA_RELEASE_HIGHEST_MIGRATION: "19"
           AERA_RELEASE_EXPECTED_SHA: ${{ inputs.source_sha }}
-          AERA_RELEASE_CERTIFICATE_IDENTITY_REGEXP: ^https://github.com/bignormal/aera-cloud/.github/workflows/candidate.yml@
           AERA_RELEASE_CERTIFICATE_OIDC_ISSUER: https://token.actions.githubusercontent.com
         run: |
           set -euo pipefail
           evidence="$RUNNER_TEMP/cloud-candidate"
+          export AERA_RELEASE_CERTIFICATE_IDENTITY_REGEXP="^https://github\\.com/bignormal/aera-cloud/\\.github/workflows/candidate\\.yml@${GITHUB_REF}$"
           export AERA_RELEASE_SBOM_DIGEST="sha256:$(sha256sum "$evidence/sbom.spdx.json" | cut -d' ' -f1)"
           export AERA_RELEASE_PROVENANCE_DIGEST="sha256:$(sha256sum "$evidence/provenance.json" | cut -d' ' -f1)"
           export AERA_RELEASE_CREATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           scripts/release/build-manifest.sh "$evidence/manifest.json"
+          cosign sign-blob --yes --bundle "$evidence/manifest.sigstore.json" "$evidence/manifest.json"
           scripts/release/verify-manifest.sh "$evidence/manifest.json"
-          cosign sign-blob --yes \
-            --bundle "$evidence/manifest.sigstore.json" \
-            "$evidence/manifest.json"
+          (
+            cd "$evidence"
+            sha256sum \
+              image.sigstore.json \
+              manifest.json \
+              manifest.sigstore.json \
+              provenance.json \
+              provenance.sigstore.json \
+              sbom.spdx.json > SHA256SUMS
+          )
 
       - name: Upload immutable candidate evidence
         uses: actions/upload-artifact@v4

@@ -101,6 +101,9 @@ type KeyRing struct {
 type Config struct {
 	Environment                    string
 	PublicRegistrationEnabled      bool
+	RegistrationMode               string
+	DirectRegistrationIPLimit      int64
+	DirectRegistrationWindow       time.Duration
 	ListenAddr                     string
 	InternalAdmin                  InternalAdminConfig
 	OfficialAgent                  OfficialAgentConfig
@@ -175,10 +178,17 @@ func Load(lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	if environment != "development" && environment != "test" && environment != "production" {
-		return Config{}, fmt.Errorf("%s must be development, test, or production", envEnvironment)
+	if !isKnownEnvironment(environment) {
+		return Config{}, fmt.Errorf("%s must be development, test, internal_beta, or production", envEnvironment)
 	}
 	publicRegistrationEnabled, err := loadPublicRegistration(lookup, environment)
+	if err != nil {
+		return Config{}, err
+	}
+	registrationMode, directRegistrationIPLimit, directRegistrationWindow, err := loadRegistrationMode(
+		lookup,
+		environment,
+	)
 	if err != nil {
 		return Config{}, err
 	}
@@ -489,67 +499,78 @@ func Load(lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	smtpHost, err := required(lookup, envSMTPHost)
-	if err != nil {
-		return Config{}, err
-	}
-	smtpPortText, err := required(lookup, envSMTPPort)
-	if err != nil {
-		return Config{}, err
-	}
-	smtpPort, err := strconv.Atoi(smtpPortText)
-	if err != nil || smtpPort <= 0 || smtpPort > 65535 {
-		return Config{}, fmt.Errorf("%s must be an integer between 1 and 65535", envSMTPPort)
-	}
-	smtpUsername, err := required(lookup, envSMTPUsername)
-	if err != nil {
-		return Config{}, err
-	}
-	smtpPassword, err := required(lookup, envSMTPPassword)
-	if err != nil {
-		return Config{}, err
-	}
-	smtpFromAddress, err := required(lookup, envSMTPFromAddress)
-	if err != nil {
-		return Config{}, err
-	}
-	smtpFromName, err := required(lookup, envSMTPFromName)
-	if err != nil {
-		return Config{}, err
-	}
-	smsEndpoint, err := required(lookup, envSMSEndpoint)
-	if err != nil {
-		return Config{}, err
-	}
-	smsAPIKey, err := required(lookup, envSMSAPIKey)
-	if err != nil {
-		return Config{}, err
-	}
-	smsSenderID, err := required(lookup, envSMSSenderID)
-	if err != nil {
-		return Config{}, err
-	}
-	captchaEndpoint, err := required(lookup, envCaptchaEndpoint)
-	if err != nil {
-		return Config{}, err
-	}
-	captchaSecret, err := required(lookup, envCaptchaSecret)
-	if err != nil {
-		return Config{}, err
-	}
-	if err := validateProductionProviders(
-		environment,
-		smtpHost,
-		smtpFromAddress,
-		smsEndpoint,
-		captchaEndpoint,
-	); err != nil {
-		return Config{}, err
+	var (
+		smtpHost, smtpUsername, smtpPassword, smtpFromAddress, smtpFromName string
+		smsEndpoint, smsAPIKey, smsSenderID                                 string
+		captchaEndpoint, captchaSecret                                      string
+		smtpPort                                                            int
+	)
+	if registrationMode == RegistrationModeVerified {
+		smtpHost, err = required(lookup, envSMTPHost)
+		if err != nil {
+			return Config{}, err
+		}
+		smtpPortText, requiredErr := required(lookup, envSMTPPort)
+		if requiredErr != nil {
+			return Config{}, requiredErr
+		}
+		smtpPort, err = strconv.Atoi(smtpPortText)
+		if err != nil || smtpPort <= 0 || smtpPort > 65535 {
+			return Config{}, fmt.Errorf("%s must be an integer between 1 and 65535", envSMTPPort)
+		}
+		smtpUsername, err = required(lookup, envSMTPUsername)
+		if err != nil {
+			return Config{}, err
+		}
+		smtpPassword, err = required(lookup, envSMTPPassword)
+		if err != nil {
+			return Config{}, err
+		}
+		smtpFromAddress, err = required(lookup, envSMTPFromAddress)
+		if err != nil {
+			return Config{}, err
+		}
+		smtpFromName, err = required(lookup, envSMTPFromName)
+		if err != nil {
+			return Config{}, err
+		}
+		smsEndpoint, err = required(lookup, envSMSEndpoint)
+		if err != nil {
+			return Config{}, err
+		}
+		smsAPIKey, err = required(lookup, envSMSAPIKey)
+		if err != nil {
+			return Config{}, err
+		}
+		smsSenderID, err = required(lookup, envSMSSenderID)
+		if err != nil {
+			return Config{}, err
+		}
+		captchaEndpoint, err = required(lookup, envCaptchaEndpoint)
+		if err != nil {
+			return Config{}, err
+		}
+		captchaSecret, err = required(lookup, envCaptchaSecret)
+		if err != nil {
+			return Config{}, err
+		}
+		if err := validateProductionProviders(
+			environment,
+			smtpHost,
+			smtpFromAddress,
+			smsEndpoint,
+			captchaEndpoint,
+		); err != nil {
+			return Config{}, err
+		}
 	}
 
 	return Config{
 		Environment:                    environment,
 		PublicRegistrationEnabled:      publicRegistrationEnabled,
+		RegistrationMode:               registrationMode,
+		DirectRegistrationIPLimit:      directRegistrationIPLimit,
+		DirectRegistrationWindow:       directRegistrationWindow,
 		ListenAddr:                     listenAddr,
 		InternalAdmin:                  internalAdmin,
 		OfficialAgent:                  officialAgent,
@@ -765,9 +786,9 @@ func validatePublicURL(environment, raw string) error {
 		return fmt.Errorf("%s must contain only scheme and host", envPublicURL)
 	}
 
-	if environment == "production" {
+	if IsDeployedEnvironment(environment) {
 		if parsed.Scheme != "https" {
-			return fmt.Errorf("%s must use HTTPS in production", envPublicURL)
+			return fmt.Errorf("%s must use HTTPS in deployed environments", envPublicURL)
 		}
 		return nil
 	}

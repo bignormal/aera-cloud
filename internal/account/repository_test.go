@@ -45,6 +45,42 @@ func TestPostgresRepositoryRegistersAllAccountStateAtomically(t *testing.T) {
 	}
 }
 
+func TestPostgresRepositoryRegistersDirectIdentityWithoutVerificationReceipt(t *testing.T) {
+	fixture := newRepositoryFixture(t)
+	claims := verification.ReceiptClaims{
+		Kind: secure.IdentityEmail, NormalizedIdentity: "alice@example.com",
+		Purpose: verification.PurposeRegistration,
+	}
+	record := fixture.registrationRecord(t, claims, "Alice")
+	setReflectedField(t, &record, "Direct", true)
+
+	registration, err := fixture.repository.Register(fixture.ctx, record)
+	if err != nil {
+		t.Fatalf("Register(direct) error = %v", err)
+	}
+	if registration.UserID != record.UserID {
+		t.Fatalf("Register(direct) = %+v", registration)
+	}
+	var verifiedAt pgtype.Timestamptz
+	if err := fixture.postgres.QueryRow(
+		fixture.ctx,
+		`SELECT verified_at FROM identities WHERE id = $1`,
+		record.IdentityID,
+	).Scan(&verifiedAt); err != nil {
+		t.Fatalf("read direct identity: %v", err)
+	}
+	if verifiedAt.Valid {
+		t.Fatalf("direct identity verified_at = %v, want NULL", verifiedAt.Time)
+	}
+	var challenges int64
+	if err := fixture.postgres.QueryRow(fixture.ctx, `SELECT count(*) FROM verification_challenges`).Scan(&challenges); err != nil {
+		t.Fatalf("count verification challenges: %v", err)
+	}
+	if challenges != 0 {
+		t.Fatalf("verification challenges = %d, want 0", challenges)
+	}
+}
+
 func TestPostgresRepositoryRollsBackEveryRegistrationWriteOnFailure(t *testing.T) {
 	fixture := newRepositoryFixture(t)
 	claims := fixture.verifiedReceipt(t, secure.IdentityEmail, "alice@example.com", verification.PurposeRegistration, 2)

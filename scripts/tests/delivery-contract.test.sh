@@ -19,18 +19,33 @@ require_text() {
   grep -Eq "$pattern" "$file" || fail "$file does not match $pattern"
 }
 
+forbid_text() {
+  local file=$1
+  local pattern=$2
+  if grep -Eq "$pattern" "$file"; then
+    fail "$file unexpectedly matches $pattern"
+  fi
+}
+
 for file in \
   Dockerfile \
   deploy/compose.production.yaml \
+  deploy/compose.internal-beta.yaml \
   deploy/Caddyfile.example \
+  deploy/internal-beta/Caddyfile \
+  deploy/internal-beta/deploy.sh \
+  deploy/internal-beta/health-smoke.sh \
+  deploy/internal-beta/exposure-check.sh \
   deploy/backup.sh \
   deploy/restore-verify.sh \
+  docs/runbooks/internal-beta.md \
   docs/runbooks/private-staging.md \
   docs/runbooks/production.md \
   docs/runbooks/key-rotation.md \
   docs/runbooks/account-recovery.md \
   scripts/smoke-auth.sh \
   scripts/check-secrets.sh \
+  scripts/release/build-provenance.sh \
   scripts/release/build-manifest.sh \
   scripts/release/verify-manifest.sh \
   scripts/release/deploy-by-digest.sh \
@@ -60,6 +75,22 @@ require_text deploy/compose.production.yaml 'AGENTERA_CLOUD_FEATURE_ENV_FILE'
 if grep -Eq '^[[:space:]]+build:' deploy/compose.production.yaml; then
   fail 'production Compose must not rebuild the application image'
 fi
+
+require_text deploy/compose.internal-beta.yaml 'AGENTERA_CLOUD_ENVIRONMENT: internal_beta'
+require_text deploy/compose.internal-beta.yaml 'AGENTERA_CLOUD_IMAGE_DIGEST'
+require_text deploy/compose.internal-beta.yaml '127\.0\.0\.1:'
+require_text deploy/compose.internal-beta.yaml 'encrypted-backup-minio'
+require_text deploy/compose.internal-beta.yaml 'aera-cloud-admin-private'
+require_text deploy/compose.internal-beta.yaml 'read_only: true'
+require_text deploy/internal-beta/Caddyfile '/\.well-known/acme-challenge/'
+require_text deploy/internal-beta/Caddyfile 'reverse_proxy 127\.0\.0\.1:18086'
+require_text deploy/internal-beta/deploy.sh 'verify-manifest\.sh'
+require_text deploy/internal-beta/deploy.sh 'candidate digest is already current'
+require_text deploy/internal-beta/deploy.sh 'recorded previous'
+require_text deploy/internal-beta/health-smoke.sh 'registration_mode == "direct"'
+require_text deploy/internal-beta/exposure-check.sh 'unexpected public host listener'
+require_text docs/runbooks/internal-beta.md 'SMTP and SMS are intentionally absent'
+require_text docs/runbooks/internal-beta.md 'takes no image, tag, digest, or'
 
 require_text deploy/backup.sh 'pg_dump'
 require_text deploy/backup.sh 'age'
@@ -102,13 +133,22 @@ require_text .github/workflows/candidate.yml 'inputs\.ci_run_id'
 require_text .github/workflows/candidate.yml 'docker buildx build'
 require_text .github/workflows/candidate.yml 'steps\.image\.outputs\.digest'
 require_text .github/workflows/candidate.yml 'syft'
+require_text .github/workflows/candidate.yml 'cosign/v3/cmd/cosign@v3\.0\.6'
+require_text .github/workflows/candidate.yml 'syft/cmd/syft@v1\.44\.0'
 require_text .github/workflows/candidate.yml 'cosign sign --yes'
-require_text .github/workflows/candidate.yml 'attest-build-provenance@v2'
+require_text .github/workflows/candidate.yml 'cosign attest --yes --type slsaprovenance1'
+require_text .github/workflows/candidate.yml 'cosign sign-blob --yes'
+require_text .github/workflows/candidate.yml 'manifest\.sigstore\.json'
+forbid_text .github/workflows/candidate.yml 'actions/attest-build-provenance'
+forbid_text .github/workflows/candidate.yml 'attestations:[[:space:]]*write'
 require_text .github/workflows/candidate.yml 'build-manifest\.sh'
 require_text .github/workflows/candidate.yml 'verify-manifest\.sh'
 require_text .github/workflows/candidate.yml 'encrypted-backup-minio'
+require_text .github/workflows/candidate.yml 'AERA_RELEASE_HIGHEST_MIGRATION: "19"'
 require_text scripts/release/verify-manifest.sh 'cosign verify'
 require_text scripts/release/verify-manifest.sh 'verify-attestation'
+require_text scripts/release/verify-manifest.sh 'verify-blob'
+require_text scripts/release/verify-manifest.sh 'slsaprovenance1'
 require_text scripts/release/build-manifest.sh 'git status --porcelain'
 require_text scripts/release/deploy-by-digest.sh 'verify-manifest\.sh'
 require_text scripts/release/deploy-by-digest.sh 'AERA_RELEASE_BACKUP_COMMAND'

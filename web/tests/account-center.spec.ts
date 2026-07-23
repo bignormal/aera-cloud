@@ -9,9 +9,23 @@ const profile = {
   owned_workspace_count: 2,
 };
 
+const verifiedPublicConfig = {
+  environment: "test",
+  public_registration_enabled: true,
+  registration_mode: "verified",
+  registration_identity_kinds: ["email", "phone"],
+  identity_verification_available: true,
+};
+
 async function json(route: Route, body: unknown, status = 200) {
   await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 }
+
+test.beforeEach(async ({ page }) => {
+  await page.route("**/api/v1/public/config", (route) =>
+    json(route, verifiedPublicConfig),
+  );
+});
 
 async function mockAuthenticatedAccount(page: Page) {
   await page.addInitScript(() => sessionStorage.setItem("agentera.csrf_token", "c".repeat(43)));
