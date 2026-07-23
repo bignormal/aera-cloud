@@ -1,15 +1,17 @@
 package officialquality
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"testing"
 
 	"github.com/bignormal/aera-cloud/internal/agentcontrol"
 	"github.com/google/uuid"
 )
 
-func TestAgentControlDraftClonerCopiesExactImmutableVersionWithoutProposalContent(t *testing.T) {
+func TestAgentControlDraftClonerCopiesVerifiedImmutableVersionFromDatabaseNormalizedJSON(t *testing.T) {
 	manifest, bundle := qualityClonerManifest(t)
 	canonical, err := agentcontrol.CanonicalizeVersion(manifest, bundle)
 	if err != nil {
@@ -23,8 +25,9 @@ func TestAgentControlDraftClonerCopiesExactImmutableVersionWithoutProposalConten
 	service := &platformDraftServiceStub{
 		version: agentcontrol.Version{
 			ID: versionID, DefinitionID: definitionID,
-			CanonicalManifest: canonical.ManifestJSON, Bundle: canonical.BundleJSON,
-			ContentDigest: canonical.ContentDigest,
+			CanonicalManifest: databaseNormalizedJSON(t, canonical.ManifestJSON),
+			Bundle:            databaseNormalizedJSON(t, canonical.BundleJSON),
+			ContentDigest:     canonical.ContentDigest,
 		},
 		definition: agentcontrol.PlatformDefinitionDetail{
 			PlatformID: platformID,
@@ -57,6 +60,18 @@ func TestAgentControlDraftClonerCopiesExactImmutableVersionWithoutProposalConten
 		service.update.Bundle.Assets[0].Content != bundle.Assets[0].Content {
 		t.Fatalf("UpdateDraft() command = %+v calls=%d", service.update, service.updateCalls)
 	}
+}
+
+func databaseNormalizedJSON(t *testing.T, canonical []byte) []byte {
+	t.Helper()
+	var normalized bytes.Buffer
+	if err := json.Indent(&normalized, canonical, "", "  "); err != nil {
+		t.Fatalf("normalize canonical JSON like PostgreSQL jsonb: %v", err)
+	}
+	if bytes.Equal(normalized.Bytes(), canonical) {
+		t.Fatal("database-normalized JSON fixture must differ at the byte level")
+	}
+	return normalized.Bytes()
 }
 
 func TestAgentControlDraftClonerRefusesToOverwriteEditedDraft(t *testing.T) {

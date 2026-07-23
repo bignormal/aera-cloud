@@ -1,7 +1,6 @@
 package officialquality
 
 import (
-	"bytes"
 	"context"
 	"errors"
 
@@ -57,9 +56,7 @@ func (cloner *AgentControlDraftCloner) CloneApprovedProposal(
 		return uuid.Nil, ErrServiceUnavailable
 	}
 	canonical, err := agentcontrol.CanonicalizeVersion(manifest, bundle)
-	if err != nil || canonical.ContentDigest != version.ContentDigest ||
-		!bytes.Equal(canonical.ManifestJSON, version.CanonicalManifest) ||
-		!bytes.Equal(canonical.BundleJSON, version.Bundle) {
+	if err != nil || canonical.ContentDigest != version.ContentDigest {
 		return uuid.Nil, ErrServiceUnavailable
 	}
 	definition, err := cloner.service.GetDefinition(ctx, actor, command.DefinitionID)
