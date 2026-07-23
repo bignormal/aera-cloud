@@ -100,11 +100,12 @@ type KeyRing struct {
 
 type Config struct {
 	Environment                    string
+	PublicRegistrationEnabled      bool
 	ListenAddr                     string
 	InternalAdmin                  InternalAdminConfig
 	OfficialAgent                  OfficialAgentConfig
 	OfficialQuality                OfficialQualityConfig
-	EncryptedBackup               EncryptedBackupConfig
+	EncryptedBackup                EncryptedBackupConfig
 	PublicURL                      string
 	DatabaseURL                    string
 	RedisAddr                      string
@@ -176,6 +177,10 @@ func Load(lookup LookupEnv) (Config, error) {
 	}
 	if environment != "development" && environment != "test" && environment != "production" {
 		return Config{}, fmt.Errorf("%s must be development, test, or production", envEnvironment)
+	}
+	publicRegistrationEnabled, err := loadPublicRegistration(lookup, environment)
+	if err != nil {
+		return Config{}, err
 	}
 
 	listenAddr, err := required(lookup, envListenAddr)
@@ -544,11 +549,12 @@ func Load(lookup LookupEnv) (Config, error) {
 
 	return Config{
 		Environment:                    environment,
+		PublicRegistrationEnabled:      publicRegistrationEnabled,
 		ListenAddr:                     listenAddr,
 		InternalAdmin:                  internalAdmin,
 		OfficialAgent:                  officialAgent,
 		OfficialQuality:                officialQuality,
-		EncryptedBackup:               encryptedBackup,
+		EncryptedBackup:                encryptedBackup,
 		PublicURL:                      publicURL,
 		DatabaseURL:                    databaseURL,
 		RedisAddr:                      redisAddr,

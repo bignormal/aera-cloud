@@ -454,7 +454,7 @@ func buildAccountHandler(
 	}
 	return account.NewHandler(account.HTTPConfig{
 		Accounts: accountService, BrowserSessions: browserSessions, Legal: legalService,
-		AccessTokens: accessAuthenticator,
+		AccessTokens: accessAuthenticator, RegistrationDisabled: !cfg.PublicRegistrationEnabled,
 	}), nil
 }
 

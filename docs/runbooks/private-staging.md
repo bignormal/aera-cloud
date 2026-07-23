@@ -2,6 +2,14 @@
 
 Private staging is for functional verification before the AgentEra account domain has completed filing and trusted HTTPS is available. It is not a public launch mode.
 
+## Immutable candidate deployment
+
+Private staging accepts only the canonical manifest emitted by `candidate.yml`. The manifest must bind the exact source SHA to a GHCR `image@sha256:...` reference, passing CI run, SBOM digest, provenance digest, migration range, and default-off quality/backup flags. `scripts/release/verify-manifest.sh` performs keyless Cosign image and provenance verification before deployment.
+
+The protected `deploy-staging.yml` workflow runs only on an approved private staging runner. It downloads candidate evidence by workflow run ID and exact SHA, performs an encrypted database backup plus disposable restore verification, records the previous digest, pulls the exact candidate digest, and starts it with public registration, official Agent, official quality, and encrypted backup disabled. Health and staging smoke must pass before a separate call applies only the explicitly approved staging feature flags.
+
+The runner provides paths to its secret-manager-generated base environment file, release-state directory, backup command, restore-verification command, health probe, and complete staging smoke. These are protected environment variables; their contents and any production material do not enter repository files or workflow artifacts.
+
 ## Network rule
 
 The server IP may be used only through one of these controls:
@@ -75,3 +83,5 @@ Passing these checks proves only local or private-staging verification. A Git co
 - Destroy staging browser sessions and test accounts before changing origins.
 
 Changing the control-plane origin changes the token issuer. Raw-IP/loopback staging sessions and offline entitlements are disposable; users must authenticate again after the filed HTTPS domain becomes the production origin.
+
+Retain the redacted `deployment-state.json` and `current-manifest.json` artifacts. A local test or a successful image build does not equal private-staging deployment or acceptance.

@@ -45,6 +45,32 @@ func TestHTTPHandlerRegistersAccountFromStrictJSON(t *testing.T) {
 	}
 }
 
+func TestHTTPHandlerFailsClosedWhenPublicRegistrationIsDisabled(t *testing.T) {
+	service := &stubAccountService{}
+	handler := NewHandler(HTTPConfig{
+		Accounts:             service,
+		BrowserSessions:      &stubBrowserSessions{},
+		Legal:                currentLegal(t),
+		RegistrationDisabled: true,
+	})
+	request := accountJSONRequest(http.MethodPost, "/api/v1/accounts/register", `{
+		"kind":"email",
+		"verification_receipt":"opaque-receipt",
+		"password":"correct horse battery staple",
+		"nickname":"Alice",
+		"terms_version":"terms-2026-07",
+		"privacy_version":"privacy-2026-07"
+	}`)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	assertErrorEnvelope(t, response, http.StatusServiceUnavailable, "service_unavailable")
+	if service.registerCalls != 0 {
+		t.Fatalf("Register() calls = %d, want 0", service.registerCalls)
+	}
+}
+
 func TestHTTPHandlerLoginCreatesBrowserSessionWithoutEchoingCredentials(t *testing.T) {
 	principal := Principal{UserID: uuid.New(), PersonalSpaceID: uuid.New(), Nickname: "Alice"}
 	service := &stubAccountService{principal: principal}

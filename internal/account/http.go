@@ -48,23 +48,25 @@ type LegalPort interface {
 }
 
 type HTTPConfig struct {
-	Accounts        ServicePort
-	BrowserSessions BrowserSessionPort
-	Legal           LegalPort
-	AccessTokens    AccessAuthenticator
+	Accounts             ServicePort
+	BrowserSessions      BrowserSessionPort
+	Legal                LegalPort
+	AccessTokens         AccessAuthenticator
+	RegistrationDisabled bool
 }
 
 type httpHandler struct {
-	accounts        ServicePort
-	browserSessions BrowserSessionPort
-	legal           LegalPort
-	accessTokens    AccessAuthenticator
+	accounts             ServicePort
+	browserSessions      BrowserSessionPort
+	legal                LegalPort
+	accessTokens         AccessAuthenticator
+	registrationDisabled bool
 }
 
 func NewHandler(config HTTPConfig) http.Handler {
 	handler := &httpHandler{
 		accounts: config.Accounts, browserSessions: config.BrowserSessions, legal: config.Legal,
-		accessTokens: config.AccessTokens,
+		accessTokens: config.AccessTokens, registrationDisabled: config.RegistrationDisabled,
 	}
 	router := chi.NewRouter()
 	router.Post("/api/v1/accounts/register", handler.register)
@@ -251,6 +253,10 @@ func (h *httpHandler) authorizeAccess(response http.ResponseWriter, request *htt
 }
 
 func (h *httpHandler) register(response http.ResponseWriter, request *http.Request) {
+	if h.registrationDisabled {
+		writeAccountError(response, http.StatusServiceUnavailable, "service_unavailable")
+		return
+	}
 	var payload struct {
 		Kind                secure.IdentityKind `json:"kind"`
 		VerificationReceipt string              `json:"verification_receipt"`

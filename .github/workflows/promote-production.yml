@@ -1,0 +1,159 @@
+name: Promote Cloud candidate to production
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_run_id:
+        description: Successful Cloud candidate workflow run ID
+        required: true
+      source_sha:
+        description: Exact candidate source SHA
+        required: true
+      enable_rollout:
+        description: Apply the separately approved feature cohort after disabled smoke
+        type: boolean
+        default: false
+      enable_public_registration:
+        type: boolean
+        default: false
+      enable_official_agents:
+        type: boolean
+        default: false
+      enable_official_quality:
+        type: boolean
+        default: false
+      enable_encrypted_backup:
+        type: boolean
+        default: false
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+
+concurrency:
+  group: cloud-production
+  cancel-in-progress: false
+
+jobs:
+  deploy-disabled:
+    name: Deploy exact digest with every new feature disabled
+    environment: production
+    runs-on: [self-hosted, linux, aera-production]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download and bind candidate evidence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          run=$(gh run view "$CANDIDATE_RUN_ID" --json headSha,conclusion,workflowName)
+          test "$(jq -r '.headSha' <<<"$run")" = "$SOURCE_SHA"
+          test "$(jq -r '.conclusion' <<<"$run")" = success
+          test "$(jq -r '.workflowName' <<<"$run")" = "Cloud candidate"
+          mkdir -p "$RUNNER_TEMP/cloud-candidate"
+          gh run download "$CANDIDATE_RUN_ID" \
+            --name "cloud-candidate-$SOURCE_SHA" \
+            --dir "$RUNNER_TEMP/cloud-candidate"
+
+      - name: Install exact Cosign verifier
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/release-tools"
+          GOBIN="$RUNNER_TEMP/release-tools" \
+            go install github.com/sigstore/cosign/v2/cmd/cosign@v2.5.3
+          echo "$RUNNER_TEMP/release-tools" >> "$GITHUB_PATH"
+
+      - name: Back up, restore-verify, deploy disabled, and smoke
+        shell: bash
+        env:
+          AERA_RELEASE_MANIFEST: ${{ runner.temp }}/cloud-candidate/manifest.json
+          AERA_RELEASE_EXPECTED_SHA: ${{ inputs.source_sha }}
+          AERA_RELEASE_CERTIFICATE_IDENTITY_REGEXP: ^https://github.com/bignormal/aera-cloud/.github/workflows/candidate.yml@
+          AERA_RELEASE_CERTIFICATE_OIDC_ISSUER: https://token.actions.githubusercontent.com
+          AERA_RELEASE_STATE_DIR: ${{ vars.AERA_CLOUD_RELEASE_STATE_DIR }}
+          AERA_RELEASE_COMPOSE_FILE: deploy/compose.production.yaml
+          AERA_RELEASE_COMPOSE_PROJECT: agentera-cloud-production
+          AERA_RELEASE_ENVIRONMENT: production
+          AGENTERA_CLOUD_ENV_FILE: ${{ vars.AGENTERA_CLOUD_ENV_FILE }}
+          AERA_RELEASE_BACKUP_COMMAND: ${{ vars.AERA_CLOUD_BACKUP_COMMAND }}
+          AERA_RELEASE_RESTORE_VERIFY_COMMAND: ${{ vars.AERA_CLOUD_RESTORE_VERIFY_COMMAND }}
+          AERA_RELEASE_HEALTH_COMMAND: ${{ vars.AERA_CLOUD_HEALTH_COMMAND }}
+          AERA_RELEASE_SMOKE_COMMAND: ${{ vars.AERA_CLOUD_PRODUCTION_SMOKE_COMMAND }}
+        run: scripts/release/deploy-by-digest.sh deploy
+
+      - name: Upload disabled deployment evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-production-disabled-${{ inputs.source_sha }}
+          path: |
+            ${{ vars.AERA_CLOUD_RELEASE_STATE_DIR }}/deployment-state.json
+            ${{ vars.AERA_CLOUD_RELEASE_STATE_DIR }}/current-manifest.json
+          if-no-files-found: error
+          retention-days: 90
+
+  enable-approved-rollout:
+    name: Apply separately approved production cohort
+    if: inputs.enable_rollout
+    needs: deploy-disabled
+    environment: production
+    runs-on: [self-hosted, linux, aera-production]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download and verify the same candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/cloud-candidate" "$RUNNER_TEMP/release-tools"
+          gh run download "$CANDIDATE_RUN_ID" \
+            --name "cloud-candidate-$SOURCE_SHA" \
+            --dir "$RUNNER_TEMP/cloud-candidate"
+          GOBIN="$RUNNER_TEMP/release-tools" \
+            go install github.com/sigstore/cosign/v2/cmd/cosign@v2.5.3
+          echo "$RUNNER_TEMP/release-tools" >> "$GITHUB_PATH"
+
+      - name: Enable only the approved cohort without rebuilding
+        shell: bash
+        env:
+          AERA_RELEASE_MANIFEST: ${{ runner.temp }}/cloud-candidate/manifest.json
+          AERA_RELEASE_EXPECTED_SHA: ${{ inputs.source_sha }}
+          AERA_RELEASE_CERTIFICATE_IDENTITY_REGEXP: ^https://github.com/bignormal/aera-cloud/.github/workflows/candidate.yml@
+          AERA_RELEASE_CERTIFICATE_OIDC_ISSUER: https://token.actions.githubusercontent.com
+          AERA_RELEASE_STATE_DIR: ${{ vars.AERA_CLOUD_RELEASE_STATE_DIR }}
+          AERA_RELEASE_COMPOSE_FILE: deploy/compose.production.yaml
+          AERA_RELEASE_COMPOSE_PROJECT: agentera-cloud-production
+          AERA_RELEASE_ENVIRONMENT: production
+          AGENTERA_CLOUD_ENV_FILE: ${{ vars.AGENTERA_CLOUD_ENV_FILE }}
+          AERA_RELEASE_HEALTH_COMMAND: ${{ vars.AERA_CLOUD_HEALTH_COMMAND }}
+          AERA_RELEASE_SMOKE_COMMAND: ${{ vars.AERA_CLOUD_PRODUCTION_SMOKE_COMMAND }}
+          AERA_RELEASE_ROLLOUT_APPROVED: "true"
+          AERA_RELEASE_APPROVED_PUBLIC_REGISTRATION: ${{ inputs.enable_public_registration }}
+          AERA_RELEASE_APPROVED_OFFICIAL_AGENTS: ${{ inputs.enable_official_agents }}
+          AERA_RELEASE_APPROVED_OFFICIAL_QUALITY: ${{ inputs.enable_official_quality }}
+          AERA_RELEASE_APPROVED_ENCRYPTED_BACKUP: ${{ inputs.enable_encrypted_backup }}
+        run: scripts/release/deploy-by-digest.sh enable-approved

@@ -33,12 +33,20 @@ The production Compose project owns only the `aera_cloud` database/role, Redis A
 
 ## Deploy
 
-```bash
-docker compose -f deploy/compose.production.yaml build --pull
-docker compose -f deploy/compose.production.yaml up -d
-docker compose -f deploy/compose.production.yaml ps
-curl --fail http://127.0.0.1:18086/health/ready
+Production does not build from the server checkout and does not accept a mutable tag. The protected `promote-production.yml` workflow downloads an already successful Cloud candidate by run ID and source SHA, verifies its keyless Cosign signature/provenance, and supplies the exact `ghcr.io/...@sha256:...` reference as `AGENTERA_CLOUD_IMAGE_DIGEST`.
+
+Before the application changes, the workflow runs the approved encrypted PostgreSQL backup and disposable restore commands. `scripts/release/deploy-by-digest.sh deploy` records the previous candidate, pulls the exact digest, and starts the new image with these enforced settings:
+
+```text
+AGENTERA_CLOUD_PUBLIC_REGISTRATION_ENABLED=false
+AGENTERA_CLOUD_OFFICIAL_AGENTS_ENABLED=false
+AGENTERA_CLOUD_OFFICIAL_QUALITY_ENABLED=false
+AGENTERA_CLOUD_ENCRYPTED_BACKUP_ENABLED=false
 ```
+
+The generated feature file is mode `0600` outside Git and is loaded after the base secret environment file. Health, auth, official-quality, and encrypted-backup read-only/fail-closed smoke must pass before the disabled deployment is recorded.
+
+Feature enablement is a separate protected job and requires the `enable_rollout` input plus explicit booleans for each cohort. It re-verifies the same manifest and refuses a different digest; it never rebuilds the image. Public registration remains false until its independent domain, provider, legal, backup, and production-approval gates pass.
 
 Install `deploy/Caddyfile.example` with `AGENTERA_ACCOUNT_HOST` set to the filed domain. Keep port 18086 loopback-only. The example deliberately disables access logs so OAuth state and device metadata in query strings are not retained.
 
@@ -56,9 +64,11 @@ Copy the encrypted archive and checksum to separate storage. At least monthly, r
 ## Upgrade and rollback
 
 1. Create and verify an encrypted backup.
-2. Build an immutable image tag from the reviewed commit.
+2. Verify the signed candidate manifest, exact image digest, CI source SHA, SBOM, provenance, and schema compatibility.
 3. Run migrations by starting one application instance; migrations are transactional and lock-protected.
 4. Verify health and the account-center routes before allowing traffic.
-5. Roll back application code only if the previous binary supports the already-applied schema. Never roll back key rings by deleting a still-referenced key.
+5. Roll back application code only if the previous signed manifest supports the already-applied schema. Never roll back key rings by deleting a still-referenced key.
+
+`rollback-production.yml` requires a previous candidate run ID/SHA, reason, ticket, and production approval. It disables every new feature, verifies the previous signature and schema maximum against the current highest migration, repeats backup/restore verification, switches to the exact previous digest, re-runs health/smoke, and records `rollback-evidence.json`. It never invokes a down migration or deletes new schema/data.
 
 No push, deployment, DNS change, public exposure, or registration enablement is implied by this runbook; each is a separate authorized operation.

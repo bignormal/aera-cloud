@@ -1,0 +1,90 @@
+name: Roll back Cloud production by digest
+
+on:
+  workflow_dispatch:
+    inputs:
+      previous_candidate_run_id:
+        description: Candidate run containing the previous signed manifest
+        required: true
+      previous_source_sha:
+        description: Exact previous compatible source SHA
+        required: true
+      reason:
+        description: Human-readable rollback reason
+        required: true
+      ticket:
+        description: Approved incident or change ticket
+        required: true
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+
+concurrency:
+  group: cloud-production
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    name: Preserve schema and switch to previous exact digest
+    environment: production
+    runs-on: [self-hosted, linux, aera-production]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download exact previous candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN_ID: ${{ inputs.previous_candidate_run_id }}
+          SOURCE_SHA: ${{ inputs.previous_source_sha }}
+        run: |
+          set -euo pipefail
+          run=$(gh run view "$CANDIDATE_RUN_ID" --json headSha,conclusion,workflowName)
+          test "$(jq -r '.headSha' <<<"$run")" = "$SOURCE_SHA"
+          test "$(jq -r '.conclusion' <<<"$run")" = success
+          test "$(jq -r '.workflowName' <<<"$run")" = "Cloud candidate"
+          mkdir -p "$RUNNER_TEMP/previous-cloud-candidate" "$RUNNER_TEMP/release-tools"
+          gh run download "$CANDIDATE_RUN_ID" \
+            --name "cloud-candidate-$SOURCE_SHA" \
+            --dir "$RUNNER_TEMP/previous-cloud-candidate"
+          GOBIN="$RUNNER_TEMP/release-tools" \
+            go install github.com/sigstore/cosign/v2/cmd/cosign@v2.5.3
+          echo "$RUNNER_TEMP/release-tools" >> "$GITHUB_PATH"
+
+      - name: Verify compatibility and roll back without down migration
+        shell: bash
+        env:
+          AERA_RELEASE_PREVIOUS_MANIFEST: ${{ runner.temp }}/previous-cloud-candidate/manifest.json
+          AERA_RELEASE_EXPECTED_SHA: ${{ inputs.previous_source_sha }}
+          AERA_RELEASE_CERTIFICATE_IDENTITY_REGEXP: ^https://github.com/bignormal/aera-cloud/.github/workflows/candidate.yml@
+          AERA_RELEASE_CERTIFICATE_OIDC_ISSUER: https://token.actions.githubusercontent.com
+          AERA_RELEASE_STATE_DIR: ${{ vars.AERA_CLOUD_RELEASE_STATE_DIR }}
+          AERA_RELEASE_COMPOSE_FILE: deploy/compose.production.yaml
+          AERA_RELEASE_COMPOSE_PROJECT: agentera-cloud-production
+          AGENTERA_CLOUD_ENV_FILE: ${{ vars.AGENTERA_CLOUD_ENV_FILE }}
+          AERA_RELEASE_BACKUP_COMMAND: ${{ vars.AERA_CLOUD_BACKUP_COMMAND }}
+          AERA_RELEASE_RESTORE_VERIFY_COMMAND: ${{ vars.AERA_CLOUD_RESTORE_VERIFY_COMMAND }}
+          AERA_RELEASE_HEALTH_COMMAND: ${{ vars.AERA_CLOUD_HEALTH_COMMAND }}
+          AERA_RELEASE_SMOKE_COMMAND: ${{ vars.AERA_CLOUD_PRODUCTION_SMOKE_COMMAND }}
+          AERA_RELEASE_ROLLBACK_REASON: ${{ inputs.reason }}
+          AERA_RELEASE_ROLLBACK_TICKET: ${{ inputs.ticket }}
+        run: scripts/release/rollback-by-digest.sh
+
+      - name: Upload rollback evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-production-rollback-${{ github.run_id }}
+          path: |
+            ${{ vars.AERA_CLOUD_RELEASE_STATE_DIR }}/rollback-evidence.json
+            ${{ vars.AERA_CLOUD_RELEASE_STATE_DIR }}/deployment-state.json
+            ${{ vars.AERA_CLOUD_RELEASE_STATE_DIR }}/current-manifest.json
+          if-no-files-found: error
+          retention-days: 90
