@@ -1,0 +1,184 @@
+name: aera-cloud-internal-beta
+
+services:
+  postgres:
+    image: postgres:17.5-alpine3.22
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: aera_cloud
+      POSTGRES_USER: aera_cloud
+      POSTGRES_PASSWORD: ${AERA_CLOUD_POSTGRES_PASSWORD:?set the dedicated Cloud PostgreSQL password}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aera_cloud -d aera_cloud"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - aera-cloud-postgres-internal-beta:/var/lib/postgresql/data
+    networks: [aera-cloud-backend]
+    cpus: "0.75"
+    mem_limit: 768m
+    pids_limit: 192
+    security_opt: ["no-new-privileges:true"]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  redis:
+    image: redis:7.4.5-alpine3.21
+    restart: unless-stopped
+    environment:
+      AERA_CLOUD_REDIS_PASSWORD: ${AERA_CLOUD_REDIS_PASSWORD:?set the dedicated Cloud Redis password}
+      REDISCLI_AUTH: ${AERA_CLOUD_REDIS_PASSWORD:?set the dedicated Cloud Redis password}
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        umask 077
+        printf 'user default off\nuser aera_cloud on >%s ~aera-cloud:* +@all -@dangerous\n' "$${AERA_CLOUD_REDIS_PASSWORD}" > /tmp/aera-cloud-users.acl
+        exec redis-server --appendonly yes --save 60 1000 --databases 16 --aclfile /tmp/aera-cloud-users.acl
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --user aera_cloud ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - aera-cloud-redis-internal-beta:/data
+    networks: [aera-cloud-backend]
+    cpus: "0.35"
+    mem_limit: 256m
+    pids_limit: 128
+    security_opt: ["no-new-privileges:true"]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  encrypted-backup-minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: ["server", "/data"]
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${AGENTERA_CLOUD_ENCRYPTED_BACKUP_ACCESS_KEY:?set the dedicated encrypted-backup access key}
+      MINIO_ROOT_PASSWORD: ${AGENTERA_CLOUD_ENCRYPTED_BACKUP_SECRET_KEY:?set the dedicated encrypted-backup secret key}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - aera-cloud-minio-internal-beta:/data
+    networks: [aera-cloud-backup]
+    cpus: "0.50"
+    mem_limit: 512m
+    pids_limit: 192
+    security_opt: ["no-new-privileges:true"]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  encrypted-backup-minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    restart: "no"
+    depends_on:
+      encrypted-backup-minio: {condition: service_healthy}
+    environment:
+      MINIO_ROOT_USER: ${AGENTERA_CLOUD_ENCRYPTED_BACKUP_ACCESS_KEY:?set the dedicated encrypted-backup access key}
+      MINIO_ROOT_PASSWORD: ${AGENTERA_CLOUD_ENCRYPTED_BACKUP_SECRET_KEY:?set the dedicated encrypted-backup secret key}
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        mc alias set internal http://encrypted-backup-minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"
+        mc mb --ignore-existing internal/aera-encrypted-backups
+    networks: [aera-cloud-backup]
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=8m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    cpus: "0.20"
+    mem_limit: 96m
+    pids_limit: 64
+
+  app:
+    image: ${AGENTERA_CLOUD_IMAGE_DIGEST:?set the verified GHCR image@sha256 digest}
+    restart: unless-stopped
+    env_file:
+      - path: ${AERA_CLOUD_ENV_FILE:?set the owner-only Cloud secret environment file}
+        required: true
+      - path: ${AGENTERA_CLOUD_FEATURE_ENV_FILE:?set the generated fail-closed feature environment file}
+        required: true
+    environment:
+      AGENTERA_CLOUD_ENVIRONMENT: internal_beta
+      AGENTERA_CLOUD_PUBLIC_URL: ${AERA_INTERNAL_BETA_PUBLIC_ORIGIN:?set the exact HTTPS IP origin}
+      AGENTERA_CLOUD_LISTEN_ADDR: 0.0.0.0:8086
+      AGENTERA_CLOUD_DATABASE_URL: postgres://aera_cloud:${AERA_CLOUD_POSTGRES_PASSWORD}@postgres:5432/aera_cloud?sslmode=disable
+      AGENTERA_CLOUD_REDIS_ADDR: redis:6379
+      AGENTERA_CLOUD_REDIS_USERNAME: aera_cloud
+      AGENTERA_CLOUD_REDIS_PASSWORD: ${AERA_CLOUD_REDIS_PASSWORD}
+      AGENTERA_CLOUD_REDIS_DB: "9"
+      AGENTERA_CLOUD_ENCRYPTED_BACKUP_ENDPOINT: encrypted-backup-minio:9000
+      AGENTERA_CLOUD_ENCRYPTED_BACKUP_BUCKET: aera-encrypted-backups
+      AGENTERA_CLOUD_ENCRYPTED_BACKUP_REGION: internal-beta
+      AGENTERA_CLOUD_ENCRYPTED_BACKUP_ACCESS_KEY: ${AGENTERA_CLOUD_ENCRYPTED_BACKUP_ACCESS_KEY}
+      AGENTERA_CLOUD_ENCRYPTED_BACKUP_SECRET_KEY: ${AGENTERA_CLOUD_ENCRYPTED_BACKUP_SECRET_KEY}
+      AGENTERA_CLOUD_ENCRYPTED_BACKUP_USE_TLS: "false"
+      AGENTERA_CLOUD_INTERNAL_ADMIN_ENABLED: "true"
+      AGENTERA_CLOUD_INTERNAL_ADMIN_LISTEN_ADDR: 0.0.0.0:8443
+      AGENTERA_CLOUD_INTERNAL_ADMIN_SERVER_CERT_FILE: /run/secrets/internal-admin-server.pem
+      AGENTERA_CLOUD_INTERNAL_ADMIN_SERVER_KEY_FILE: /run/secrets/internal-admin-server-key.pem
+      AGENTERA_CLOUD_INTERNAL_ADMIN_CLIENT_CA_FILE: /run/secrets/internal-admin-client-ca.pem
+      AGENTERA_CLOUD_INTERNAL_ADMIN_JWT_PUBLIC_KEY_FILE: /run/secrets/internal-admin-jwt-public.pem
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      encrypted-backup-minio: {condition: service_healthy}
+      encrypted-backup-minio-init: {condition: service_completed_successfully}
+    ports:
+      - "127.0.0.1:${AERA_CLOUD_HTTP_PORT:-18086}:8086"
+    expose: ["8086", "8443"]
+    volumes:
+      - ${AERA_CLOUD_INTERNAL_ADMIN_SERVER_CERT_FILE_HOST:?set the Internal Admin server certificate}:/run/secrets/internal-admin-server.pem:ro
+      - ${AERA_CLOUD_INTERNAL_ADMIN_SERVER_KEY_FILE_HOST:?set the Internal Admin server key}:/run/secrets/internal-admin-server-key.pem:ro
+      - ${AERA_CLOUD_INTERNAL_ADMIN_CLIENT_CA_FILE_HOST:?set the dedicated Admin client CA}:/run/secrets/internal-admin-client-ca.pem:ro
+      - ${AERA_CLOUD_INTERNAL_ADMIN_JWT_PUBLIC_KEY_FILE_HOST:?set the Admin service JWT public key}:/run/secrets/internal-admin-jwt-public.pem:ro
+    networks:
+      aera-cloud-backend:
+      aera-cloud-backup:
+      aera-cloud-admin-private:
+        aliases: [aera-cloud-internal-admin]
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=32m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    cpus: "1.25"
+    mem_limit: 768m
+    pids_limit: 192
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8086/health/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 18
+      start_period: 30s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+networks:
+  aera-cloud-backend:
+    name: aera-cloud-backend-internal-beta
+    internal: true
+  aera-cloud-backup:
+    name: aera-cloud-backup-internal-beta
+    internal: true
+  aera-cloud-admin-private:
+    name: ${AERA_CLOUD_ADMIN_PRIVATE_NETWORK:-aera-cloud-admin-private}
+    external: true
+
+volumes:
+  aera-cloud-postgres-internal-beta:
+    name: aera-cloud-postgres-internal-beta
+  aera-cloud-redis-internal-beta:
+    name: aera-cloud-redis-internal-beta
+  aera-cloud-minio-internal-beta:
+    name: aera-cloud-minio-internal-beta

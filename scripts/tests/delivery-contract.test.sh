@@ -30,9 +30,15 @@ forbid_text() {
 for file in \
   Dockerfile \
   deploy/compose.production.yaml \
+  deploy/compose.internal-beta.yaml \
   deploy/Caddyfile.example \
+  deploy/internal-beta/Caddyfile \
+  deploy/internal-beta/deploy.sh \
+  deploy/internal-beta/health-smoke.sh \
+  deploy/internal-beta/exposure-check.sh \
   deploy/backup.sh \
   deploy/restore-verify.sh \
+  docs/runbooks/internal-beta.md \
   docs/runbooks/private-staging.md \
   docs/runbooks/production.md \
   docs/runbooks/key-rotation.md \
@@ -69,6 +75,22 @@ require_text deploy/compose.production.yaml 'AGENTERA_CLOUD_FEATURE_ENV_FILE'
 if grep -Eq '^[[:space:]]+build:' deploy/compose.production.yaml; then
   fail 'production Compose must not rebuild the application image'
 fi
+
+require_text deploy/compose.internal-beta.yaml 'AGENTERA_CLOUD_ENVIRONMENT: internal_beta'
+require_text deploy/compose.internal-beta.yaml 'AGENTERA_CLOUD_IMAGE_DIGEST'
+require_text deploy/compose.internal-beta.yaml '127\.0\.0\.1:'
+require_text deploy/compose.internal-beta.yaml 'encrypted-backup-minio'
+require_text deploy/compose.internal-beta.yaml 'aera-cloud-admin-private'
+require_text deploy/compose.internal-beta.yaml 'read_only: true'
+require_text deploy/internal-beta/Caddyfile '/\.well-known/acme-challenge/'
+require_text deploy/internal-beta/Caddyfile 'reverse_proxy 127\.0\.0\.1:18086'
+require_text deploy/internal-beta/deploy.sh 'verify-manifest\.sh'
+require_text deploy/internal-beta/deploy.sh 'candidate digest is already current'
+require_text deploy/internal-beta/deploy.sh 'recorded previous'
+require_text deploy/internal-beta/health-smoke.sh 'registration_mode == "direct"'
+require_text deploy/internal-beta/exposure-check.sh 'unexpected public host listener'
+require_text docs/runbooks/internal-beta.md 'SMTP and SMS are intentionally absent'
+require_text docs/runbooks/internal-beta.md 'takes no image, tag, digest, or'
 
 require_text deploy/backup.sh 'pg_dump'
 require_text deploy/backup.sh 'age'
