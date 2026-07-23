@@ -74,9 +74,16 @@ func TestDirectRegistrationIsInternalBetaOnlyAndExplicit(t *testing.T) {
 	env[testRegistrationMode] = "direct"
 	env[testDirectRegistrationIPLimit] = "30"
 	env[testDirectRegistrationRequestWindow] = "1h"
-	if _, err := Load(mapLookup(env)); err == nil || !strings.Contains(err.Error(), "AGENTERA_CLOUD_PUBLIC_REGISTRATION_ENABLED") {
-		t.Fatalf("disabled public registration Load() error = %v", err)
+	cfg, err := Load(mapLookup(env))
+	if err != nil {
+		t.Fatalf("disabled public registration with direct mode Load() error = %v", err)
 	}
+	if cfg.PublicRegistrationEnabled {
+		t.Fatal("PublicRegistrationEnabled = true, want rollout gate closed")
+	}
+	assertRegistrationField(t, cfg, "RegistrationMode", "direct")
+	assertRegistrationField(t, cfg, "DirectRegistrationIPLimit", int64(30))
+	assertRegistrationField(t, cfg, "DirectRegistrationWindow", time.Hour)
 
 	env = validEnvironment("internal_beta")
 	env["AGENTERA_CLOUD_PUBLIC_REGISTRATION_ENABLED"] = "true"

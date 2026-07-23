@@ -188,7 +188,6 @@ func Load(lookup LookupEnv) (Config, error) {
 	registrationMode, directRegistrationIPLimit, directRegistrationWindow, err := loadRegistrationMode(
 		lookup,
 		environment,
-		publicRegistrationEnabled,
 	)
 	if err != nil {
 		return Config{}, err

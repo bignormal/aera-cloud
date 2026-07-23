@@ -17,7 +17,6 @@ const (
 func loadRegistrationMode(
 	lookup LookupEnv,
 	environment string,
-	publicRegistrationEnabled bool,
 ) (string, int64, time.Duration, error) {
 	mode, ok := lookup(envRegistrationMode)
 	if !ok || mode == "" {
@@ -29,13 +28,6 @@ func loadRegistrationMode(
 	case RegistrationModeDirect:
 		if !IsInternalBeta(environment) {
 			return "", 0, 0, fmt.Errorf("%s=direct is allowed only in internal_beta", envRegistrationMode)
-		}
-		if !publicRegistrationEnabled {
-			return "", 0, 0, fmt.Errorf(
-				"%s=true is required when %s=direct",
-				envPublicRegistrationEnabled,
-				envRegistrationMode,
-			)
 		}
 		limit, err := requiredInteger(lookup, envDirectRegistrationIPLimit, 1, 10_000)
 		if err != nil {
