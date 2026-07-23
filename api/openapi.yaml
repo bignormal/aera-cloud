@@ -1,8 +1,8 @@
 openapi: 3.0.3
 info:
   title: AgentEra App Cloud API
-  version: 0.8.0
-  description: Account, device authorization, USER, Workspace, Organization, and Official Managed Agent control-plane contract for AgentEra Studio.
+  version: 0.9.0
+  description: Account, device authorization, USER, Workspace, Organization, Official Managed Agent, and opt-in content-free quality contracts for AgentEra Studio.
 servers:
   - url: https://accounts.agentera.example
 paths:
@@ -2628,6 +2628,77 @@ paths:
           $ref: '#/components/responses/OfficialAgentError'
         '503':
           $ref: '#/components/responses/OfficialAgentError'
+  /api/v1/official-agent-quality/events:
+    post:
+      operationId: submitOfficialAgentQualityEvent
+      description: Accepts one signed, content-free quality envelope for an eligible fixed official RuntimeBinding. Account and device identifiers are never accepted in the body; the server derives a rotating purpose-specific pseudonym after authentication. The maximum request body is 16384 bytes.
+      security:
+        - desktopAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OfficialQualityEventRequest'
+      responses:
+        '202':
+          description: The sanitized event was accepted or exactly replayed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OfficialQualityEventReceipt'
+        '400':
+          $ref: '#/components/responses/OfficialQualityInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OfficialQualitySessionRevoked'
+        '403':
+          $ref: '#/components/responses/OfficialQualityForbidden'
+        '409':
+          $ref: '#/components/responses/OfficialQualityConflict'
+        '413':
+          $ref: '#/components/responses/OfficialQualityInvalidRequest'
+        '429':
+          $ref: '#/components/responses/OfficialQualityRateLimited'
+        '503':
+          $ref: '#/components/responses/OfficialQualityServiceUnavailable'
+  /api/v1/official-agent-quality/consents/{purpose}/{action}:
+    post:
+      operationId: setOfficialAgentQualityConsent
+      description: Grants or revokes one independently versioned quality purpose. Revocation stops future collection and schedules bounded retained-subject purging; it never changes local Agent execution or learning.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - name: purpose
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [official_quality_metrics, official_explicit_feedback]
+        - name: action
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [grant, revoke]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OfficialQualityConsentRequest'
+      responses:
+        '200':
+          description: Durable consent receipt for the exact purpose.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OfficialQualityConsentReceipt'
+        '400':
+          $ref: '#/components/responses/OfficialQualityInvalidRequest'
+        '401':
+          $ref: '#/components/responses/OfficialQualitySessionRevoked'
+        '503':
+          $ref: '#/components/responses/OfficialQualityServiceUnavailable'
   /api/v1/agent-installations:
     post:
       operationId: createUserAgentInstallation
@@ -2879,6 +2950,355 @@ paths:
           $ref: '#/components/responses/InvalidRequest'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/encrypted-profile-backups:
+    get:
+      operationId: listEncryptedProfileBackups
+      description: Lists only immutable sealed ciphertext backups for the authenticated account.
+      security:
+        - desktopAccessToken: []
+      responses:
+        '200':
+          description: Bounded sealed-backup metadata; no decrypted manifest or local path data.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EncryptedBackupListResponse'
+        '401':
+          $ref: '#/components/responses/EncryptedBackupAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/EncryptedBackupForbidden'
+        '503':
+          $ref: '#/components/responses/EncryptedBackupServiceUnavailable'
+    post:
+      operationId: initiateEncryptedProfileBackup
+      description: Reserves an immutable signed ciphertext inventory for one USER-owned Installation.
+      security:
+        - desktopAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EncryptedBackupInitiateRequest'
+      responses:
+        '201':
+          description: New bounded upload initiated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EncryptedBackupInitiateResponse'
+        '200':
+          description: Exact signed initiation replay.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EncryptedBackupInitiateResponse'
+        '400':
+          $ref: '#/components/responses/EncryptedBackupInvalidRequest'
+        '401':
+          $ref: '#/components/responses/EncryptedBackupAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/EncryptedBackupForbidden'
+        '409':
+          $ref: '#/components/responses/EncryptedBackupConflict'
+        '413':
+          $ref: '#/components/responses/EncryptedBackupQuotaExceeded'
+        '503':
+          $ref: '#/components/responses/EncryptedBackupServiceUnavailable'
+  /api/v1/encrypted-profile-backups/devices:
+    get:
+      operationId: listEncryptedBackupDevices
+      description: Lists the same account's latest signed X25519 backup public registrations; no private key or registration signature is returned.
+      security:
+        - desktopAccessToken: []
+      responses:
+        '200':
+          description: Account-scoped backup device registrations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EncryptedBackupDeviceList'
+        '400':
+          $ref: '#/components/responses/EncryptedBackupInvalidRequest'
+        '401':
+          $ref: '#/components/responses/EncryptedBackupAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/EncryptedBackupForbidden'
+        '503':
+          $ref: '#/components/responses/EncryptedBackupServiceUnavailable'
+  /api/v1/encrypted-profile-backups/devices/current:
+    put:
+      operationId: registerCurrentEncryptedBackupDevice
+      description: Registers or monotonically replaces the current device X25519 public key after Ed25519 proof.
+      security:
+        - desktopAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EncryptedBackupDeviceRegistrationRequest'
+      responses:
+        '200':
+          description: Current backup device registration.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EncryptedBackupDeviceRegistrationResponse'
+        '400':
+          $ref: '#/components/responses/EncryptedBackupInvalidRequest'
+        '401':
+          $ref: '#/components/responses/EncryptedBackupAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/EncryptedBackupForbidden'
+        '409':
+          $ref: '#/components/responses/EncryptedBackupConflict'
+        '503':
+          $ref: '#/components/responses/EncryptedBackupServiceUnavailable'
+  /api/v1/encrypted-profile-backups/devices/{device_id}:
+    delete:
+      operationId: revokeEncryptedBackupDevice
+      description: Destroys every server-held root-key envelope for the selected same-account device.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/EncryptedBackupDeviceID'
+      responses:
+        '204':
+          description: Device envelopes destroyed.
+        '400':
+          $ref: '#/components/responses/EncryptedBackupInvalidRequest'
+        '401':
+          $ref: '#/components/responses/EncryptedBackupAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/EncryptedBackupForbidden'
+        '404':
+          $ref: '#/components/responses/EncryptedBackupNotFound'
+        '503':
+          $ref: '#/components/responses/EncryptedBackupServiceUnavailable'
+  /api/v1/encrypted-profile-backups/{backup_id}:
+    get:
+      operationId: getEncryptedProfileBackup
+      description: Returns signed ciphertext inventory and only opaque encrypted restore envelopes.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/EncryptedBackupID'
+      responses:
+        '200':
+          description: Immutable ciphertext backup detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EncryptedBackupDetail'
+        '400':
+          $ref: '#/components/responses/EncryptedBackupInvalidRequest'
+        '401':
+          $ref: '#/components/responses/EncryptedBackupAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/EncryptedBackupForbidden'
+        '404':
+          $ref: '#/components/responses/EncryptedBackupNotFound'
+        '503':
+          $ref: '#/components/responses/EncryptedBackupServiceUnavailable'
+    delete:
+      operationId: deleteEncryptedProfileBackup
+      description: Destroys key envelopes transactionally before idempotent ciphertext cleanup.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/EncryptedBackupID'
+      responses:
+        '204':
+          description: Cryptographic deletion and current object cleanup completed.
+        '400':
+          $ref: '#/components/responses/EncryptedBackupInvalidRequest'
+        '401':
+          $ref: '#/components/responses/EncryptedBackupAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/EncryptedBackupForbidden'
+        '404':
+          $ref: '#/components/responses/EncryptedBackupNotFound'
+        '409':
+          $ref: '#/components/responses/EncryptedBackupConflict'
+        '503':
+          $ref: '#/components/responses/EncryptedBackupServiceUnavailable'
+  /api/v1/encrypted-profile-backups/{backup_id}/chunks/{chunk_index}:
+    put:
+      operationId: uploadEncryptedProfileBackupChunk
+      description: Uploads one exact ciphertext chunk from the signed immutable inventory.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/EncryptedBackupID'
+        - $ref: '#/components/parameters/EncryptedBackupChunkIndex'
+        - $ref: '#/components/parameters/EncryptedBackupCiphertextSize'
+        - $ref: '#/components/parameters/EncryptedBackupCiphertextDigest'
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              minLength: 17
+              maxLength: 9437200
+      responses:
+        '204':
+          description: Exact ciphertext chunk stored or verified as an identical replay.
+        '400':
+          $ref: '#/components/responses/EncryptedBackupInvalidRequest'
+        '401':
+          $ref: '#/components/responses/EncryptedBackupAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/EncryptedBackupForbidden'
+        '404':
+          $ref: '#/components/responses/EncryptedBackupNotFound'
+        '409':
+          $ref: '#/components/responses/EncryptedBackupConflict'
+        '410':
+          $ref: '#/components/responses/EncryptedBackupExpired'
+        '503':
+          $ref: '#/components/responses/EncryptedBackupServiceUnavailable'
+  /api/v1/encrypted-profile-backups/{backup_id}/manifest:
+    put:
+      operationId: uploadEncryptedProfileBackupManifest
+      description: Uploads the authenticated encrypted manifest bytes; Cloud never parses them.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/EncryptedBackupID'
+        - $ref: '#/components/parameters/EncryptedBackupCiphertextSize'
+        - $ref: '#/components/parameters/EncryptedBackupCiphertextDigest'
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              minLength: 17
+              maxLength: 16777216
+      responses:
+        '204':
+          description: Exact encrypted manifest stored or verified as an identical replay.
+        '400':
+          $ref: '#/components/responses/EncryptedBackupInvalidRequest'
+        '401':
+          $ref: '#/components/responses/EncryptedBackupAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/EncryptedBackupForbidden'
+        '404':
+          $ref: '#/components/responses/EncryptedBackupNotFound'
+        '409':
+          $ref: '#/components/responses/EncryptedBackupConflict'
+        '410':
+          $ref: '#/components/responses/EncryptedBackupExpired'
+        '503':
+          $ref: '#/components/responses/EncryptedBackupServiceUnavailable'
+  /api/v1/encrypted-profile-backups/{backup_id}/seal:
+    post:
+      operationId: sealEncryptedProfileBackup
+      description: Verifies every expected ciphertext object and atomically makes the backup restorable.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/EncryptedBackupID'
+      responses:
+        '200':
+          description: Backup sealed or exact seal replay acknowledged.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EncryptedBackupSealResponse'
+        '400':
+          $ref: '#/components/responses/EncryptedBackupInvalidRequest'
+        '401':
+          $ref: '#/components/responses/EncryptedBackupAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/EncryptedBackupForbidden'
+        '404':
+          $ref: '#/components/responses/EncryptedBackupNotFound'
+        '409':
+          $ref: '#/components/responses/EncryptedBackupConflict'
+        '410':
+          $ref: '#/components/responses/EncryptedBackupExpired'
+        '413':
+          $ref: '#/components/responses/EncryptedBackupQuotaExceeded'
+        '503':
+          $ref: '#/components/responses/EncryptedBackupServiceUnavailable'
+  /api/v1/encrypted-profile-backups/{backup_id}/objects/{object_id}:
+    get:
+      operationId: downloadEncryptedProfileBackupObject
+      description: Downloads one same-account ciphertext object without any phrase or decryption key.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/EncryptedBackupID'
+        - $ref: '#/components/parameters/EncryptedBackupObjectID'
+      responses:
+        '200':
+          description: Exact stored ciphertext bytes.
+          headers:
+            X-AgentEra-Ciphertext-SHA256:
+              required: true
+              schema:
+                $ref: '#/components/schemas/EncryptedBackupDigest'
+            Content-Length:
+              required: true
+              schema:
+                type: integer
+                format: int64
+                minimum: 17
+                maximum: 16777216
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/EncryptedBackupInvalidRequest'
+        '401':
+          $ref: '#/components/responses/EncryptedBackupAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/EncryptedBackupForbidden'
+        '404':
+          $ref: '#/components/responses/EncryptedBackupNotFound'
+        '503':
+          $ref: '#/components/responses/EncryptedBackupServiceUnavailable'
+  /api/v1/encrypted-profile-backups/{backup_id}/device-envelopes:
+    post:
+      operationId: addEncryptedBackupDeviceEnvelope
+      description: Adds one opaque HPKE root-key envelope for an active same-account backup device.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/EncryptedBackupID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EncryptedBackupAddDeviceEnvelopeRequest'
+      responses:
+        '200':
+          description: Device envelope stored or exact replay acknowledged.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EncryptedBackupAddDeviceEnvelopeResponse'
+        '400':
+          $ref: '#/components/responses/EncryptedBackupInvalidRequest'
+        '401':
+          $ref: '#/components/responses/EncryptedBackupAuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/EncryptedBackupForbidden'
+        '404':
+          $ref: '#/components/responses/EncryptedBackupNotFound'
+        '409':
+          $ref: '#/components/responses/EncryptedBackupConflict'
+        '503':
+          $ref: '#/components/responses/EncryptedBackupServiceUnavailable'
   /.well-known/agentera-signing-keys.json:
     get:
       operationId: getAgentEraSigningKeys
@@ -3161,6 +3581,59 @@ components:
       schema:
         type: string
         format: uuid
+    EncryptedBackupID:
+      name: backup_id
+      in: path
+      required: true
+      description: Canonical nonzero UUID for the same-account encrypted backup.
+      schema:
+        type: string
+        format: uuid
+        pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    EncryptedBackupDeviceID:
+      name: device_id
+      in: path
+      required: true
+      description: Canonical nonzero UUID for a same-account authenticated device.
+      schema:
+        type: string
+        format: uuid
+        pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    EncryptedBackupObjectID:
+      name: object_id
+      in: path
+      required: true
+      description: Opaque random lowercase hexadecimal object identifier.
+      schema:
+        type: string
+        minLength: 64
+        maxLength: 64
+        pattern: '^[0-9a-f]{64}$'
+    EncryptedBackupChunkIndex:
+      name: chunk_index
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 0
+        maximum: 131071
+    EncryptedBackupCiphertextSize:
+      name: X-AgentEra-Ciphertext-Size
+      in: header
+      required: true
+      description: Canonical decimal byte length that must equal Content-Length and the signed inventory.
+      schema:
+        type: integer
+        format: int64
+        minimum: 17
+        maximum: 16777216
+    EncryptedBackupCiphertextDigest:
+      name: X-AgentEra-Ciphertext-SHA256
+      in: header
+      required: true
+      description: Raw-base64url SHA-256 of the exact ciphertext request body.
+      schema:
+        $ref: '#/components/schemas/EncryptedBackupDigest'
   schemas:
     IdentityKind:
       type: string
@@ -4551,6 +5024,143 @@ components:
           format: date-time
         replayed:
           type: boolean
+    OfficialQualityEventRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - protocol_version
+        - consent_version
+        - event_id
+        - platform_id
+        - definition_id
+        - version_id
+        - release_id
+        - release_revision_id
+        - desktop_version
+        - runtime_version
+        - event_day
+        - kind
+        - result
+        - latency_bucket
+        - total_token_bucket
+        - crash_code
+        - feedback_rating
+        - feedback_reason_codes
+        - binding_proof
+        - device_signature
+      properties:
+        protocol_version:
+          type: integer
+          enum: [1]
+        consent_version:
+          type: integer
+          format: int64
+          minimum: 1
+        event_id:
+          type: string
+          format: uuid
+          description: Client-generated canonical UUIDv7 used for exact replay handling.
+          pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+        platform_id: { type: string, format: uuid }
+        definition_id: { type: string, format: uuid }
+        version_id: { type: string, format: uuid }
+        release_id: { type: string, format: uuid }
+        release_revision_id: { type: string, format: uuid }
+        desktop_version:
+          type: string
+          minLength: 1
+          maxLength: 128
+        runtime_version:
+          type: string
+          minLength: 1
+          maxLength: 128
+        event_day:
+          type: string
+          format: date
+          description: UTC day no more than 30 days old and never in the future.
+        kind:
+          type: string
+          enum: [metric, explicit_feedback]
+        result:
+          type: string
+          enum: [success, user_cancelled, model_error, tool_error, runtime_crash, timeout]
+        latency_bucket:
+          type: string
+          enum: [lt_1s, 1s_5s, 5s_15s, 15s_60s, 60s_180s, gte_180s]
+        total_token_bucket:
+          type: string
+          enum: ['0', 1_1k, 1k_4k, 4k_16k, 16k_64k, gte_64k]
+        crash_code:
+          type: string
+          nullable: true
+          enum: [gateway_unavailable, runtime_process_exit, runtime_protocol_failure, unclassified_runtime_failure]
+          description: Required as null unless result is runtime_crash.
+        feedback_rating:
+          type: string
+          nullable: true
+          enum: [helpful, not_helpful]
+          description: Required as null for metric events.
+        feedback_reason_codes:
+          type: array
+          maxItems: 6
+          uniqueItems: true
+          items:
+            type: string
+            enum: [incorrect, incomplete, tool_failed, too_slow, unsafe_or_inappropriate, other_without_text]
+          description: Non-null fixed-code list; metric events require an empty list.
+        binding_proof:
+          type: string
+          format: uuid
+          description: Opaque proof of the fixed official RuntimeBinding; not a session identifier.
+        device_signature:
+          type: string
+          minLength: 86
+          maxLength: 86
+          pattern: '^[A-Za-z0-9_-]{86}$'
+          description: Raw-base64url Ed25519 signature over the canonical content-free envelope.
+    OfficialQualityEventReceipt:
+      type: object
+      additionalProperties: false
+      required: [event_id, status]
+      properties:
+        event_id: { type: string, format: uuid }
+        status: { type: string, enum: [accepted, replayed] }
+    OfficialQualityConsentRequest:
+      type: object
+      additionalProperties: false
+      required: [consent_version]
+      properties:
+        consent_version:
+          type: integer
+          format: int64
+          minimum: 1
+    OfficialQualityConsentReceipt:
+      type: object
+      additionalProperties: false
+      required: [purpose, consent_version, state, revision, recorded_at, replayed]
+      properties:
+        purpose: { type: string, enum: [official_quality_metrics, official_explicit_feedback] }
+        consent_version: { type: integer, format: int64, minimum: 1 }
+        state: { type: string, enum: [granted, revoked] }
+        revision: { type: integer, format: int64, minimum: 1 }
+        recorded_at: { type: string, format: date-time }
+        replayed: { type: boolean }
+    OfficialQualityErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string
+          enum:
+            - invalid_request
+            - session_revoked
+            - consent_required
+            - not_eligible
+            - rate_limited
+            - privacy_rejected
+            - event_conflict
+            - service_unavailable
     OfficialAgentSummary:
       type: object
       additionalProperties: false
@@ -5800,6 +6410,571 @@ components:
               type: string
               minLength: 1
               maxLength: 128
+    EncryptedBackupDigest:
+      type: string
+      description: Raw-base64url SHA-256 digest.
+      minLength: 43
+      maxLength: 43
+      pattern: '^[A-Za-z0-9_-]{43}$'
+    EncryptedBackupOpaqueEnvelope:
+      type: string
+      description: Opaque authenticated-encryption bytes encoded as raw base64url.
+      minLength: 64
+      maxLength: 5462
+      pattern: '^[A-Za-z0-9_-]+$'
+    EncryptedBackupSignature:
+      type: string
+      description: Raw-base64url Ed25519 signature over the canonical public envelope.
+      minLength: 86
+      maxLength: 86
+      pattern: '^[A-Za-z0-9_-]{86}$'
+    EncryptedBackupState:
+      type: string
+      enum: [initiated, uploading, sealed, deleting, deleted, expired]
+    EncryptedBackupDeviceList:
+      type: object
+      additionalProperties: false
+      required: [devices]
+      properties:
+        devices:
+          type: array
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/EncryptedBackupDevice'
+    EncryptedBackupDevice:
+      type: object
+      additionalProperties: false
+      required:
+        - device_id
+        - key_epoch
+        - revision
+        - status
+        - public_key
+        - registered_at
+        - updated_at
+        - revoked_at
+      properties:
+        device_id:
+          type: string
+          format: uuid
+        key_epoch:
+          type: integer
+          format: int64
+          minimum: 1
+        revision:
+          type: integer
+          format: int64
+          minimum: 1
+        status:
+          type: string
+          enum: [active, revoked]
+        public_key:
+          type: string
+          description: Raw-base64url 32-byte X25519 public key; no private key or registration signature is returned.
+          minLength: 43
+          maxLength: 43
+          pattern: '^[A-Za-z0-9_-]{43}$'
+        registered_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+    EncryptedBackupDeviceRegistrationRequest:
+      type: object
+      additionalProperties: false
+      required: [key_epoch, revision, public_key, signature]
+      properties:
+        key_epoch:
+          type: integer
+          format: int64
+          minimum: 1
+        revision:
+          type: integer
+          format: int64
+          minimum: 1
+        public_key:
+          type: string
+          description: Raw-base64url 32-byte X25519 public key; no secret key is accepted.
+          minLength: 43
+          maxLength: 43
+          pattern: '^[A-Za-z0-9_-]{43}$'
+        signature:
+          $ref: '#/components/schemas/EncryptedBackupSignature'
+    EncryptedBackupDeviceRegistrationResponse:
+      type: object
+      additionalProperties: false
+      required: [device_id, key_epoch, revision, status, replayed]
+      properties:
+        device_id:
+          type: string
+          format: uuid
+        key_epoch:
+          type: integer
+          format: int64
+          minimum: 1
+        revision:
+          type: integer
+          format: int64
+          minimum: 1
+        status:
+          type: string
+          enum: [active, revoked]
+        replayed:
+          type: boolean
+    EncryptedBackupObjectSpec:
+      type: object
+      additionalProperties: false
+      required: [object_id, ciphertext_digest, ciphertext_size]
+      properties:
+        object_id:
+          type: string
+          minLength: 64
+          maxLength: 64
+          pattern: '^[0-9a-f]{64}$'
+        ciphertext_digest:
+          $ref: '#/components/schemas/EncryptedBackupDigest'
+        ciphertext_size:
+          type: integer
+          format: int64
+          minimum: 17
+          maximum: 16777216
+    EncryptedBackupChunkSpec:
+      type: object
+      additionalProperties: false
+      required: [index, object_id, ciphertext_digest, ciphertext_size]
+      properties:
+        index:
+          type: integer
+          minimum: 0
+          maximum: 131071
+        object_id:
+          type: string
+          minLength: 64
+          maxLength: 64
+          pattern: '^[0-9a-f]{64}$'
+        ciphertext_digest:
+          $ref: '#/components/schemas/EncryptedBackupDigest'
+        ciphertext_size:
+          type: integer
+          format: int64
+          minimum: 17
+          maximum: 9437200
+    EncryptedBackupPublicEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - format_version
+        - cipher_suite
+        - backup_id
+        - profile_lineage_id
+        - parent_backup_id
+        - source_device_id
+        - source_installation_id
+        - source_definition_id
+        - source_version_id
+        - base_owner_scope
+        - key_epoch
+        - created_at
+        - manifest
+        - chunks
+        - total_ciphertext_size
+        - recovery_envelope_digest
+        - wrapped_data_key_digest
+        - source_device_envelope_digest
+      properties:
+        format_version:
+          type: integer
+          enum: [1]
+        cipher_suite:
+          type: string
+          enum: [HPKE-X25519-HKDF-SHA256-AES256GCM+ARGON2ID+AES256GCM]
+        backup_id:
+          type: string
+          format: uuid
+        profile_lineage_id:
+          type: string
+          format: uuid
+        parent_backup_id:
+          type: string
+          format: uuid
+          nullable: true
+        source_device_id:
+          type: string
+          format: uuid
+        source_installation_id:
+          type: string
+          format: uuid
+        source_definition_id:
+          type: string
+          format: uuid
+        source_version_id:
+          type: string
+          format: uuid
+        base_owner_scope:
+          type: string
+          enum: [USER]
+        key_epoch:
+          type: integer
+          format: int64
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
+        manifest:
+          $ref: '#/components/schemas/EncryptedBackupObjectSpec'
+        chunks:
+          type: array
+          minItems: 1
+          maxItems: 131072
+          items:
+            $ref: '#/components/schemas/EncryptedBackupChunkSpec'
+        total_ciphertext_size:
+          type: integer
+          format: int64
+          minimum: 17
+          maximum: 1073741824
+        recovery_envelope_digest:
+          $ref: '#/components/schemas/EncryptedBackupDigest'
+        wrapped_data_key_digest:
+          $ref: '#/components/schemas/EncryptedBackupDigest'
+        source_device_envelope_digest:
+          $ref: '#/components/schemas/EncryptedBackupDigest'
+    EncryptedBackupRecoveryParameters:
+      type: object
+      additionalProperties: false
+      required: [salt, memory_kib, iterations, parallelism]
+      properties:
+        salt:
+          type: string
+          description: Raw-base64url random Argon2id salt.
+          minLength: 22
+          maxLength: 43
+          pattern: '^[A-Za-z0-9_-]+$'
+        memory_kib:
+          type: integer
+          enum: [65536]
+        iterations:
+          type: integer
+          enum: [3]
+        parallelism:
+          type: integer
+          enum: [1]
+    EncryptedBackupInitiateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - envelope
+        - signature
+        - recovery
+        - recovery_root_key_envelope
+        - wrapped_data_key
+        - source_device_root_key_envelope
+      properties:
+        envelope:
+          $ref: '#/components/schemas/EncryptedBackupPublicEnvelope'
+        signature:
+          $ref: '#/components/schemas/EncryptedBackupSignature'
+        recovery:
+          $ref: '#/components/schemas/EncryptedBackupRecoveryParameters'
+        recovery_root_key_envelope:
+          $ref: '#/components/schemas/EncryptedBackupOpaqueEnvelope'
+        wrapped_data_key:
+          $ref: '#/components/schemas/EncryptedBackupOpaqueEnvelope'
+        source_device_root_key_envelope:
+          $ref: '#/components/schemas/EncryptedBackupOpaqueEnvelope'
+    EncryptedBackupInitiateResponse:
+      type: object
+      additionalProperties: false
+      required: [backup_id, state, upload_expires_at, replayed]
+      properties:
+        backup_id:
+          type: string
+          format: uuid
+        state:
+          $ref: '#/components/schemas/EncryptedBackupState'
+        upload_expires_at:
+          type: string
+          format: date-time
+        replayed:
+          type: boolean
+    EncryptedBackupSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - backup_id
+        - profile_lineage_id
+        - parent_backup_id
+        - source_device_id
+        - source_installation_id
+        - source_definition_id
+        - source_version_id
+        - format_version
+        - cipher_suite
+        - state
+        - key_epoch
+        - chunk_count
+        - total_ciphertext_size
+        - created_at
+        - sealed_at
+      properties:
+        backup_id:
+          type: string
+          format: uuid
+        profile_lineage_id:
+          type: string
+          format: uuid
+        parent_backup_id:
+          type: string
+          format: uuid
+          nullable: true
+        source_device_id:
+          type: string
+          format: uuid
+        source_installation_id:
+          type: string
+          format: uuid
+        source_definition_id:
+          type: string
+          format: uuid
+        source_version_id:
+          type: string
+          format: uuid
+        format_version:
+          type: integer
+          enum: [1]
+        cipher_suite:
+          type: string
+          enum: [HPKE-X25519-HKDF-SHA256-AES256GCM+ARGON2ID+AES256GCM]
+        state:
+          $ref: '#/components/schemas/EncryptedBackupState'
+        key_epoch:
+          type: integer
+          format: int64
+          minimum: 1
+        chunk_count:
+          type: integer
+          minimum: 1
+          maximum: 131072
+        total_ciphertext_size:
+          type: integer
+          format: int64
+          minimum: 17
+          maximum: 1073741824
+        created_at:
+          type: string
+          format: date-time
+        sealed_at:
+          type: string
+          format: date-time
+          nullable: true
+    EncryptedBackupListResponse:
+      type: object
+      additionalProperties: false
+      required: [backups]
+      properties:
+        backups:
+          type: array
+          maxItems: 10000
+          items:
+            $ref: '#/components/schemas/EncryptedBackupSummary'
+    EncryptedBackupCurrentDeviceEnvelope:
+      type: object
+      additionalProperties: false
+      required: [device_id, key_epoch, root_key_envelope, root_key_envelope_digest]
+      properties:
+        device_id:
+          type: string
+          format: uuid
+        key_epoch:
+          type: integer
+          format: int64
+          minimum: 1
+        root_key_envelope:
+          $ref: '#/components/schemas/EncryptedBackupOpaqueEnvelope'
+        root_key_envelope_digest:
+          $ref: '#/components/schemas/EncryptedBackupDigest'
+    EncryptedBackupDetail:
+      type: object
+      additionalProperties: false
+      required:
+        - backup_id
+        - profile_lineage_id
+        - parent_backup_id
+        - source_device_id
+        - source_installation_id
+        - source_definition_id
+        - source_version_id
+        - format_version
+        - cipher_suite
+        - state
+        - key_epoch
+        - chunk_count
+        - total_ciphertext_size
+        - created_at
+        - sealed_at
+        - manifest
+        - chunks
+        - public_envelope_digest
+        - public_signature
+        - source_device_public_key
+        - source_device_envelope_digest
+        - recovery
+        - recovery_root_key_envelope
+        - wrapped_data_key
+        - current_device_envelope
+      properties:
+        backup_id:
+          type: string
+          format: uuid
+        profile_lineage_id:
+          type: string
+          format: uuid
+        parent_backup_id:
+          type: string
+          format: uuid
+          nullable: true
+        source_device_id:
+          type: string
+          format: uuid
+        source_installation_id:
+          type: string
+          format: uuid
+        source_definition_id:
+          type: string
+          format: uuid
+        source_version_id:
+          type: string
+          format: uuid
+        format_version:
+          type: integer
+          enum: [1]
+        cipher_suite:
+          type: string
+          enum: [HPKE-X25519-HKDF-SHA256-AES256GCM+ARGON2ID+AES256GCM]
+        state:
+          $ref: '#/components/schemas/EncryptedBackupState'
+        key_epoch:
+          type: integer
+          format: int64
+          minimum: 1
+        chunk_count:
+          type: integer
+          minimum: 1
+          maximum: 131072
+        total_ciphertext_size:
+          type: integer
+          format: int64
+          minimum: 17
+          maximum: 1073741824
+        created_at:
+          type: string
+          format: date-time
+        sealed_at:
+          type: string
+          format: date-time
+          nullable: true
+        manifest:
+          $ref: '#/components/schemas/EncryptedBackupObjectSpec'
+        chunks:
+          type: array
+          minItems: 1
+          maxItems: 131072
+          items:
+            $ref: '#/components/schemas/EncryptedBackupChunkSpec'
+        public_envelope_digest:
+          $ref: '#/components/schemas/EncryptedBackupDigest'
+        public_signature:
+          $ref: '#/components/schemas/EncryptedBackupSignature'
+        source_device_public_key:
+          type: string
+          description: Raw-base64url 32-byte Ed25519 key used only to verify the immutable public envelope signature.
+          minLength: 43
+          maxLength: 43
+          pattern: '^[A-Za-z0-9_-]{43}$'
+        source_device_envelope_digest:
+          $ref: '#/components/schemas/EncryptedBackupDigest'
+        recovery:
+          $ref: '#/components/schemas/EncryptedBackupRecoveryParameters'
+        recovery_root_key_envelope:
+          $ref: '#/components/schemas/EncryptedBackupOpaqueEnvelope'
+        wrapped_data_key:
+          $ref: '#/components/schemas/EncryptedBackupOpaqueEnvelope'
+        current_device_envelope:
+          allOf:
+            - $ref: '#/components/schemas/EncryptedBackupCurrentDeviceEnvelope'
+          nullable: true
+    EncryptedBackupAddDeviceEnvelopeRequest:
+      type: object
+      additionalProperties: false
+      required: [device_id, key_epoch, root_key_envelope, root_key_envelope_digest]
+      properties:
+        device_id:
+          type: string
+          format: uuid
+        key_epoch:
+          type: integer
+          format: int64
+          minimum: 1
+        root_key_envelope:
+          $ref: '#/components/schemas/EncryptedBackupOpaqueEnvelope'
+        root_key_envelope_digest:
+          $ref: '#/components/schemas/EncryptedBackupDigest'
+    EncryptedBackupAddDeviceEnvelopeResponse:
+      type: object
+      additionalProperties: false
+      required: [backup_id, device_id, key_epoch, replayed]
+      properties:
+        backup_id:
+          type: string
+          format: uuid
+        device_id:
+          type: string
+          format: uuid
+        key_epoch:
+          type: integer
+          format: int64
+          minimum: 1
+        replayed:
+          type: boolean
+    EncryptedBackupSealResponse:
+      type: object
+      additionalProperties: false
+      required: [backup_id, state, sealed_at, replayed]
+      properties:
+        backup_id:
+          type: string
+          format: uuid
+        state:
+          $ref: '#/components/schemas/EncryptedBackupState'
+        sealed_at:
+          type: string
+          format: date-time
+          nullable: true
+        replayed:
+          type: boolean
+    EncryptedBackupErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string
+          enum:
+            - invalid_request
+            - invalid_signature
+            - session_revoked
+            - not_authorized
+            - backup_not_found
+            - backup_conflict
+            - upload_expired
+            - quota_exceeded
+            - feature_unavailable
+            - service_unavailable
     SigningKeySet:
       type: object
       additionalProperties: false
@@ -5915,6 +7090,54 @@ components:
               type: string
               format: uuid
   responses:
+    EncryptedBackupInvalidRequest:
+      description: The encrypted backup request, binary headers, identifier, or exact ciphertext metadata is invalid.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/EncryptedBackupErrorEnvelope'
+    EncryptedBackupAuthenticationRequired:
+      description: The desktop access token is absent, malformed, expired, or revoked.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/EncryptedBackupErrorEnvelope'
+    EncryptedBackupForbidden:
+      description: The account or current device is not authorized for this encrypted backup operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/EncryptedBackupErrorEnvelope'
+    EncryptedBackupNotFound:
+      description: The encrypted backup or ciphertext object is absent or outside the authenticated account.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/EncryptedBackupErrorEnvelope'
+    EncryptedBackupConflict:
+      description: Immutable inventory, lifecycle, signature replay, device revision, or completeness conflicts with the request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/EncryptedBackupErrorEnvelope'
+    EncryptedBackupExpired:
+      description: The bounded ciphertext upload window expired before sealing.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/EncryptedBackupErrorEnvelope'
+    EncryptedBackupQuotaExceeded:
+      description: The one GiB backup, three-backup lineage, or five GiB account ciphertext quota was exceeded.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/EncryptedBackupErrorEnvelope'
+    EncryptedBackupServiceUnavailable:
+      description: Encrypted backup storage is disabled or a required fail-closed dependency is unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/EncryptedBackupErrorEnvelope'
     InvalidRequest:
       description: The request or verification receipt is invalid.
       content:
@@ -5981,6 +7204,42 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorEnvelope'
+    OfficialQualityInvalidRequest:
+      description: The bounded event, consent body, content type, signature encoding, or request size is invalid or privacy-rejected.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OfficialQualityErrorEnvelope'
+    OfficialQualitySessionRevoked:
+      description: The desktop access token is absent, malformed, expired, or revoked.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OfficialQualityErrorEnvelope'
+    OfficialQualityForbidden:
+      description: Consent is missing or the supplied official release provenance or device signature is ineligible.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OfficialQualityErrorEnvelope'
+    OfficialQualityConflict:
+      description: The event identifier or fixed RuntimeBinding proof conflicts with a previously accepted envelope.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OfficialQualityErrorEnvelope'
+    OfficialQualityRateLimited:
+      description: The independent purpose-specific request or rotating-subject limit was exceeded.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OfficialQualityErrorEnvelope'
+    OfficialQualityServiceUnavailable:
+      description: Quality collection could not prove a safe result; Agent execution remains independent.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OfficialQualityErrorEnvelope'
     ExperienceCandidateError:
       description: Candidate validation, DLP, visibility, Workspace lifecycle, terminal review, idempotency, or service failure without private evidence text.
       content:

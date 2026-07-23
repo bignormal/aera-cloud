@@ -257,6 +257,8 @@ func (r *ControlRepository) ListOfficialAuditEvents(
 		       (metadata->>'actor_admin_id')::uuid, metadata->>'actor_admin_role', created_at
 		FROM audit_events
 		WHERE event_type LIKE 'official\_%' ESCAPE '\'
+		  AND metadata ? 'actor_admin_id'
+		  AND metadata ? 'actor_admin_role'
 		  AND ($1::timestamptz IS NULL OR (created_at, id) < ($1, $2::uuid))
 		ORDER BY created_at DESC, id DESC
 		LIMIT $3

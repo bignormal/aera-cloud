@@ -205,6 +205,68 @@ func TestDeviceRoutesAreMountedWithoutChangingHealthContract(t *testing.T) {
 	}
 }
 
+func TestOfficialQualityRoutesAreMountedWithoutCapturingOtherAPIRoutes(t *testing.T) {
+	qualityHandler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if !strings.HasPrefix(request.URL.Path, "/api/v1/official-agent-quality/") {
+			t.Errorf("official quality path = %q", request.URL.Path)
+		}
+		response.WriteHeader(http.StatusTeapot)
+	})
+	handler := New(Dependencies{
+		PostgreSQL: &stubHealthChecker{}, Redis: &stubHealthChecker{}, OfficialQuality: qualityHandler,
+	})
+	for _, path := range []string{
+		"/api/v1/official-agent-quality/events",
+		"/api/v1/official-agent-quality/consents/official_quality_metrics/grant",
+		"/api/v1/official-agent-quality/consents/official_explicit_feedback/revoke",
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, nil))
+		if response.Code != http.StatusTeapot {
+			t.Fatalf("path %s status = %d, want %d", path, response.Code, http.StatusTeapot)
+		}
+	}
+	unrelated := httptest.NewRecorder()
+	handler.ServeHTTP(unrelated, httptest.NewRequest(http.MethodPost, "/api/v1/official-agents", nil))
+	if unrelated.Code != http.StatusNotFound {
+		t.Fatalf("unrelated API status = %d, want %d", unrelated.Code, http.StatusNotFound)
+	}
+}
+
+func TestEncryptedBackupRoutesAreMountedWithoutCapturingOtherAPIRoutes(t *testing.T) {
+	backupHandler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if !strings.HasPrefix(request.URL.Path, "/api/v1/encrypted-profile-backups") {
+			t.Errorf("encrypted backup path = %q", request.URL.Path)
+		}
+		response.WriteHeader(http.StatusTeapot)
+	})
+	handler := New(Dependencies{
+		PostgreSQL:      &stubHealthChecker{},
+		Redis:           &stubHealthChecker{},
+		EncryptedBackup: backupHandler,
+	})
+	for _, route := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodGet, path: "/api/v1/encrypted-profile-backups"},
+		{method: http.MethodPut, path: "/api/v1/encrypted-profile-backups/devices/current"},
+		{method: http.MethodPut, path: "/api/v1/encrypted-profile-backups/backup-id/chunks/0"},
+		{method: http.MethodGet, path: "/api/v1/encrypted-profile-backups/backup-id/objects/object-id"},
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(route.method, route.path, nil))
+		if response.Code != http.StatusTeapot {
+			t.Fatalf("path %s status = %d, want %d", route.path, response.Code, http.StatusTeapot)
+		}
+	}
+	unrelated := httptest.NewRecorder()
+	handler.ServeHTTP(unrelated, httptest.NewRequest(http.MethodGet, "/api/v1/official-agents", nil))
+	if unrelated.Code != http.StatusNotFound {
+		t.Fatalf("unrelated API status = %d, want %d", unrelated.Code, http.StatusNotFound)
+	}
+}
+
 func TestAgentControlRoutesAreMountedWithoutCapturingOtherAPIRoutes(t *testing.T) {
 	routes := []struct {
 		method string

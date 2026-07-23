@@ -1,0 +1,165 @@
+name: Roll back or rehearse Cloud by digest
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: Protected target; staging always restores the current digest
+        required: true
+        type: choice
+        default: production
+        options:
+          - staging
+          - production
+      previous_candidate_run_id:
+        description: Candidate run containing the previous signed manifest
+        required: true
+      previous_source_sha:
+        description: Exact previous compatible source SHA
+        required: true
+      current_candidate_run_id:
+        description: Current candidate run ID required for a staging rehearsal
+        required: false
+      current_source_sha:
+        description: Current source SHA required for a staging rehearsal
+        required: false
+      restore_current_after_rehearsal:
+        description: Restore the exact current digest after the staging rollback proof
+        required: true
+        type: boolean
+        default: false
+      reason:
+        description: Human-readable rollback reason
+        required: true
+      ticket:
+        description: Approved incident or change ticket
+        required: true
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+
+concurrency:
+  group: cloud-${{ inputs.target_environment }}
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    name: Preserve schema and switch to previous exact digest
+    environment: ${{ inputs.target_environment }}
+    runs-on:
+      - self-hosted
+      - linux
+      - ${{ inputs.target_environment == 'production' && 'aera-production' || 'aera-staging' }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Validate rollback or rehearsal intent
+        shell: bash
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+          RESTORE_CURRENT: ${{ inputs.restore_current_after_rehearsal }}
+          CURRENT_CANDIDATE_RUN_ID: ${{ inputs.current_candidate_run_id }}
+          CURRENT_SOURCE_SHA: ${{ inputs.current_source_sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$TARGET_ENVIRONMENT" == staging ]]; then
+            test "$RESTORE_CURRENT" = true
+            [[ "$CURRENT_CANDIDATE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+            [[ "$CURRENT_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          else
+            test "$TARGET_ENVIRONMENT" = production
+            test "$RESTORE_CURRENT" = false
+          fi
+
+      - name: Download exact previous and rehearsal-current candidates
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIOUS_CANDIDATE_RUN_ID: ${{ inputs.previous_candidate_run_id }}
+          PREVIOUS_SOURCE_SHA: ${{ inputs.previous_source_sha }}
+          CURRENT_CANDIDATE_RUN_ID: ${{ inputs.current_candidate_run_id }}
+          CURRENT_SOURCE_SHA: ${{ inputs.current_source_sha }}
+          RESTORE_CURRENT: ${{ inputs.restore_current_after_rehearsal }}
+        run: |
+          set -euo pipefail
+          download_candidate() {
+            run_id="$1"
+            source_sha="$2"
+            destination="$3"
+            run=$(gh run view "$run_id" \
+              --json headSha,conclusion,workflowName)
+            test "$(jq -r '.headSha' <<<"$run")" = "$source_sha"
+            test "$(jq -r '.conclusion' <<<"$run")" = success
+            test "$(jq -r '.workflowName' <<<"$run")" = "Cloud candidate"
+            mkdir -p "$destination"
+            gh run download "$run_id" \
+              --name "cloud-candidate-$source_sha" \
+              --dir "$destination"
+            test -s "$destination/manifest.json"
+          }
+          mkdir -p "$RUNNER_TEMP/release-tools"
+          download_candidate "$PREVIOUS_CANDIDATE_RUN_ID" \
+            "$PREVIOUS_SOURCE_SHA" "$RUNNER_TEMP/previous-cloud-candidate"
+          if [[ "$RESTORE_CURRENT" == true ]]; then
+            download_candidate "$CURRENT_CANDIDATE_RUN_ID" \
+              "$CURRENT_SOURCE_SHA" "$RUNNER_TEMP/current-cloud-candidate"
+          fi
+          GOBIN="$RUNNER_TEMP/release-tools" \
+            go install github.com/sigstore/cosign/v2/cmd/cosign@v2.5.3
+          echo "$RUNNER_TEMP/release-tools" >> "$GITHUB_PATH"
+
+      - name: Verify compatibility and roll back without down migration
+        shell: bash
+        env:
+          AERA_RELEASE_PREVIOUS_MANIFEST: ${{ runner.temp }}/previous-cloud-candidate/manifest.json
+          AERA_RELEASE_EXPECTED_SHA: ${{ inputs.previous_source_sha }}
+          AERA_RELEASE_CURRENT_MANIFEST: ${{ runner.temp }}/current-cloud-candidate/manifest.json
+          AERA_RELEASE_EXPECTED_CURRENT_SHA: ${{ inputs.current_source_sha }}
+          AERA_RELEASE_REHEARSAL_RESTORE_CURRENT: ${{ inputs.restore_current_after_rehearsal }}
+          AERA_RELEASE_CERTIFICATE_IDENTITY_REGEXP: ^https://github.com/bignormal/aera-cloud/.github/workflows/candidate.yml@
+          AERA_RELEASE_CERTIFICATE_OIDC_ISSUER: https://token.actions.githubusercontent.com
+          AERA_RELEASE_STATE_DIR: ${{ vars.AERA_CLOUD_RELEASE_STATE_DIR }}
+          AERA_RELEASE_COMPOSE_FILE: deploy/compose.production.yaml
+          AERA_RELEASE_COMPOSE_PROJECT: agentera-cloud-${{ inputs.target_environment }}
+          AERA_RELEASE_ENVIRONMENT: ${{ inputs.target_environment }}
+          AGENTERA_CLOUD_ENV_FILE: ${{ vars.AGENTERA_CLOUD_ENV_FILE }}
+          AGENTERA_CLOUD_INTERNAL_ADMIN_SERVER_CERT_FILE_HOST: ${{ vars.AGENTERA_CLOUD_INTERNAL_ADMIN_SERVER_CERT_FILE_HOST }}
+          AGENTERA_CLOUD_INTERNAL_ADMIN_SERVER_KEY_FILE_HOST: ${{ vars.AGENTERA_CLOUD_INTERNAL_ADMIN_SERVER_KEY_FILE_HOST }}
+          AGENTERA_CLOUD_INTERNAL_ADMIN_CLIENT_CA_FILE_HOST: ${{ vars.AGENTERA_CLOUD_INTERNAL_ADMIN_CLIENT_CA_FILE_HOST }}
+          AGENTERA_CLOUD_INTERNAL_ADMIN_JWT_PUBLIC_KEY_FILE_HOST: ${{ vars.AGENTERA_CLOUD_INTERNAL_ADMIN_JWT_PUBLIC_KEY_FILE_HOST }}
+          AERA_CLOUD_ADMIN_PRIVATE_NETWORK: ${{ vars.AERA_CLOUD_ADMIN_PRIVATE_NETWORK }}
+          AERA_RELEASE_BACKUP_COMMAND: ${{ vars.AERA_CLOUD_BACKUP_COMMAND }}
+          AERA_RELEASE_RESTORE_VERIFY_COMMAND: ${{ vars.AERA_CLOUD_RESTORE_VERIFY_COMMAND }}
+          AERA_RELEASE_HEALTH_COMMAND: ${{ vars.AERA_CLOUD_HEALTH_COMMAND }}
+          AERA_RELEASE_SMOKE_COMMAND: ${{ inputs.target_environment == 'production' && vars.AERA_CLOUD_PRODUCTION_SMOKE_COMMAND || vars.AERA_CLOUD_STAGING_SMOKE_COMMAND }}
+          AERA_RELEASE_ROLLBACK_REASON: ${{ inputs.reason }}
+          AERA_RELEASE_ROLLBACK_TICKET: ${{ inputs.ticket }}
+        run: scripts/release/rollback-by-digest.sh
+
+      - name: Upload rollback evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-${{ inputs.target_environment }}-rollback-${{ github.run_id }}
+          path: |
+            ${{ vars.AERA_CLOUD_RELEASE_STATE_DIR }}/rollback-evidence.json
+            ${{ vars.AERA_CLOUD_RELEASE_STATE_DIR }}/deployment-state.json
+            ${{ vars.AERA_CLOUD_RELEASE_STATE_DIR }}/current-manifest.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload staging current-digest restoration evidence
+        if: inputs.restore_current_after_rehearsal
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-staging-rehearsal-restore-${{ github.run_id }}
+          path: ${{ vars.AERA_CLOUD_RELEASE_STATE_DIR }}/rehearsal-restore-evidence.json
+          if-no-files-found: error
+          retention-days: 90

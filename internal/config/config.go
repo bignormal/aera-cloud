@@ -100,9 +100,12 @@ type KeyRing struct {
 
 type Config struct {
 	Environment                    string
+	PublicRegistrationEnabled      bool
 	ListenAddr                     string
 	InternalAdmin                  InternalAdminConfig
 	OfficialAgent                  OfficialAgentConfig
+	OfficialQuality                OfficialQualityConfig
+	EncryptedBackup                EncryptedBackupConfig
 	PublicURL                      string
 	DatabaseURL                    string
 	RedisAddr                      string
@@ -174,6 +177,10 @@ func Load(lookup LookupEnv) (Config, error) {
 	}
 	if environment != "development" && environment != "test" && environment != "production" {
 		return Config{}, fmt.Errorf("%s must be development, test, or production", envEnvironment)
+	}
+	publicRegistrationEnabled, err := loadPublicRegistration(lookup, environment)
+	if err != nil {
+		return Config{}, err
 	}
 
 	listenAddr, err := required(lookup, envListenAddr)
@@ -310,6 +317,14 @@ func Load(lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	officialQuality, err := loadOfficialQuality(lookup, officialAgent.Enabled)
+	if err != nil {
+		return Config{}, err
+	}
+	encryptedBackup, err := loadEncryptedBackup(lookup, environment)
+	if err != nil {
+		return Config{}, err
+	}
 	offlinePolicyVersion, err := requiredInteger(lookup, envOfflinePolicyVersion, 1, 1_000_000)
 	if err != nil {
 		return Config{}, err
@@ -340,6 +355,12 @@ func Load(lookup LookupEnv) (Config, error) {
 		addKeyRingMaterials(independentKeyMaterials, "official rollout", KeyRing{
 			ActiveKeyID: officialAgent.RolloutHMACActiveKey,
 			Keys:        officialAgent.RolloutHMACKeys,
+		})
+	}
+	if officialQuality.Enabled {
+		addKeyRingMaterials(independentKeyMaterials, "official quality pseudonym", KeyRing{
+			ActiveKeyID: officialQuality.PseudonymHMACActiveKey,
+			Keys:        officialQuality.PseudonymHMACKeys,
 		})
 	}
 	if err := requireIndependentKeys(independentKeyMaterials); err != nil {
@@ -528,9 +549,12 @@ func Load(lookup LookupEnv) (Config, error) {
 
 	return Config{
 		Environment:                    environment,
+		PublicRegistrationEnabled:      publicRegistrationEnabled,
 		ListenAddr:                     listenAddr,
 		InternalAdmin:                  internalAdmin,
 		OfficialAgent:                  officialAgent,
+		OfficialQuality:                officialQuality,
+		EncryptedBackup:                encryptedBackup,
 		PublicURL:                      publicURL,
 		DatabaseURL:                    databaseURL,
 		RedisAddr:                      redisAddr,

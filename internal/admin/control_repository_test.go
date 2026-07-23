@@ -130,6 +130,38 @@ func TestControlRepositoryQueriesReturnNonNullEmptyPages(t *testing.T) {
 	}
 }
 
+func TestControlRepositoryOfficialAuditSkipsPassiveQualityEventsWithoutAdminActor(t *testing.T) {
+	fixture := newControlQueryFixture(t)
+	ctx := context.Background()
+	adminID := uuid.New()
+	governanceID := uuid.New()
+	if _, err := fixture.postgres.Exec(ctx, `
+		INSERT INTO audit_events (
+			id, event_type, object_type, object_id, outcome, request_id, metadata, created_at
+		) VALUES
+			($1, 'official_quality_event_accepted', 'official_quality_event', $2, 'success', 'quality-ingest', '{}'::jsonb, $5),
+			($3, 'official_quality_proposal_created', 'official_quality_proposal', $4, 'success', 'quality-governance',
+			 jsonb_build_object('actor_admin_id', $6::text, 'actor_admin_role', 'developer'), $7)
+	`, uuid.New(), uuid.New(), governanceID, uuid.New(), fixture.now.Add(-time.Minute), adminID, fixture.now); err != nil {
+		t.Fatalf("seed official quality audit events: %v", err)
+	}
+	var seeded int
+	if err := fixture.postgres.QueryRow(ctx, `
+		SELECT count(*) FROM audit_events WHERE event_type LIKE 'official\_%' ESCAPE '\'
+	`).Scan(&seeded); err != nil || seeded != 2 {
+		t.Fatalf("seeded official audit count = %d, error = %v", seeded, err)
+	}
+
+	page, err := fixture.repository.ListOfficialAuditEvents(ctx, OfficialAuditQuery{Limit: 50})
+	if err != nil {
+		t.Fatalf("ListOfficialAuditEvents() error = %v", err)
+	}
+	if len(page.Items) != 1 || page.Items[0].ID != governanceID ||
+		page.Items[0].ActorAdminID != adminID || page.Items[0].ActorAdminRole != "developer" {
+		t.Fatalf("official governance audit page = %+v", page)
+	}
+}
+
 func TestControlRepositoryCommandRevokesSessionFamilyIdempotently(t *testing.T) {
 	fixture := newControlCommandFixture(t)
 	ctx := WithServiceSubject(context.Background(), "aera-admin-e2e")
@@ -482,6 +514,7 @@ func (f *controlCommandFixture) command(expectedRevision int64, approval bool) C
 
 type controlQueryFixture struct {
 	postgres         *pgxpool.Pool
+	repository       *ControlRepository
 	service          *ControlService
 	identity         *secure.IdentityCodec
 	now              time.Time
@@ -533,7 +566,7 @@ func newControlQueryFixture(t *testing.T) *controlQueryFixture {
 		t.Fatalf("NewControlService() error = %v", err)
 	}
 	fixture := &controlQueryFixture{
-		postgres: postgres, service: service, identity: identity, now: now,
+		postgres: postgres, repository: repository, service: service, identity: identity, now: now,
 		aliceID: uuid.New(), bobID: uuid.New(),
 		activeSessionID: uuid.New(), expiredSessionID: uuid.New(), rotatedSessionID: uuid.New(),
 		revokedSessionID: uuid.New(), replaySessionID: uuid.New(),

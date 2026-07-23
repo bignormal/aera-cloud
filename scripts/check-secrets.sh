@@ -47,15 +47,20 @@ has_plaintext_verification_code_shape() {
   local pattern='(^|[^0-9])[0-9]{6}([^0-9]|$)'
 
   if [[ $relative == migrations/*.sql ]]; then
-    grep -E -- "$pattern" "$absolute" |
-      grep -Ev -- 'octet_length\([A-Za-z_][A-Za-z0-9_]*\)[[:space:]]*<=[[:space:]]*[0-9]{6}' \
-        >/dev/null
+    sed -E \
+      -e 's/octet_length\([A-Za-z_][A-Za-z0-9_]*\)[[:space:]]*<=[[:space:]]*[0-9]{6}/ /g' \
+      -e 's/([A-Za-z_][A-Za-z0-9_]*(count|index|size|length|bytes|capacity)|cardinality\([A-Za-z_][A-Za-z0-9_]*\))[[:space:]]+BETWEEN[[:space:]]+[0-9]+[[:space:]]+AND[[:space:]]+[0-9]{6}/ /g' \
+      "$absolute" |
+      grep -Eq -- "$pattern"
     return
   fi
 
-  grep -E -- "$pattern" "$absolute" |
-    grep -Eiv -- '(^[[:space:]]*(maximum|minimum|maxLength|minLength|maxItems|minItems):[[:space:]]*[0-9]{6}([[:space:]]|$)|000[0-9]{3}_[a-z0-9_]+\.sql)' \
-      >/dev/null
+  sed -E \
+    -e 's/(maximum|minimum|maxLength|minLength|maxItems|minItems):[[:space:]]*[0-9]{6}/ /g' \
+    -e 's/(maximum|minimum|max)[A-Za-z0-9_]*(Count|Size|Bytes|Length|Capacity)[[:space:]]*=[[:space:]]*[0-9]{6}/ /g' \
+    -e 's/000[0-9]{3}_[a-z0-9_]+\.sql/ /g' \
+    "$absolute" |
+    grep -Eq -- "$pattern"
 }
 
 while IFS= read -r -d '' relative; do

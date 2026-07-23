@@ -25,6 +25,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bignormal/aera-cloud/internal/adminapi"
+	"github.com/bignormal/aera-cloud/internal/agentcontrol"
 	"github.com/bignormal/aera-cloud/internal/config"
 	"github.com/bignormal/aera-cloud/internal/store"
 	"github.com/bignormal/aera-cloud/internal/testkit"
@@ -314,6 +316,87 @@ func TestBuildInternalAdminServesAuthenticatedTLSHealth(t *testing.T) {
 	}
 }
 
+func TestBuildInternalAdminServesOfficialQualityAggregatesWhenEnabled(t *testing.T) {
+	services := testkit.IntegrationServices(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	postgres, err := store.OpenPostgres(ctx, services.DatabaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer postgres.Close()
+	if err := store.ApplyMigrations(ctx, postgres); err != nil {
+		t.Fatalf("ApplyMigrations() error = %v", err)
+	}
+	redisStore, err := store.OpenRedis(ctx, store.RedisOptions{
+		Addr: services.RedisAddr, Username: services.RedisUsername,
+		Password: services.RedisPassword, DB: services.RedisDB,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = redisStore.Close() }()
+
+	certificates := newInternalAdminCertificateFixture(t)
+	cfg, err := config.Load(officialQualityInternalAdminTestLookup(
+		integrationLookup(services), certificates,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentRepository := agentcontrol.NewPostgresRepository(postgres)
+	_, platform, err := buildAgentControlServices(ctx, cfg, agentRepository)
+	if err != nil {
+		t.Fatalf("buildAgentControlServices() error = %v", err)
+	}
+	handler, serverTLS, err := buildInternalAdmin(cfg, postgres, redisStore, platform)
+	if err != nil {
+		t.Fatalf("buildInternalAdmin() error = %v", err)
+	}
+	server := httptest.NewUnstartedServer(handler)
+	server.TLS = serverTLS.Clone()
+	server.StartTLS()
+	defer server.Close()
+
+	client := &http.Client{
+		Timeout: 3 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13,
+			RootCAs: certificates.serverRoots, ServerName: "internal.aera.test",
+			Certificates: []tls.Certificate{certificates.clientCertificate},
+		}},
+	}
+	path := fmt.Sprintf(
+		"%s/internal/admin/v1/official-quality/aggregates?platform_id=%s&from_day=2026-07-22&to_day=2026-07-22&limit=25",
+		server.URL, cfg.OfficialAgent.PlatformID,
+	)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+signInternalAdminTestActorToken(
+		t, certificates.jwtPrivateKey, time.Now().UTC(), adminapi.ScopeOfficialQualityRead,
+		"019f0000-0000-7000-8000-000000000077", "auditor",
+	))
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("official quality aggregate request error = %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("official quality aggregate status = %d", response.StatusCode)
+	}
+	var body struct {
+		Items []json.RawMessage `json:"items"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decode official quality aggregate response: %v", err)
+	}
+	if body.Items == nil || len(body.Items) != 0 {
+		t.Fatalf("official quality aggregate items = %#v, want non-nil empty list", body.Items)
+	}
+}
+
 func waitForListenerOpens(t *testing.T, opened <-chan struct{}, count int) {
 	t.Helper()
 	deadline := time.NewTimer(3 * time.Second)
@@ -440,17 +523,61 @@ func internalAdminTestLookup(base config.LookupEnv, certificates internalAdminCe
 	}
 }
 
+func officialQualityInternalAdminTestLookup(
+	base config.LookupEnv,
+	certificates internalAdminCertificateFixture,
+) config.LookupEnv {
+	base = internalAdminTestLookup(base, certificates)
+	values := map[string]string{
+		"AGENTERA_CLOUD_OFFICIAL_AGENTS_ENABLED":             "true",
+		"AGENTERA_CLOUD_PLATFORM_ID":                         "019f0000-0000-7000-8000-000000000088",
+		"AGENTERA_CLOUD_PLATFORM_KEY":                        "agentera_official_e2e",
+		"AGENTERA_CLOUD_PLATFORM_DISPLAY_NAME":               "AgentEra Official E2E",
+		"AGENTERA_CLOUD_OFFICIAL_ROLLOUT_HMAC_ACTIVE_KEY_ID": "rollout-e2e-v1",
+		"AGENTERA_CLOUD_OFFICIAL_ROLLOUT_HMAC_KEYS": fmt.Sprintf(
+			`{"rollout-e2e-v1":"%s"}`,
+			base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{41}, 32)),
+		),
+		"AGENTERA_CLOUD_OFFICIAL_QUALITY_ENABLED":                      "true",
+		"AGENTERA_CLOUD_OFFICIAL_QUALITY_PSEUDONYM_HMAC_ACTIVE_KEY_ID": "quality-e2e-v1",
+		"AGENTERA_CLOUD_OFFICIAL_QUALITY_PSEUDONYM_HMAC_KEYS": fmt.Sprintf(
+			`{"quality-e2e-v1":"%s"}`,
+			base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{42}, 32)),
+		),
+	}
+	return func(key string) (string, bool) {
+		if value, ok := values[key]; ok {
+			return value, true
+		}
+		return base(key)
+	}
+}
+
 func signInternalAdminTestToken(t *testing.T, privateKey ed25519.PrivateKey, now time.Time) string {
+	return signInternalAdminTestActorToken(t, privateKey, now, "users:read", "", "")
+}
+
+func signInternalAdminTestActorToken(
+	t *testing.T,
+	privateKey ed25519.PrivateKey,
+	now time.Time,
+	scope, adminID, role string,
+) string {
 	t.Helper()
 	header, err := json.Marshal(map[string]string{"alg": "EdDSA", "typ": "JWT"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	claims, err := json.Marshal(map[string]any{
+	claimValues := map[string]any{
 		"iss": "aera-admin", "sub": "aera-admin-e2e", "aud": "aera-cloud-admin",
-		"scope": []string{"users:read"}, "iat": now.Unix(), "nbf": now.Add(-5 * time.Second).Unix(),
+		"scope": []string{scope}, "iat": now.Unix(), "nbf": now.Add(-5 * time.Second).Unix(),
 		"exp": now.Add(4 * time.Minute).Unix(), "jti": "019f0000000070008000000000000099",
-	})
+	}
+	if adminID != "" {
+		claimValues["admin_id"] = adminID
+		claimValues["admin_role"] = role
+	}
+	claims, err := json.Marshal(claimValues)
 	if err != nil {
 		t.Fatal(err)
 	}

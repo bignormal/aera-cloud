@@ -12,6 +12,7 @@ import (
 	"github.com/bignormal/aera-cloud/internal/adminapi"
 	"github.com/bignormal/aera-cloud/internal/agentcontrol"
 	"github.com/bignormal/aera-cloud/internal/config"
+	"github.com/bignormal/aera-cloud/internal/officialquality"
 	"github.com/bignormal/aera-cloud/internal/secure"
 	"github.com/bignormal/aera-cloud/internal/store"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -82,6 +83,9 @@ func buildInternalAdmin(
 	if cfg.OfficialAgent.Enabled && platform == nil {
 		return nil, nil, errors.New("official platform service is unavailable")
 	}
+	if cfg.OfficialQuality.Enabled && platform == nil {
+		return nil, nil, errors.New("official quality platform service is unavailable")
+	}
 	handlerConfig := adminapi.HandlerConfig{
 		Service: service, Auth: authenticator, PostgreSQL: postgres, Redis: redisStore, Clock: time.Now,
 	}
@@ -89,6 +93,23 @@ func buildInternalAdmin(
 		handlerConfig.OfficialAgents = platform
 		handlerConfig.OfficialAudit = service
 		handlerConfig.OperationProtector = protector
+	}
+	if cfg.OfficialQuality.Enabled {
+		qualityRepository := officialquality.NewPostgresRepository(postgres)
+		draftCloner, err := officialquality.NewAgentControlDraftCloner(platform)
+		if err != nil {
+			return nil, nil, err
+		}
+		qualityService, err := officialquality.NewProposalService(officialquality.ProposalServiceConfig{
+			Repository: qualityRepository, AggregateReader: qualityRepository,
+			Scanner: officialquality.MinimizedScanner{}, DraftCloner: draftCloner,
+			PlatformID:      cfg.OfficialAgent.PlatformID,
+			MinimumSubjects: cfg.OfficialQuality.MinimumSubjects,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		handlerConfig.OfficialQuality = qualityService
 	}
 	handler, err := adminapi.NewHandler(handlerConfig)
 	if err != nil {

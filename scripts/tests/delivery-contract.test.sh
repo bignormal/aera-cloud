@@ -31,6 +31,14 @@ for file in \
   docs/runbooks/account-recovery.md \
   scripts/smoke-auth.sh \
   scripts/check-secrets.sh \
+  scripts/release/build-manifest.sh \
+  scripts/release/verify-manifest.sh \
+  scripts/release/deploy-by-digest.sh \
+  scripts/release/rollback-by-digest.sh \
+  .github/workflows/candidate.yml \
+  .github/workflows/deploy-staging.yml \
+  .github/workflows/promote-production.yml \
+  .github/workflows/rollback-production.yml \
   .github/workflows/ci.yml; do
   require_file "$file"
 done
@@ -47,6 +55,11 @@ require_text deploy/compose.production.yaml 'AGENTERA_CLOUD_REDIS_DB: "9"'
 require_text deploy/compose.production.yaml 'cpus: "0\.[5-9][0-9]*"'
 require_text deploy/compose.production.yaml 'mem_limit: (256|320|384|448|512)m'
 require_text deploy/compose.production.yaml '127\.0\.0\.1:'
+require_text deploy/compose.production.yaml 'AGENTERA_CLOUD_IMAGE_DIGEST'
+require_text deploy/compose.production.yaml 'AGENTERA_CLOUD_FEATURE_ENV_FILE'
+if grep -Eq '^[[:space:]]+build:' deploy/compose.production.yaml; then
+  fail 'production Compose must not rebuild the application image'
+fi
 
 require_text deploy/backup.sh 'pg_dump'
 require_text deploy/backup.sh 'age'
@@ -84,5 +97,38 @@ require_text scripts/smoke-auth.sh 'TestSmokeAuthLifecycle'
 require_text .github/workflows/ci.yml 'check-secrets\.sh'
 require_text .github/workflows/ci.yml 'smoke-auth\.sh'
 require_text .github/workflows/ci.yml 'docker build'
+require_text .github/workflows/candidate.yml 'inputs\.source_sha'
+require_text .github/workflows/candidate.yml 'inputs\.ci_run_id'
+require_text .github/workflows/candidate.yml 'docker buildx build'
+require_text .github/workflows/candidate.yml 'steps\.image\.outputs\.digest'
+require_text .github/workflows/candidate.yml 'syft'
+require_text .github/workflows/candidate.yml 'cosign sign --yes'
+require_text .github/workflows/candidate.yml 'attest-build-provenance@v2'
+require_text .github/workflows/candidate.yml 'build-manifest\.sh'
+require_text .github/workflows/candidate.yml 'verify-manifest\.sh'
+require_text .github/workflows/candidate.yml 'encrypted-backup-minio'
+require_text scripts/release/verify-manifest.sh 'cosign verify'
+require_text scripts/release/verify-manifest.sh 'verify-attestation'
+require_text scripts/release/build-manifest.sh 'git status --porcelain'
+require_text scripts/release/deploy-by-digest.sh 'verify-manifest\.sh'
+require_text scripts/release/deploy-by-digest.sh 'AERA_RELEASE_BACKUP_COMMAND'
+require_text scripts/release/deploy-by-digest.sh 'AERA_RELEASE_RESTORE_VERIFY_COMMAND'
+require_text scripts/release/deploy-by-digest.sh 'PUBLIC_REGISTRATION_ENABLED'
+require_text scripts/release/rollback-by-digest.sh 'previous image is incompatible'
+require_text scripts/release/rollback-by-digest.sh 'forwardSchemaPreserved'
+require_text .github/workflows/deploy-staging.yml 'environment: staging'
+require_text .github/workflows/promote-production.yml 'environment: production'
+require_text .github/workflows/promote-production.yml 'deploy-by-digest\.sh deploy'
+require_text .github/workflows/promote-production.yml 'deploy-by-digest\.sh enable-approved'
+require_text .github/workflows/promote-production.yml 'cloud-production-enabled-'
+require_text .github/workflows/promote-production.yml 'deployment-state\.json'
+require_text .github/workflows/promote-production.yml 'current-manifest\.json'
+require_text .github/workflows/rollback-production.yml 'rollback-by-digest\.sh'
+require_text .github/workflows/rollback-production.yml 'target_environment'
+require_text .github/workflows/rollback-production.yml 'restore_current_after_rehearsal'
+require_text .github/workflows/rollback-production.yml 'AERA_RELEASE_REHEARSAL_RESTORE_CURRENT'
+require_text .github/workflows/rollback-production.yml 'rehearsal-restore-evidence\.json'
+require_text scripts/release/rollback-by-digest.sh 'healthBefore'
+require_text scripts/release/rollback-by-digest.sh 'downMigrationExecuted'
 
 printf 'delivery contract tests passed\n'

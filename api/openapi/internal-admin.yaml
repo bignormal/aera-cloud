@@ -1,12 +1,14 @@
 openapi: 3.1.0
 info:
   title: Aera Cloud Internal Admin API
-  version: 1.1.0
+  version: 1.2.0
   description: |
     Shared provider/consumer contract for the Aera Cloud Internal Admin API.
     Exact identity lookup accepts a full email or phone only in the request body;
     every identity field in every response remains masked.
     Official Agent routes additionally require signed admin_id/admin_role claims.
+    Official Quality routes expose only k-anonymous aggregates and human governance
+    records; they never expose raw events, rotating pseudonyms, or user runtime data.
     Mutations bind operation_id to Idempotency-Key; rollback also binds a distinct
     requester_admin_id and approval_id. GET operations/{operationID} is the only
     ambiguous-result reconciliation endpoint.
@@ -404,6 +406,125 @@ paths:
         '401': { $ref: '#/components/responses/AuthenticationRequired' }
         '403': { $ref: '#/components/responses/PermissionDenied' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/official-quality/aggregates:
+    get:
+      operationId: listOfficialQualityAggregates
+      description: Returns only unsuppressed buckets with at least ten distinct rotating subjects. No raw-event or identity drill-down exists.
+      x-required-service-scope: official_quality:read
+      parameters:
+        - name: platform_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: definition_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: from_day
+          in: query
+          required: true
+          schema: { type: string, format: date }
+        - name: to_day
+          in: query
+          required: true
+          schema: { type: string, format: date }
+        - { $ref: '#/components/parameters/QualityCursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200': { $ref: '#/components/responses/OfficialQualityAggregatePage' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/official-quality/proposals:
+    get:
+      operationId: listOfficialQualityProposals
+      x-required-service-scope: official_quality:read
+      parameters:
+        - name: platform_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          schema: { enum: [open, submitted, approved, rejected, draft_linked, closed] }
+        - { $ref: '#/components/parameters/ProposalCursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200': { $ref: '#/components/responses/OfficialQualityProposalPage' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    post:
+      operationId: createOfficialQualityProposal
+      description: Developer-only human proposal creation from exact visible aggregate identifiers. No Agent content is generated.
+      x-required-service-scope: official_quality:propose
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { $ref: '#/components/requestBodies/OfficialQualityProposalCreateMutation' }
+      responses:
+        '200': { $ref: '#/components/responses/Operation' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+        '422': { $ref: '#/components/responses/PrivacyRejected' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/official-quality/proposals/{proposalID}:
+    get:
+      operationId: getOfficialQualityProposal
+      x-required-service-scope: official_quality:read
+      parameters: [{ $ref: '#/components/parameters/ProposalID' }]
+      responses:
+        '200': { $ref: '#/components/responses/OfficialQualityProposal' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '404': { $ref: '#/components/responses/QualityProposalNotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/official-quality/proposals/{proposalID}/submit:
+    post:
+      operationId: submitOfficialQualityProposal
+      x-required-service-scope: official_quality:propose
+      parameters: [{ $ref: '#/components/parameters/ProposalID' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { $ref: '#/components/requestBodies/OfficialQualityProposalSubmitMutation' }
+      responses:
+        '200': { $ref: '#/components/responses/Operation' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '404': { $ref: '#/components/responses/QualityProposalNotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/official-quality/proposals/{proposalID}/reviews:
+    post:
+      operationId: reviewOfficialQualityProposal
+      description: A different Super Admin approves or rejects. Approval never creates a draft or publishes a version.
+      x-required-service-scope: official_quality:review
+      parameters: [{ $ref: '#/components/parameters/ProposalID' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { $ref: '#/components/requestBodies/OfficialQualityProposalReviewMutation' }
+      responses:
+        '200': { $ref: '#/components/responses/Operation' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '404': { $ref: '#/components/responses/QualityProposalNotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/official-quality/proposals/{proposalID}/clone:
+    post:
+      operationId: cloneOfficialQualityProposalToDraft
+      description: Developer-only explicit clone of the verified immutable base into the normal editable platform draft. Aggregate values and proposal text are not copied into Agent content.
+      x-required-service-scope: official_quality:clone
+      parameters: [{ $ref: '#/components/parameters/ProposalID' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { $ref: '#/components/requestBodies/OfficialQualityProposalCloneMutation' }
+      responses:
+        '200': { $ref: '#/components/responses/Operation' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '404': { $ref: '#/components/responses/QualityProposalNotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 components:
   securitySchemes:
     mutualTLS: { type: mutualTLS }
@@ -420,6 +541,9 @@ components:
     SubmissionID: { name: submissionID, in: path, required: true, schema: { type: string, format: uuid } }
     VersionID: { name: versionID, in: path, required: true, schema: { type: string, format: uuid } }
     ReleaseID: { name: releaseID, in: path, required: true, schema: { type: string, format: uuid } }
+    ProposalID: { name: proposalID, in: path, required: true, schema: { type: string, format: uuid } }
+    QualityCursor: { name: cursor, in: query, schema: { type: string, minLength: 1, maxLength: 512, pattern: '^[A-Za-z0-9_-]+$' } }
+    ProposalCursor: { name: cursor, in: query, schema: { type: string, format: uuid } }
     IdempotencyKey: { name: Idempotency-Key, in: header, required: true, schema: { type: string, format: uuid } }
   requestBodies:
     Command:
@@ -454,6 +578,18 @@ components:
     OfficialRollbackMutation:
       required: true
       content: { application/json: { schema: { $ref: '#/components/schemas/OfficialRollbackMutation' } } }
+    OfficialQualityProposalCreateMutation:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialQualityProposalCreateMutation' } } }
+    OfficialQualityProposalSubmitMutation:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialQualityProposalSubmitMutation' } } }
+    OfficialQualityProposalReviewMutation:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialQualityProposalReviewMutation' } } }
+    OfficialQualityProposalCloneMutation:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialQualityProposalCloneMutation' } } }
   responses:
     Operation:
       description: Idempotent operation state
@@ -496,6 +632,15 @@ components:
     OfficialAuditPage:
       description: Rebuilt safe official Agent audit page
       content: { application/json: { schema: { $ref: '#/components/schemas/OfficialAuditPage' } } }
+    OfficialQualityAggregatePage:
+      description: K-anonymous official Agent quality aggregate page
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialQualityAggregatePage' } } }
+    OfficialQualityProposal:
+      description: Human-authored official quality governance proposal
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialQualityProposal' } } }
+    OfficialQualityProposalPage:
+      description: Official quality proposal page
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialQualityProposalPage' } } }
     InvalidRequest:
       description: Strict request validation failed
       content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
@@ -513,6 +658,12 @@ components:
       content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
     PublicationDLPBlocked:
       description: Publication content failed the frozen DLP contract
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
+    PrivacyRejected:
+      description: The human-authored improvement objective failed the bounded privacy scan
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
+    QualityProposalNotFound:
+      description: The official quality proposal is absent from the configured platform boundary
       content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
     ServiceUnavailable:
       description: Cloud could not prove a safe result; callers must remain unavailable or reconcile by operation ID
@@ -802,6 +953,79 @@ components:
               properties:
                 target_version_id: { type: string, format: uuid }
                 target_release_revision_id: { type: string, format: uuid }
+      unevaluatedProperties: false
+    OfficialQualityMutationEvidence:
+      type: object
+      required: [operation_id, actor_admin_id, actor_admin_role, expected_revision, reason_code]
+      properties:
+        operation_id: { type: string, format: uuid }
+        actor_admin_id: { type: string, format: uuid }
+        actor_admin_role: { enum: [super_admin, developer] }
+        expected_revision: { type: integer, minimum: 1 }
+        reason_code: { type: string, pattern: '^[a-z][a-z0-9_]{2,63}$' }
+        ticket_reference: { type: string, minLength: 1, maxLength: 128 }
+    OfficialQualityProposalCreateMutation:
+      allOf:
+        - { $ref: '#/components/schemas/OfficialQualityMutationEvidence' }
+        - type: object
+          required: [actor_admin_role, expected_revision, payload]
+          properties:
+            actor_admin_role: { const: developer }
+            expected_revision: { const: 1 }
+            payload:
+              type: object
+              additionalProperties: false
+              required: [aggregate_ids, problem_categories, improvement_objective]
+              properties:
+                aggregate_ids:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  uniqueItems: true
+                  items: { type: string, format: uuid }
+                problem_categories:
+                  type: array
+                  minItems: 1
+                  maxItems: 6
+                  uniqueItems: true
+                  items: { enum: [reliability, latency, tool_quality, correctness, safety, usability] }
+                improvement_objective:
+                  type: string
+                  minLength: 20
+                  maxLength: 2000
+                  description: Human-authored, DLP-scanned internal objective; copied user content is forbidden.
+      unevaluatedProperties: false
+    OfficialQualityProposalSubmitMutation:
+      allOf:
+        - { $ref: '#/components/schemas/OfficialQualityMutationEvidence' }
+        - type: object
+          required: [actor_admin_role, payload]
+          properties:
+            actor_admin_role: { const: developer }
+            payload: { type: object, additionalProperties: false }
+      unevaluatedProperties: false
+    OfficialQualityProposalReviewMutation:
+      allOf:
+        - { $ref: '#/components/schemas/OfficialQualityMutationEvidence' }
+        - type: object
+          required: [actor_admin_role, payload]
+          properties:
+            actor_admin_role: { const: super_admin }
+            payload:
+              type: object
+              additionalProperties: false
+              required: [decision]
+              properties:
+                decision: { enum: [approve, reject] }
+      unevaluatedProperties: false
+    OfficialQualityProposalCloneMutation:
+      allOf:
+        - { $ref: '#/components/schemas/OfficialQualityMutationEvidence' }
+        - type: object
+          required: [actor_admin_role, payload]
+          properties:
+            actor_admin_role: { const: developer }
+            payload: { type: object, additionalProperties: false }
       unevaluatedProperties: false
     OfficialAllowlist:
       type: array
@@ -1173,6 +1397,127 @@ components:
       properties:
         items: { type: array, items: { $ref: '#/components/schemas/OfficialAuditEvent' } }
         next_cursor: { type: string, maxLength: 512 }
+    OfficialQualityAggregate:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - platform_id
+        - definition_id
+        - version_id
+        - release_id
+        - release_revision_id
+        - aggregate_day
+        - event_kind
+        - result_code
+        - latency_bucket
+        - total_token_bucket
+        - event_count
+        - distinct_subject_count
+        - computed_at
+        - updated_at
+      properties:
+        id: { type: string, format: uuid }
+        platform_id: { type: string, format: uuid }
+        definition_id: { type: string, format: uuid }
+        version_id: { type: string, format: uuid }
+        release_id: { type: string, format: uuid }
+        release_revision_id: { type: string, format: uuid }
+        aggregate_day: { type: string, format: date-time }
+        event_kind: { enum: [metric, explicit_feedback] }
+        result_code: { enum: [success, user_cancelled, model_error, tool_error, runtime_crash, timeout] }
+        latency_bucket: { enum: [lt_1s, 1s_5s, 5s_15s, 15s_60s, 60s_180s, gte_180s] }
+        total_token_bucket: { enum: ['0', 1_1k, 1k_4k, 4k_16k, 16k_64k, gte_64k] }
+        crash_code: { enum: [gateway_unavailable, runtime_process_exit, runtime_protocol_failure, unclassified_runtime_failure] }
+        feedback_rating: { enum: [helpful, not_helpful] }
+        feedback_reason_code: { enum: [incorrect, incomplete, tool_failed, too_slow, unsafe_or_inappropriate, other_without_text] }
+        event_count: { type: integer, format: int64, minimum: 10 }
+        distinct_subject_count: { type: integer, format: int64, minimum: 10 }
+        computed_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    OfficialQualityAggregatePage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/OfficialQualityAggregate' }
+        next_cursor: { type: string, minLength: 1, maxLength: 512, pattern: '^[A-Za-z0-9_-]+$' }
+    OfficialQualityProposalReview:
+      type: object
+      additionalProperties: false
+      required: [review_id, reviewer_admin_id, reviewer_role, decision, reviewed_revision, reason_code, reviewed_at]
+      properties:
+        review_id: { type: string, format: uuid }
+        reviewer_admin_id: { type: string, format: uuid }
+        reviewer_role: { const: super_admin }
+        decision: { enum: [approve, reject] }
+        reviewed_revision: { type: integer, format: int64, minimum: 1 }
+        reason_code: { type: string, pattern: '^[a-z][a-z0-9_]{2,63}$' }
+        ticket_reference: { type: string, minLength: 1, maxLength: 128 }
+        reviewed_at: { type: string, format: date-time }
+    OfficialQualityProposal:
+      type: object
+      additionalProperties: false
+      required:
+        - proposal_id
+        - platform_id
+        - definition_id
+        - version_id
+        - release_id
+        - release_revision_id
+        - aggregate_ids
+        - problem_categories
+        - improvement_objective
+        - created_by_admin_id
+        - created_by_role
+        - status
+        - revision
+        - reason_code
+        - created_at
+        - updated_at
+      properties:
+        proposal_id: { type: string, format: uuid }
+        platform_id: { type: string, format: uuid }
+        definition_id: { type: string, format: uuid }
+        version_id: { type: string, format: uuid }
+        release_id: { type: string, format: uuid }
+        release_revision_id: { type: string, format: uuid }
+        aggregate_ids:
+          type: array
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+          items: { type: string, format: uuid }
+        problem_categories:
+          type: array
+          minItems: 1
+          maxItems: 6
+          uniqueItems: true
+          items: { enum: [reliability, latency, tool_quality, correctness, safety, usability] }
+        improvement_objective: { type: string, minLength: 20, maxLength: 2000 }
+        created_by_admin_id: { type: string, format: uuid }
+        created_by_role: { const: developer }
+        status: { enum: [open, submitted, approved, rejected, draft_linked, closed] }
+        revision: { type: integer, format: int64, minimum: 1 }
+        reason_code: { type: string, pattern: '^[a-z][a-z0-9_]{2,63}$' }
+        ticket_reference: { type: string, minLength: 1, maxLength: 128 }
+        linked_draft_id: { type: string, format: uuid }
+        review: { $ref: '#/components/schemas/OfficialQualityProposalReview' }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        terminal_at: { type: string, format: date-time }
+        replayed: { type: boolean }
+    OfficialQualityProposalPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/OfficialQualityProposal' }
+        next_cursor: { type: string, format: uuid }
     Operation:
       type: object
       additionalProperties: false
@@ -1199,8 +1544,10 @@ components:
                 - AUTHENTICATION_REQUIRED
                 - PERMISSION_DENIED
                 - OFFICIAL_AGENT_NOT_FOUND
+                - QUALITY_PROPOSAL_NOT_FOUND
                 - STATE_CONFLICT
                 - PUBLICATION_DLP_BLOCKED
+                - PRIVACY_REJECTED
                 - SERVICE_UNAVAILABLE
                 - NOT_FOUND
                 - METHOD_NOT_ALLOWED

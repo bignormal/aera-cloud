@@ -49,21 +49,25 @@ func ServiceSubject(ctx context.Context) (string, bool) {
 type Action string
 
 const (
-	RevokeDevice               Action = "revoke_device"
-	RevokeSession              Action = "revoke_session"
-	DisableUser                Action = "disable_user"
-	EnableUser                 Action = "enable_user"
-	OfficialDefinitionReserve  Action = "official_definition_reserve"
-	OfficialDraftCreate        Action = "official_draft_create"
-	OfficialDraftUpdate        Action = "official_draft_update"
-	OfficialDraftSubmit        Action = "official_draft_submit"
-	OfficialSubmissionWithdraw Action = "official_submission_withdraw"
-	OfficialSubmissionReview   Action = "official_submission_review"
-	OfficialReleaseActivate    Action = "official_release_activate"
-	OfficialReleaseRollout     Action = "official_release_rollout"
-	OfficialReleasePause       Action = "official_release_pause"
-	OfficialReleaseResume      Action = "official_release_resume"
-	OfficialReleaseRollback    Action = "official_release_rollback"
+	RevokeDevice                  Action = "revoke_device"
+	RevokeSession                 Action = "revoke_session"
+	DisableUser                   Action = "disable_user"
+	EnableUser                    Action = "enable_user"
+	OfficialDefinitionReserve     Action = "official_definition_reserve"
+	OfficialDraftCreate           Action = "official_draft_create"
+	OfficialDraftUpdate           Action = "official_draft_update"
+	OfficialDraftSubmit           Action = "official_draft_submit"
+	OfficialSubmissionWithdraw    Action = "official_submission_withdraw"
+	OfficialSubmissionReview      Action = "official_submission_review"
+	OfficialReleaseActivate       Action = "official_release_activate"
+	OfficialReleaseRollout        Action = "official_release_rollout"
+	OfficialReleasePause          Action = "official_release_pause"
+	OfficialReleaseResume         Action = "official_release_resume"
+	OfficialReleaseRollback       Action = "official_release_rollback"
+	OfficialQualityProposalCreate Action = "official_quality_proposal_create"
+	OfficialQualityProposalSubmit Action = "official_quality_proposal_submit"
+	OfficialQualityProposalReview Action = "official_quality_proposal_review"
+	OfficialQualityDraftClone     Action = "official_quality_draft_clone"
 )
 
 type OperationStatus string
@@ -311,7 +315,9 @@ func validOfficialAction(action Action) bool {
 	case OfficialDefinitionReserve, OfficialDraftCreate, OfficialDraftUpdate,
 		OfficialDraftSubmit, OfficialSubmissionWithdraw, OfficialSubmissionReview,
 		OfficialReleaseActivate, OfficialReleaseRollout, OfficialReleasePause,
-		OfficialReleaseResume, OfficialReleaseRollback:
+		OfficialReleaseResume, OfficialReleaseRollback,
+		OfficialQualityProposalCreate, OfficialQualityProposalSubmit,
+		OfficialQualityProposalReview, OfficialQualityDraftClone:
 		return true
 	default:
 		return false
@@ -321,9 +327,11 @@ func validOfficialAction(action Action) bool {
 func officialRoleAllowed(role string, action Action) bool {
 	switch action {
 	case OfficialDefinitionReserve, OfficialDraftCreate, OfficialDraftUpdate,
-		OfficialDraftSubmit, OfficialSubmissionWithdraw:
+		OfficialDraftSubmit, OfficialSubmissionWithdraw,
+		OfficialQualityProposalCreate, OfficialQualityProposalSubmit,
+		OfficialQualityDraftClone:
 		return role == "developer"
-	case OfficialSubmissionReview, OfficialReleaseRollback:
+	case OfficialSubmissionReview, OfficialReleaseRollback, OfficialQualityProposalReview:
 		return role == "super_admin"
 	case OfficialReleaseActivate, OfficialReleaseRollout, OfficialReleasePause, OfficialReleaseResume:
 		return role == "operator"

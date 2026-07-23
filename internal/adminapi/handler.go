@@ -19,6 +19,7 @@ import (
 
 	"github.com/bignormal/aera-cloud/internal/admin"
 	"github.com/bignormal/aera-cloud/internal/agentcontrol"
+	"github.com/bignormal/aera-cloud/internal/officialquality"
 	"github.com/bignormal/aera-cloud/internal/secure"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -45,6 +46,7 @@ type HandlerConfig struct {
 	Service            admin.Service
 	OfficialAgents     agentcontrol.PlatformService
 	OfficialAudit      admin.OfficialAuditService
+	OfficialQuality    officialquality.AdminService
 	OperationProtector *admin.Protector
 	Auth               *Authenticator
 	PostgreSQL         HealthChecker
@@ -56,6 +58,7 @@ type handler struct {
 	service            admin.Service
 	officialAgents     agentcontrol.PlatformService
 	officialAudit      admin.OfficialAuditService
+	officialQuality    officialquality.AdminService
 	operationProtector *admin.Protector
 	postgresql         HealthChecker
 	redis              HealthChecker
@@ -72,11 +75,16 @@ func NewHandler(config HandlerConfig) (http.Handler, error) {
 	if hasOfficialAgents != hasOfficialAudit || hasOfficialAgents != hasOperationProtector {
 		return nil, errors.New("official agent admin dependencies must be configured together")
 	}
+	hasOfficialQuality := !dependencyMissing(config.OfficialQuality)
+	if hasOfficialQuality && !hasOfficialAgents {
+		return nil, errors.New("official quality admin requires official agent dependencies")
+	}
 
 	h := &handler{
 		service: config.Service, officialAgents: config.OfficialAgents,
-		officialAudit: config.OfficialAudit, operationProtector: config.OperationProtector,
-		postgresql: config.PostgreSQL, redis: config.Redis,
+		officialAudit: config.OfficialAudit, officialQuality: config.OfficialQuality,
+		operationProtector: config.OperationProtector,
+		postgresql:         config.PostgreSQL, redis: config.Redis,
 	}
 	router := chi.NewRouter()
 	router.Use(requestIDMiddleware(config.Clock))
@@ -112,6 +120,9 @@ func NewHandler(config HandlerConfig) (http.Handler, error) {
 		})
 		if !dependencyMissing(config.OfficialAgents) {
 			registerOfficialAgentRoutes(router, config.Auth, h)
+		}
+		if hasOfficialQuality {
+			registerOfficialQualityRoutes(router, config.Auth, h)
 		}
 	})
 	router.NotFound(func(response http.ResponseWriter, request *http.Request) {

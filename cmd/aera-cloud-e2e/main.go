@@ -3,7 +3,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -13,11 +15,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/bignormal/aera-cloud/internal/admin"
 	"github.com/bignormal/aera-cloud/internal/config"
+	"github.com/bignormal/aera-cloud/internal/officialquality"
 	"github.com/bignormal/aera-cloud/internal/secure"
 	"github.com/bignormal/aera-cloud/internal/store"
 	"github.com/google/uuid"
@@ -42,6 +46,17 @@ type seedConfig struct {
 	DatabaseURL            string
 	IdentityEncryptionKeys config.KeyRing
 	IdentityLookupKeys     config.KeyRing
+	PlatformID             uuid.UUID
+	QualityActiveKeyID     string
+	QualityKeys            map[string][]byte
+	QualityRawRetention    int
+	QualityAggregateTTL    int
+	QualityMinimumSubjects int
+}
+
+type qualitySeedArguments struct {
+	DefinitionID, VersionID, ReleaseID, ReleaseRevisionID uuid.UUID
+	FromSubject, ToSubject                                int
 }
 
 func main() {
@@ -63,6 +78,12 @@ func run(arguments []string, lookup config.LookupEnv) error {
 		Environment: cloudConfig.Environment, DatabaseURL: cloudConfig.DatabaseURL,
 		IdentityEncryptionKeys: cloudConfig.IdentityEncryptionKeyRing,
 		IdentityLookupKeys:     cloudConfig.IdentityLookupKeyRing,
+		PlatformID:             cloudConfig.OfficialAgent.PlatformID,
+		QualityActiveKeyID:     cloudConfig.OfficialQuality.PseudonymHMACActiveKey,
+		QualityKeys:            cloudConfig.OfficialQuality.PseudonymHMACKeys,
+		QualityRawRetention:    cloudConfig.OfficialQuality.RawRetentionDays,
+		QualityAggregateTTL:    cloudConfig.OfficialQuality.AggregateRetentionDays,
+		QualityMinimumSubjects: cloudConfig.OfficialQuality.MinimumSubjects,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
@@ -85,9 +106,134 @@ func run(arguments []string, lookup config.LookupEnv) error {
 			return errors.New("verify arguments are invalid")
 		}
 		return verify(ctx, runtime, *fixturePath)
+	case "seed-quality":
+		qualityArguments, err := parseQualitySeedArguments(arguments[1:])
+		if err != nil {
+			return err
+		}
+		return seedQuality(ctx, runtime, qualityArguments)
 	default:
-		return errors.New("seed or verify mode is required")
+		return errors.New("seed, seed-quality, or verify mode is required")
 	}
+}
+
+func parseQualitySeedArguments(arguments []string) (qualitySeedArguments, error) {
+	if len(arguments) != 12 {
+		return qualitySeedArguments{}, errors.New("quality seed arguments are invalid")
+	}
+	allowed := map[string]bool{
+		"--definition-id": false, "--version-id": false, "--release-id": false,
+		"--release-revision-id": false, "--from-subject": false, "--to-subject": false,
+	}
+	for index := 0; index < len(arguments); index += 2 {
+		seen, ok := allowed[arguments[index]]
+		if !ok || seen || arguments[index+1] == "" {
+			return qualitySeedArguments{}, errors.New("quality seed arguments are invalid")
+		}
+		allowed[arguments[index]] = true
+	}
+	flags := flag.NewFlagSet("seed-quality", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	definitionID := flags.String("definition-id", "", "official definition ID")
+	versionID := flags.String("version-id", "", "official version ID")
+	releaseID := flags.String("release-id", "", "official release ID")
+	releaseRevisionID := flags.String("release-revision-id", "", "official release revision ID")
+	fromSubject := flags.String("from-subject", "", "first synthetic subject")
+	toSubject := flags.String("to-subject", "", "last synthetic subject")
+	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 {
+		return qualitySeedArguments{}, errors.New("quality seed arguments are invalid")
+	}
+	parsed := qualitySeedArguments{}
+	var ok bool
+	if parsed.DefinitionID, ok = canonicalE2EUUID(*definitionID); !ok {
+		return qualitySeedArguments{}, errors.New("quality seed definition is invalid")
+	}
+	if parsed.VersionID, ok = canonicalE2EUUID(*versionID); !ok {
+		return qualitySeedArguments{}, errors.New("quality seed version is invalid")
+	}
+	if parsed.ReleaseID, ok = canonicalE2EUUID(*releaseID); !ok {
+		return qualitySeedArguments{}, errors.New("quality seed release is invalid")
+	}
+	if parsed.ReleaseRevisionID, ok = canonicalE2EUUID(*releaseRevisionID); !ok {
+		return qualitySeedArguments{}, errors.New("quality seed release revision is invalid")
+	}
+	parsed.FromSubject, _ = strconv.Atoi(*fromSubject)
+	parsed.ToSubject, _ = strconv.Atoi(*toSubject)
+	if strconv.Itoa(parsed.FromSubject) != *fromSubject || strconv.Itoa(parsed.ToSubject) != *toSubject ||
+		parsed.FromSubject < 1 || parsed.ToSubject < parsed.FromSubject || parsed.ToSubject > 100 {
+		return qualitySeedArguments{}, errors.New("quality seed subject range is invalid")
+	}
+	return parsed, nil
+}
+
+func canonicalE2EUUID(raw string) (uuid.UUID, bool) {
+	value, err := uuid.Parse(raw)
+	return value, err == nil && value != uuid.Nil && value.String() == raw
+}
+
+func seedQuality(ctx context.Context, cfg seedConfig, arguments qualitySeedArguments) error {
+	if ctx == nil || cfg.validate() != nil || cfg.PlatformID == uuid.Nil || cfg.QualityActiveKeyID == "" ||
+		cfg.QualityRawRetention != 30 || cfg.QualityAggregateTTL != 180 || cfg.QualityMinimumSubjects != 10 ||
+		arguments.DefinitionID == uuid.Nil || arguments.VersionID == uuid.Nil || arguments.ReleaseID == uuid.Nil ||
+		arguments.ReleaseRevisionID == uuid.Nil || arguments.FromSubject < 1 ||
+		arguments.ToSubject < arguments.FromSubject || arguments.ToSubject > 100 {
+		return errors.New("Cloud E2E quality seed configuration is invalid")
+	}
+	postgres, err := store.OpenPostgres(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer postgres.Close()
+	pseudonymizer, err := officialquality.NewPseudonymizer(cfg.QualityActiveKeyID, cfg.QualityKeys)
+	if err != nil {
+		return errors.New("Cloud E2E quality pseudonym configuration is invalid")
+	}
+	now := time.Now().UTC()
+	day := now.Truncate(24*time.Hour).AddDate(0, 0, -1)
+	tx, err := postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return errors.New("Cloud E2E quality seed transaction could not start")
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	for subject := arguments.FromSubject; subject <= arguments.ToSubject; subject++ {
+		eventID, eventErr := uuid.NewV7()
+		if eventErr != nil {
+			return errors.New("Cloud E2E quality event ID could not be generated")
+		}
+		subjectDigest := sha256.Sum256([]byte(fmt.Sprintf("aera-e2e-quality-subject-%03d", subject)))
+		bindingDigest := sha256.Sum256([]byte("aera-e2e-quality-binding-" + eventID.String()))
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO official_quality_events (
+				event_id, protocol_version, consent_version, platform_id,
+				definition_id, version_id, release_id, release_revision_id,
+				desktop_version, runtime_version, event_day, subject_pseudonym,
+				binding_proof_digest, event_kind, result_code, latency_bucket,
+				total_token_bucket, crash_code, feedback_rating,
+				feedback_reason_codes, device_signature, created_at
+			) VALUES ($1, 1, 1, $2, $3, $4, $5, $6, 'e2e-desktop', 'e2e-runtime', $7,
+				$8, $9, 'metric', 'success', 'lt_1s', '1_1k', NULL, NULL,
+				ARRAY[]::TEXT[], $10, $11)
+		`, eventID, cfg.PlatformID, arguments.DefinitionID, arguments.VersionID,
+			arguments.ReleaseID, arguments.ReleaseRevisionID, day,
+			subjectDigest[:], bindingDigest[:], bytes.Repeat([]byte{byte(subject)}, 64), now); err != nil {
+			return errors.New("Cloud E2E quality event could not be seeded")
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return errors.New("Cloud E2E quality seed transaction could not be committed")
+	}
+	maintenance, err := officialquality.NewPostgresMaintenance(officialquality.MaintenanceConfig{
+		Postgres: postgres, Pseudonymizer: pseudonymizer,
+		RawRetentionDays: cfg.QualityRawRetention, AggregateRetentionDays: cfg.QualityAggregateTTL,
+		MinimumSubjects: cfg.QualityMinimumSubjects,
+	})
+	if err != nil {
+		return errors.New("Cloud E2E quality maintenance could not be configured")
+	}
+	if err := maintenance.Run(ctx, now); err != nil {
+		return errors.New("Cloud E2E quality aggregate could not be computed")
+	}
+	return nil
 }
 
 func (c seedConfig) validate() error {
