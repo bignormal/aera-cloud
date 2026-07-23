@@ -152,4 +152,14 @@ COSIGN_TEST_FAIL=1 "$rollback" >"$tmp/unsigned.out" 2>"$tmp/unsigned.err" &&
     exit 1
   }
 
+compose_file="$root/deploy/compose.production.yaml"
+grep -q 'AGENTERA_CLOUD_INTERNAL_ADMIN_LISTEN_ADDR: 0.0.0.0:8443' "$compose_file"
+grep -q 'aera-cloud-internal-admin' "$compose_file"
+grep -q 'aera-cloud-admin-private' "$compose_file"
+test "$(grep -c ':ro$' "$compose_file")" -ge 4
+if grep -Eq '8443:8443|:8443"' "$compose_file"; then
+  echo "Internal Admin listener unexpectedly has a host port" >&2
+  exit 1
+fi
+
 printf 'deploy-by-digest tests passed\n'

@@ -64,6 +64,12 @@ services:
     environment:
       AGENTERA_CLOUD_ENVIRONMENT: production
       AGENTERA_CLOUD_LISTEN_ADDR: 0.0.0.0:8086
+      AGENTERA_CLOUD_INTERNAL_ADMIN_ENABLED: "true"
+      AGENTERA_CLOUD_INTERNAL_ADMIN_LISTEN_ADDR: 0.0.0.0:8443
+      AGENTERA_CLOUD_INTERNAL_ADMIN_SERVER_CERT_FILE: /run/secrets/internal-admin-server.pem
+      AGENTERA_CLOUD_INTERNAL_ADMIN_SERVER_KEY_FILE: /run/secrets/internal-admin-server-key.pem
+      AGENTERA_CLOUD_INTERNAL_ADMIN_CLIENT_CA_FILE: /run/secrets/internal-admin-client-ca.pem
+      AGENTERA_CLOUD_INTERNAL_ADMIN_JWT_PUBLIC_KEY_FILE: /run/secrets/internal-admin-jwt-public.pem
       AGENTERA_CLOUD_DATABASE_URL: postgres://aera_cloud:${AERA_CLOUD_POSTGRES_PASSWORD}@postgres:5432/aera_cloud?sslmode=disable
       AGENTERA_CLOUD_REDIS_ADDR: redis:6379
       AGENTERA_CLOUD_REDIS_USERNAME: aera_cloud
@@ -74,7 +80,16 @@ services:
       redis: {condition: service_healthy}
     ports:
       - "127.0.0.1:${AGENTERA_CLOUD_HTTP_PORT:-18086}:8086"
-    networks: [agentera-cloud-internal]
+    expose: ["8086", "8443"]
+    volumes:
+      - ${AGENTERA_CLOUD_INTERNAL_ADMIN_SERVER_CERT_FILE_HOST:?set the Internal Admin server certificate}:/run/secrets/internal-admin-server.pem:ro
+      - ${AGENTERA_CLOUD_INTERNAL_ADMIN_SERVER_KEY_FILE_HOST:?set the Internal Admin server key}:/run/secrets/internal-admin-server-key.pem:ro
+      - ${AGENTERA_CLOUD_INTERNAL_ADMIN_CLIENT_CA_FILE_HOST:?set the dedicated Admin client CA}:/run/secrets/internal-admin-client-ca.pem:ro
+      - ${AGENTERA_CLOUD_INTERNAL_ADMIN_JWT_PUBLIC_KEY_FILE_HOST:?set the Admin service JWT public key}:/run/secrets/internal-admin-jwt-public.pem:ro
+    networks:
+      agentera-cloud-internal:
+      aera-cloud-admin-private:
+        aliases: [aera-cloud-internal-admin]
     read_only: true
     tmpfs: ["/tmp:rw,noexec,nosuid,size=16m"]
     cap_drop: [ALL]
@@ -97,6 +112,9 @@ networks:
   agentera-cloud-internal:
     name: agentera-cloud-internal
     internal: false
+  aera-cloud-admin-private:
+    name: ${AERA_CLOUD_ADMIN_PRIVATE_NETWORK:-aera-cloud-admin-private}
+    external: true
 
 volumes:
   agentera-cloud-postgres:

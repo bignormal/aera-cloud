@@ -46,6 +46,8 @@ AGENTERA_CLOUD_ENCRYPTED_BACKUP_ENABLED=false
 
 The generated feature file is mode `0600` outside Git and is loaded after the base secret environment file. Health, auth, official-quality, and encrypted-backup read-only/fail-closed smoke must pass before the disabled deployment is recorded.
 
+The production Compose file also requires the Internal Admin server certificate/key, dedicated Admin client CA, and Admin service-JWT public key as read-only host mounts. It joins the Cloud app—not PostgreSQL, Redis, or object storage—to the external `AERA_CLOUD_ADMIN_PRIVATE_NETWORK`, where it is available only as `aera-cloud-internal-admin:8443`. The listener has no host port. The paired Admin deployment must verify the server CA through its own trust bundle and prove mTLS plus the audience-bound service JWT before enabling any Admin mutation.
+
 Feature enablement is a separate protected job and requires the `enable_rollout` input plus explicit booleans for each cohort. It re-verifies the same manifest and refuses a different digest; it never rebuilds the image. Public registration remains false until its independent domain, provider, legal, backup, and production-approval gates pass.
 
 Install `deploy/Caddyfile.example` with `AGENTERA_ACCOUNT_HOST` set to the filed domain. Keep port 18086 loopback-only. The example deliberately disables access logs so OAuth state and device metadata in query strings are not retained.
