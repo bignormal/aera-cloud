@@ -155,7 +155,7 @@ if ! jq -e \
       objects |
       select((.payload? | type) == "string") |
       (try (.payload | @base64d | fromjson) catch empty) |
-      select(._type == "https://in-toto.io/Statement/v1") |
+      select(._type == "https://in-toto.io/Statement/v0.1") |
       select(.predicateType == "https://slsa.dev/provenance/v1") |
       select(.subject == [{name: $image, digest: {sha256: $digest}}]) |
       select(.predicate == $expected[0])

@@ -35,7 +35,7 @@ case "$1" in
       --arg digest "$digest" \
       --slurpfile predicate "$predicate" \
       '{
-        _type:"https://in-toto.io/Statement/v1",
+        _type:"https://in-toto.io/Statement/v0.1",
         subject:[{name:$image,digest:{sha256:$digest}}],
         predicateType:"https://slsa.dev/provenance/v1",
         predicate:$predicate[0]
