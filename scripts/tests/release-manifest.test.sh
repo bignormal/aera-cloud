@@ -52,12 +52,17 @@ case "$1" in
     fi
     digest=${COSIGN_TEST_IMAGE##*@sha256:}
     image=${COSIGN_TEST_IMAGE%@*}
+    statement_type=https://in-toto.io/Statement/v0.1
+    if test "${COSIGN_TEST_WRONG_STATEMENT_TYPE:-0}" = 1; then
+      statement_type=https://in-toto.io/Statement/v1
+    fi
     statement=$(jq -cn \
       --arg image "$image" \
       --arg digest "$digest" \
+      --arg statementType "$statement_type" \
       --slurpfile predicate "$predicate" \
       '{
-        _type: "https://in-toto.io/Statement/v1",
+        _type: $statementType,
         subject: [{name: $image, digest: {sha256: $digest}}],
         predicateType: "https://slsa.dev/provenance/v1",
         predicate: $predicate[0]
@@ -175,6 +180,7 @@ printf '{"valid":true}\n' > "$tmp/manifest.sigstore.json"
 
 COSIGN_TEST_NO_ATTESTATION=1 expect_failure missing-attestation "$manifest"
 COSIGN_TEST_WRONG_PREDICATE=1 expect_failure wrong-attestation-predicate "$manifest"
+COSIGN_TEST_WRONG_STATEMENT_TYPE=1 expect_failure wrong-attestation-statement-type "$manifest"
 
 saved_identity=$AERA_RELEASE_CERTIFICATE_IDENTITY_REGEXP
 AERA_RELEASE_CERTIFICATE_IDENTITY_REGEXP='^https://github.com/other/repository/'
