@@ -143,6 +143,7 @@ services:
       - ${AERA_CLOUD_INTERNAL_ADMIN_CLIENT_CA_FILE_HOST:?set the dedicated Admin client CA}:/run/secrets/internal-admin-client-ca.pem:ro
       - ${AERA_CLOUD_INTERNAL_ADMIN_JWT_PUBLIC_KEY_FILE_HOST:?set the Admin service JWT public key}:/run/secrets/internal-admin-jwt-public.pem:ro
     networks:
+      aera-cloud-ingress:
       aera-cloud-backend:
       aera-cloud-backup:
       aera-cloud-admin-private:
@@ -166,6 +167,9 @@ services:
       options: {max-size: "10m", max-file: "3"}
 
 networks:
+  aera-cloud-ingress:
+    name: aera-cloud-ingress-internal-beta
+    internal: false
   aera-cloud-backend:
     name: aera-cloud-backend-internal-beta
     internal: true

@@ -56,6 +56,11 @@ require_text "$compose_file" 'MC_CONFIG_DIR: /tmp/\.mc'
 require_text "$compose_file" 'aera-cloud-minio-internal-beta:/data'
 require_text "$compose_file" 'aera-cloud-admin-private:'
 require_text "$compose_file" 'external: true'
+require_text "$compose_file" 'aera-cloud-ingress:'
+require_text "$compose_file" 'name: aera-cloud-ingress-internal-beta'
+require_text "$compose_file" 'internal: false'
+[[ $(grep -Ec '^[[:space:]]+aera-cloud-ingress:$' "$compose_file") -eq 2 ]] ||
+  fail 'loopback ingress network must be attached only to the Cloud app'
 require_text "$compose_file" 'condition: service_healthy'
 require_text "$compose_file" '/health/ready'
 [[ $(grep -Ec 'internal-admin-(server|client|jwt).+:ro$' "$compose_file") -ge 4 ]] ||
