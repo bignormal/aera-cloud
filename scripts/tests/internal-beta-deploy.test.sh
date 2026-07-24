@@ -68,6 +68,8 @@ done
 # The IP certificate challenge is served on port 80; all other HTTP traffic is
 # redirected, and only loopback Cloud ingress is proxied without access logs.
 require_text "$caddy_file" 'http://\{\$AERA_INTERNAL_BETA_IP\}'
+# Bare-IP clients cannot send SNI, so the IP certificate must be the default.
+require_text "$caddy_file" 'default_sni \{\$AERA_INTERNAL_BETA_IP\}'
 require_text "$caddy_file" '/\.well-known/acme-challenge/\*'
 require_text "$caddy_file" 'root \* /var/lib/aera-certbot'
 require_text "$caddy_file" 'redir https://\{\$AERA_INTERNAL_BETA_IP\}\{uri\}'
