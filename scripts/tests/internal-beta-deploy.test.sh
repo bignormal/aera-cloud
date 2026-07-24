@@ -56,6 +56,11 @@ require_text "$compose_file" 'MC_CONFIG_DIR: /tmp/\.mc'
 require_text "$compose_file" 'aera-cloud-minio-internal-beta:/data'
 require_text "$compose_file" 'aera-cloud-admin-private:'
 require_text "$compose_file" 'external: true'
+require_text "$compose_file" 'aera-cloud-ingress:'
+require_text "$compose_file" 'name: aera-cloud-ingress-internal-beta'
+require_text "$compose_file" 'internal: false'
+[[ $(grep -Ec '^[[:space:]]+aera-cloud-ingress:$' "$compose_file") -eq 2 ]] ||
+  fail 'loopback ingress network must be attached only to the Cloud app'
 require_text "$compose_file" 'condition: service_healthy'
 require_text "$compose_file" '/health/ready'
 [[ $(grep -Ec 'internal-admin-(server|client|jwt).+:ro$' "$compose_file") -ge 4 ]] ||
@@ -78,6 +83,15 @@ require_text "$caddy_file" 'X-Frame-Options "DENY"'
 require_text "$caddy_file" "Content-Security-Policy \"frame-ancestors 'none'\""
 require_text "$caddy_file" 'reverse_proxy 127\.0\.0\.1:18086'
 forbid_text "$caddy_file" '^[[:space:]]*log[[:space:]]*\{'
+
+# Caddy can retain a failed active-health result while the app is starting.
+# The public smoke must tolerate that bounded propagation window instead of
+# rejecting an otherwise healthy first deployment.
+require_text "$health_script" '\-\-retry 15'
+require_text "$health_script" '\-\-retry-delay 2'
+require_text "$health_script" '\-\-retry-max-time 45'
+require_text "$health_script" '\-\-retry-all-errors'
+require_text "$health_script" '\-\-retry-connrefused'
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/aera-cloud-internal-beta.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT

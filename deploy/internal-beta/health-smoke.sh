@@ -27,6 +27,11 @@ curl_args=(
   --tlsv1.2
   --connect-timeout 10
   --max-time 30
+  --retry 15
+  --retry-delay 2
+  --retry-max-time 45
+  --retry-all-errors
+  --retry-connrefused
 )
 
 curl "${curl_args[@]}" "$origin/health/live" >"$tmp/live.json"
