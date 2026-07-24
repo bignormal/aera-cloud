@@ -1,6 +1,9 @@
 {
 	auto_https off
 	admin off
+	# Clients dial the bare IP without SNI (RFC 6066 forbids IP literals),
+	# so the IP site's certificate must also serve SNI-less handshakes.
+	default_sni {$AERA_INTERNAL_BETA_IP}
 }
 
 http://{$AERA_INTERNAL_BETA_IP} {
