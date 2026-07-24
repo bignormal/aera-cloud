@@ -162,8 +162,8 @@ jobs:
           export AERA_PROVENANCE_IMAGE_DIGEST="$IMAGE_DIGEST"
           scripts/release/build-provenance.sh "$evidence/provenance.json"
 
-          cosign sign --yes --bundle "$evidence/image.sigstore.json" "$IMAGE_REFERENCE"
-          cosign attest --yes --type slsaprovenance1 --predicate "$evidence/provenance.json" --bundle "$evidence/provenance.sigstore.json" "$IMAGE_REFERENCE"
+          cosign sign --yes --use-signing-config=false --bundle "$evidence/image.sigstore.json" "$IMAGE_REFERENCE"
+          cosign attest --yes --use-signing-config=false --type slsaprovenance1 --predicate "$evidence/provenance.json" --bundle "$evidence/provenance.sigstore.json" "$IMAGE_REFERENCE"
 
       - name: Build, verify, and sign canonical candidate manifest
         shell: bash
