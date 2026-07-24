@@ -79,6 +79,15 @@ require_text "$caddy_file" "Content-Security-Policy \"frame-ancestors 'none'\""
 require_text "$caddy_file" 'reverse_proxy 127\.0\.0\.1:18086'
 forbid_text "$caddy_file" '^[[:space:]]*log[[:space:]]*\{'
 
+# Caddy can retain a failed active-health result while the app is starting.
+# The public smoke must tolerate that bounded propagation window instead of
+# rejecting an otherwise healthy first deployment.
+require_text "$health_script" '\-\-retry 15'
+require_text "$health_script" '\-\-retry-delay 2'
+require_text "$health_script" '\-\-retry-max-time 45'
+require_text "$health_script" '\-\-retry-all-errors'
+require_text "$health_script" '\-\-retry-connrefused'
+
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/aera-cloud-internal-beta.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin" "$tmp/state" "$tmp/evidence"
