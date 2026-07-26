@@ -258,6 +258,69 @@ func TestServiceResetPasswordUsesReceiptAndRequestsSessionFamilyRevocation(t *te
 	}
 }
 
+func TestServiceAuthenticateVerificationCompletesSingleUseLoginReceipt(t *testing.T) {
+	fixture := newAccountFixture(t)
+	userID := uuid.New()
+	spaceID := uuid.New()
+	fixture.repository.credential = Credential{
+		UserID: userID, PersonalSpaceID: spaceID, Nickname: "Alice",
+		Status: "active", PasswordHash: "hash:unused", ParamsVersion: 7,
+	}
+	fixture.repository.found = true
+	receipt := fixture.receipt(t, secure.IdentityPhone, "+8613800138000", verification.PurposeLogin)
+
+	principal, err := fixture.service.AuthenticateVerification(context.Background(), receipt)
+	if err != nil || principal.UserID != userID || principal.PersonalSpaceID != spaceID || principal.Nickname != "Alice" {
+		t.Fatalf("AuthenticateVerification() = %+v, %v", principal, err)
+	}
+	if fixture.passwords.verifyCalls != 0 {
+		t.Fatal("code login verified a password")
+	}
+	if len(fixture.repository.receiptsUsed) != 0 {
+		t.Fatal("receipt was consumed before the browser session was staged")
+	}
+
+	if err := fixture.service.CompleteVerificationLogin(
+		context.Background(),
+		receipt,
+		userID,
+	); err != nil {
+		t.Fatalf("CompleteVerificationLogin() error = %v", err)
+	}
+	if err := fixture.service.CompleteVerificationLogin(
+		context.Background(),
+		receipt,
+		userID,
+	); !errors.Is(err, ErrVerificationRequired) {
+		t.Fatalf("replayed receipt completion error = %v", err)
+	}
+}
+
+func TestServiceAuthenticateVerificationRejectsWrongPurposeUnknownAccountAndInactiveStatus(t *testing.T) {
+	fixture := newAccountFixture(t)
+	fixture.repository.found = false
+
+	registrationReceipt := fixture.receipt(t, secure.IdentityPhone, "+8613800138000", verification.PurposeRegistration)
+	if _, err := fixture.service.AuthenticateVerification(context.Background(), registrationReceipt); !errors.Is(err, ErrVerificationRequired) {
+		t.Fatalf("wrong-purpose receipt error = %v", err)
+	}
+
+	loginReceipt := fixture.receipt(t, secure.IdentityPhone, "+8613800138000", verification.PurposeLogin)
+	if _, err := fixture.service.AuthenticateVerification(context.Background(), loginReceipt); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("unknown account error = %v", err)
+	}
+	if len(fixture.repository.receiptsUsed) != 0 {
+		t.Fatal("a failed code login consumed the receipt")
+	}
+
+	fixture.repository.found = true
+	fixture.repository.credential = Credential{UserID: uuid.New(), Status: "pending_deletion"}
+	pendingReceipt := fixture.receipt(t, secure.IdentityPhone, "+8613800138000", verification.PurposeLogin)
+	if _, err := fixture.service.AuthenticateVerification(context.Background(), pendingReceipt); !errors.Is(err, ErrAccountPendingDeletion) {
+		t.Fatalf("pending deletion error = %v", err)
+	}
+}
+
 type accountFixture struct {
 	now        time.Time
 	identity   *secure.IdentityCodec
@@ -396,6 +459,23 @@ func (f *fakeAccountRepository) FindCredentialByUserID(_ context.Context, userID
 }
 
 func (f *fakeAccountRepository) UpdatePasswordHash(context.Context, uuid.UUID, string, int, time.Time) error {
+	return nil
+}
+
+func (f *fakeAccountRepository) ConsumeLoginReceipt(_ context.Context, record LoginReceiptRecord) error {
+	if record.ReceiptClaims.Purpose != verification.PurposeLogin ||
+		record.UserID == uuid.Nil ||
+		record.AuditEventID == uuid.Nil ||
+		record.ConsumedAt.IsZero() {
+		return ErrInvalidRequest
+	}
+	if f.receiptsUsed == nil {
+		f.receiptsUsed = make(map[uuid.UUID]bool)
+	}
+	if f.receiptsUsed[record.ReceiptClaims.ChallengeID] {
+		return ErrReceiptUnavailable
+	}
+	f.receiptsUsed[record.ReceiptClaims.ChallengeID] = true
 	return nil
 }
 

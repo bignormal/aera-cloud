@@ -39,10 +39,13 @@ func (s *handlerHealthStub) Ping(context.Context) error {
 }
 
 type handlerServiceStub struct {
-	user      admin.User
-	devices   admin.Page[admin.Device]
-	sessions  admin.Page[admin.Session]
-	operation admin.Operation
+	user        admin.User
+	devices     admin.Page[admin.Device]
+	sessions    admin.Page[admin.Session]
+	operation   admin.Operation
+	stats       admin.PlatformStats
+	deviceStats admin.DeviceStats
+	memberships admin.UserMemberships
 
 	listUsersErr    error
 	lookupUserErr   error
@@ -51,6 +54,9 @@ type handlerServiceStub struct {
 	listSessionsErr error
 	executeErr      error
 	getOperationErr error
+	statsErr        error
+	deviceStatsErr  error
+	membershipsErr  error
 
 	calls       []string
 	listRequest admin.ListUsersRequest
@@ -105,6 +111,22 @@ func (s *handlerServiceStub) GetUser(_ context.Context, userID uuid.UUID) (admin
 	s.calls = append(s.calls, "get_user")
 	s.targetID = userID
 	return s.user, s.getUserErr
+}
+
+func (s *handlerServiceStub) Stats(context.Context) (admin.PlatformStats, error) {
+	s.calls = append(s.calls, "stats")
+	return s.stats, s.statsErr
+}
+
+func (s *handlerServiceStub) DeviceStats(context.Context) (admin.DeviceStats, error) {
+	s.calls = append(s.calls, "device_stats")
+	return s.deviceStats, s.deviceStatsErr
+}
+
+func (s *handlerServiceStub) UserMemberships(_ context.Context, userID uuid.UUID) (admin.UserMemberships, error) {
+	s.calls = append(s.calls, "user_memberships")
+	s.targetID = userID
+	return s.memberships, s.membershipsErr
 }
 
 func (s *handlerServiceStub) ListUserDevices(_ context.Context, userID uuid.UUID, request admin.PageRequest) (admin.Page[admin.Device], error) {

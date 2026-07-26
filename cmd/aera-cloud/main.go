@@ -825,11 +825,13 @@ func buildAccessAuthenticator(
 
 func buildBrowserSessionManager(cfg config.Config, redisClient redis.UniversalClient) (*browser.Manager, error) {
 	return browser.NewManager(browser.ManagerConfig{
-		Redis:         redisClient,
-		HMACKey:       cfg.BrowserSessionHMACKey,
-		TTL:           time.Duration(cfg.BrowserSessionTTLSeconds) * time.Second,
-		CookieName:    cfg.BrowserCookieName,
-		SecureCookies: cfg.Environment == "production" || strings.HasPrefix(cfg.PublicURL, "https://"),
+		Redis:                redisClient,
+		HMACKey:              cfg.BrowserSessionHMACKey,
+		TTL:                  time.Duration(cfg.BrowserSessionTTLSeconds) * time.Second,
+		CookieName:           cfg.BrowserCookieName,
+		PersistentCookieName: cfg.BrowserPersistentCookieName,
+		PersistentTTL:        time.Duration(cfg.BrowserPersistentTTLSeconds) * time.Second,
+		SecureCookies:        cfg.Environment == "production" || strings.HasPrefix(cfg.PublicURL, "https://"),
 	})
 }
 

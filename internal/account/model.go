@@ -95,6 +95,13 @@ type Credential struct {
 	ParamsVersion   int
 }
 
+type LoginReceiptRecord struct {
+	ReceiptClaims verification.ReceiptClaims
+	UserID        uuid.UUID
+	AuditEventID  uuid.UUID
+	ConsumedAt    time.Time
+}
+
 type PasswordResetRecord struct {
 	ReceiptClaims         verification.ReceiptClaims
 	PasswordHash          string

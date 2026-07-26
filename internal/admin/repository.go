@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/bignormal/aera-cloud/internal/secure"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -348,6 +349,72 @@ func revokeSessionFamilyLifecycle(
 		WHERE family_id = $1 AND user_id = $2
 	`, familyID, userID, now)
 	if err != nil || tag.RowsAffected() < 1 {
+		return 0, ErrUnavailable
+	}
+	return incrementAdministrativeRevision(ctx, tx, userID, now)
+}
+
+// revokeAllSessionsLifecycle revokes every live session and offline entitlement
+// for the user (admin forced logout of all sessions) and bumps the revision.
+func revokeAllSessionsLifecycle(
+	ctx context.Context,
+	tx pgx.Tx,
+	userID uuid.UUID,
+	now time.Time,
+) (int64, error) {
+	if _, err := tx.Exec(ctx, `
+		UPDATE sessions SET revoked_at = COALESCE(revoked_at, $2),
+			revoked_reason = COALESCE(revoked_reason, 'admin_revoked_all')
+		WHERE user_id = $1 AND revoked_at IS NULL
+	`, userID, now); err != nil {
+		return 0, ErrUnavailable
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE offline_entitlement_issuances SET revoked_at = COALESCE(revoked_at, $2) WHERE user_id = $1
+	`, userID, now); err != nil {
+		return 0, ErrUnavailable
+	}
+	return incrementAdministrativeRevision(ctx, tx, userID, now)
+}
+
+// forcePasswordResetLifecycle overwrites the password credential with a valid
+// Argon2id hash of a fresh random secret that is never returned, then revokes
+// all sessions and offline entitlements. The user cannot sign in with any known
+// password (login stays a clean invalid-credentials result, not an error) and
+// must recover through the verified "forgot password" flow, whose UPDATE still
+// finds the credential row.
+func (r *ControlRepository) forcePasswordResetLifecycle(
+	ctx context.Context,
+	tx pgx.Tx,
+	userID uuid.UUID,
+	now time.Time,
+) (int64, error) {
+	secret, err := secure.RandomToken(32)
+	if err != nil {
+		return 0, ErrUnavailable
+	}
+	hash, paramsVersion, err := r.passwords.Hash(secret)
+	if err != nil {
+		return 0, ErrUnavailable
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE password_credentials
+		SET password_hash = $2, params_version = $3, changed_at = $4
+		WHERE user_id = $1
+	`, userID, hash, paramsVersion, now)
+	if err != nil || tag.RowsAffected() != 1 {
+		return 0, ErrUnavailable
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE sessions SET revoked_at = COALESCE(revoked_at, $2),
+			revoked_reason = COALESCE(revoked_reason, 'admin_password_reset')
+		WHERE user_id = $1 AND revoked_at IS NULL
+	`, userID, now); err != nil {
+		return 0, ErrUnavailable
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE offline_entitlement_issuances SET revoked_at = COALESCE(revoked_at, $2) WHERE user_id = $1
+	`, userID, now); err != nil {
 		return 0, ErrUnavailable
 	}
 	return incrementAdministrativeRevision(ctx, tx, userID, now)

@@ -21,6 +21,9 @@ type QueryData interface {
 	GetUser(context.Context, uuid.UUID) (User, error)
 	ListUserDevices(context.Context, DeviceQuery) (DataPage[Device], error)
 	ListUserSessions(context.Context, SessionQuery) (DataPage[Session], error)
+	Stats(context.Context) (PlatformStats, error)
+	DeviceStats(context.Context) (DeviceStats, error)
+	UserMemberships(context.Context, uuid.UUID) (UserMemberships, error)
 }
 
 type CommandData interface {
@@ -126,6 +129,52 @@ func (s *ControlService) GetUser(ctx context.Context, userID uuid.UUID) (User, e
 		return User{}, mapControlDataError(err)
 	}
 	return user, nil
+}
+
+// Stats returns point-in-time account and device counters for the admin
+// overview dashboard. It carries no personal data and needs no pagination.
+func (s *ControlService) Stats(ctx context.Context) (PlatformStats, error) {
+	if s == nil {
+		return PlatformStats{}, ErrInvalidCommand
+	}
+	stats, err := s.queries.Stats(ctx)
+	if err != nil {
+		return PlatformStats{}, mapControlDataError(err)
+	}
+	return stats, nil
+}
+
+// DeviceStats returns the installed base grouped by platform and app version.
+func (s *ControlService) DeviceStats(ctx context.Context) (DeviceStats, error) {
+	if s == nil {
+		return DeviceStats{}, ErrInvalidCommand
+	}
+	stats, err := s.queries.DeviceStats(ctx)
+	if err != nil {
+		return DeviceStats{}, mapControlDataError(err)
+	}
+	if stats.Buckets == nil {
+		stats.Buckets = make([]DeviceVersionStat, 0)
+	}
+	return stats, nil
+}
+
+// UserMemberships returns the organizations and workspaces a user belongs to.
+func (s *ControlService) UserMemberships(ctx context.Context, userID uuid.UUID) (UserMemberships, error) {
+	if s == nil || userID == uuid.Nil {
+		return UserMemberships{}, ErrInvalidCommand
+	}
+	memberships, err := s.queries.UserMemberships(ctx, userID)
+	if err != nil {
+		return UserMemberships{}, mapControlDataError(err)
+	}
+	if memberships.Organizations == nil {
+		memberships.Organizations = make([]Membership, 0)
+	}
+	if memberships.Workspaces == nil {
+		memberships.Workspaces = make([]Membership, 0)
+	}
+	return memberships, nil
 }
 
 func (s *ControlService) ListUserDevices(

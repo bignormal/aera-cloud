@@ -78,8 +78,12 @@ func TestLoadAcceptsLoopbackHTTPInDevelopment(t *testing.T) {
 	if cfg.OfflinePolicyVersion != 1 || cfg.ActiveDeviceLimit != 5 {
 		t.Fatalf("desktop authorization policy = %d / %d", cfg.OfflinePolicyVersion, cfg.ActiveDeviceLimit)
 	}
-	if cfg.BrowserCookieName != "agentera_test_session" || cfg.BrowserSessionTTLSeconds != 900 {
-		t.Fatalf("browser session configuration = %q / %d", cfg.BrowserCookieName, cfg.BrowserSessionTTLSeconds)
+	if cfg.BrowserCookieName != "agentera_test_session" || cfg.BrowserSessionTTLSeconds != 900 ||
+		cfg.BrowserPersistentCookieName != "agentera_test_session_persistent" ||
+		cfg.BrowserPersistentTTLSeconds != 30*24*60*60 {
+		t.Fatalf("browser session configuration = %q / %d / %q / %d",
+			cfg.BrowserCookieName, cfg.BrowserSessionTTLSeconds,
+			cfg.BrowserPersistentCookieName, cfg.BrowserPersistentTTLSeconds)
 	}
 	if cfg.LoginIdentityLimit != 5 || cfg.LoginIPLimit != 20 || cfg.LoginWindowSeconds != 600 {
 		t.Fatalf("login limits = %d / %d / %d", cfg.LoginIdentityLimit, cfg.LoginIPLimit, cfg.LoginWindowSeconds)
@@ -350,6 +354,9 @@ func TestLoadRejectsInvalidBrowserAuthenticationConfiguration(t *testing.T) {
 		{name: "short login rate key", key: "AGENTERA_CLOUD_LOGIN_RATE_HMAC_KEY", value: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 31)), want: "at least 32 bytes"},
 		{name: "invalid cookie name", key: "AGENTERA_CLOUD_BROWSER_COOKIE_NAME", value: "shared cookie", want: "invalid"},
 		{name: "long browser session", key: "AGENTERA_CLOUD_BROWSER_SESSION_TTL_SECONDS", value: "3600", want: "between 300 and 1800"},
+		{name: "invalid persistent cookie name", key: "AGENTERA_CLOUD_BROWSER_PERSISTENT_COOKIE_NAME", value: "shared cookie", want: "invalid"},
+		{name: "short persistent session", key: "AGENTERA_CLOUD_BROWSER_PERSISTENT_SESSION_TTL_SECONDS", value: "60", want: "between 3600 and 7776000"},
+		{name: "long persistent session", key: "AGENTERA_CLOUD_BROWSER_PERSISTENT_SESSION_TTL_SECONDS", value: "7776001", want: "between 3600 and 7776000"},
 		{name: "IP limit below identity limit", key: "AGENTERA_CLOUD_LOGIN_IP_LIMIT", value: "4", want: "between 5 and 10000"},
 		{name: "invalid terms version", key: "AGENTERA_CLOUD_TERMS_VERSION", value: "terms 2026", want: "invalid"},
 	}

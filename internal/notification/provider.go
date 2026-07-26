@@ -50,6 +50,7 @@ func validVerificationCode(code string) bool {
 func validPurpose(purpose verification.Purpose) bool {
 	switch purpose {
 	case verification.PurposeRegistration,
+		verification.PurposeLogin,
 		verification.PurposePasswordReset,
 		verification.PurposeBindIdentity,
 		verification.PurposeAccountDeletion,

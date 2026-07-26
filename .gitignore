@@ -15,3 +15,7 @@ test-results/
 .worktrees/
 *.dump.age
 *.dump.age.sha256
+
+# Local one-off development harnesses and SMS provider probes.
+/.tmp-*.sh
+/.tmp-sms-*/

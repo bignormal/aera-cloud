@@ -50,6 +50,8 @@ const (
 	envActiveDeviceLimit               = "AGENTERA_CLOUD_ACTIVE_DEVICE_LIMIT"
 	envBrowserCookieName               = "AGENTERA_CLOUD_BROWSER_COOKIE_NAME"
 	envBrowserSessionTTLSeconds        = "AGENTERA_CLOUD_BROWSER_SESSION_TTL_SECONDS"
+	envBrowserPersistentCookieName     = "AGENTERA_CLOUD_BROWSER_PERSISTENT_COOKIE_NAME"
+	envBrowserPersistentTTLSeconds     = "AGENTERA_CLOUD_BROWSER_PERSISTENT_SESSION_TTL_SECONDS"
 	envLoginIdentityLimit              = "AGENTERA_CLOUD_LOGIN_IDENTITY_LIMIT"
 	envLoginIPLimit                    = "AGENTERA_CLOUD_LOGIN_IP_LIMIT"
 	envLoginWindowSeconds              = "AGENTERA_CLOUD_LOGIN_WINDOW_SECONDS"
@@ -132,6 +134,8 @@ type Config struct {
 	ActiveDeviceLimit              int
 	BrowserCookieName              string
 	BrowserSessionTTLSeconds       int
+	BrowserPersistentCookieName    string
+	BrowserPersistentTTLSeconds    int
 	LoginIdentityLimit             int64
 	LoginIPLimit                   int64
 	LoginWindowSeconds             int
@@ -387,6 +391,27 @@ func Load(lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	browserPersistentCookieName := browserCookieName + "_persistent"
+	if configured, ok := lookup(envBrowserPersistentCookieName); ok {
+		browserPersistentCookieName = strings.TrimSpace(configured)
+		if browserPersistentCookieName == "" {
+			return Config{}, fmt.Errorf("%s is required when provided", envBrowserPersistentCookieName)
+		}
+	}
+	if !regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`).MatchString(browserPersistentCookieName) ||
+		browserPersistentCookieName == browserCookieName {
+		return Config{}, fmt.Errorf("%s is invalid", envBrowserPersistentCookieName)
+	}
+	browserPersistentTTLSeconds, err := optionalInteger(
+		lookup,
+		envBrowserPersistentTTLSeconds,
+		30*24*60*60,
+		60*60,
+		90*24*60*60,
+	)
+	if err != nil {
+		return Config{}, err
+	}
 	loginIdentityLimit, err := requiredInteger(lookup, envLoginIdentityLimit, 1, 1000)
 	if err != nil {
 		return Config{}, err
@@ -599,6 +624,8 @@ func Load(lookup LookupEnv) (Config, error) {
 		ActiveDeviceLimit:              activeDeviceLimit,
 		BrowserCookieName:              browserCookieName,
 		BrowserSessionTTLSeconds:       browserSessionTTLSeconds,
+		BrowserPersistentCookieName:    browserPersistentCookieName,
+		BrowserPersistentTTLSeconds:    browserPersistentTTLSeconds,
 		LoginIdentityLimit:             int64(loginIdentityLimit),
 		LoginIPLimit:                   int64(loginIPLimit),
 		LoginWindowSeconds:             loginWindowSeconds,
@@ -678,6 +705,18 @@ func requiredInteger(lookup LookupEnv, key string, minimum, maximum int) (int, e
 		return 0, err
 	}
 	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < minimum || parsed > maximum {
+		return 0, fmt.Errorf("%s must be an integer between %d and %d", key, minimum, maximum)
+	}
+	return parsed, nil
+}
+
+func optionalInteger(lookup LookupEnv, key string, fallback, minimum, maximum int) (int, error) {
+	value, ok := lookup(key)
+	if !ok || strings.TrimSpace(value) == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
 	if err != nil || parsed < minimum || parsed > maximum {
 		return 0, fmt.Errorf("%s must be an integer between %d and %d", key, minimum, maximum)
 	}

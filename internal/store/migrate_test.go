@@ -21,16 +21,26 @@ func TestEmbeddedMigrationsIncludeInternalBetaDirectRegistration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadMigrations() error = %v", err)
 	}
-	if len(loaded) != 19 {
-		t.Fatalf("embedded migration count = %d, want 19", len(loaded))
+	if len(loaded) != 20 {
+		t.Fatalf("embedded migration count = %d, want 20", len(loaded))
 	}
-	last := loaded[len(loaded)-1]
-	if last.version != 19 || last.name != "000019_internal_beta_direct_registration.sql" {
-		t.Fatalf("last embedded migration = %d/%s", last.version, last.name)
+	directRegistration := loaded[18]
+	if directRegistration.version != 19 || directRegistration.name != "000019_internal_beta_direct_registration.sql" {
+		t.Fatalf("migration 19 = %d/%s", directRegistration.version, directRegistration.name)
 	}
 	const expected = "ALTER TABLE identities\n    ALTER COLUMN verified_at DROP NOT NULL;"
-	if strings.TrimSpace(string(last.contents)) != expected {
-		t.Fatalf("migration 19 contents = %q, want only verified_at nullability change", last.contents)
+	if strings.TrimSpace(string(directRegistration.contents)) != expected {
+		t.Fatalf("migration 19 contents = %q, want only verified_at nullability change", directRegistration.contents)
+	}
+
+	adminActions := loaded[19]
+	if adminActions.version != 20 || adminActions.name != "000020_admin_operations_missing_actions.sql" {
+		t.Fatalf("migration 20 = %d/%s", adminActions.version, adminActions.name)
+	}
+	for _, required := range []string{"'revoke_all_sessions'", "'force_password_reset'", "target_type = 'user'"} {
+		if !strings.Contains(string(adminActions.contents), required) {
+			t.Fatalf("migration 20 is missing %q", required)
+		}
 	}
 }
 
@@ -193,6 +203,10 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	assertCheckConstraintContains(t, ctx, postgres, "official_release_revisions", "official_release_revisions_rollout_check", "10000")
 	assertCheckConstraintContains(t, ctx, postgres, "official_release_revisions", "official_release_revisions_action_check", "rollback")
 	assertCheckConstraintContains(t, ctx, postgres, "admin_operations", "admin_operations_action_check", "official_release_rollback")
+	assertCheckConstraintContains(t, ctx, postgres, "admin_operations", "admin_operations_action_check", "revoke_all_sessions")
+	assertCheckConstraintContains(t, ctx, postgres, "admin_operations", "admin_operations_action_check", "force_password_reset")
+	assertCheckConstraintContains(t, ctx, postgres, "admin_operations", "admin_operations_action_target_check", "revoke_all_sessions")
+	assertCheckConstraintContains(t, ctx, postgres, "admin_operations", "admin_operations_action_target_check", "force_password_reset")
 	assertCheckConstraintContains(t, ctx, postgres, "admin_operations", "admin_operations_target_type_check", "official_release")
 	assertCheckConstraintContains(t, ctx, postgres, "organization_agent_submissions", "organization_agent_submissions_kind_check", "initial")
 	assertCheckConstraintContains(t, ctx, postgres, "organization_agent_submissions", "organization_agent_submissions_status_check", "superseded")
@@ -458,8 +472,8 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	if err := postgres.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if applied != 19 {
-		t.Fatalf("applied migration count = %d, want 19", applied)
+	if applied != 20 {
+		t.Fatalf("applied migration count = %d, want 20", applied)
 	}
 	var receiptConsumedColumn bool
 	if err := postgres.QueryRow(ctx, `

@@ -27,6 +27,24 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Health' }
+  /internal/admin/v1/stats:
+    get:
+      operationId: getCloudAdminStats
+      responses:
+        '200':
+          description: Point-in-time account and device counters (no personal data)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlatformStats' }
+  /internal/admin/v1/devices/stats:
+    get:
+      operationId: getCloudAdminDeviceStats
+      responses:
+        '200':
+          description: Installed base grouped by platform and app version (no personal data)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeviceStats' }
   /internal/admin/v1/users:
     get:
       operationId: listCloudUsers
@@ -92,6 +110,17 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/SessionPage' }
+  /internal/admin/v1/users/{userID}/memberships:
+    get:
+      operationId: listCloudUserMemberships
+      parameters:
+        - { $ref: '#/components/parameters/UserID' }
+      responses:
+        '200':
+          description: Organizations and workspaces the user belongs to (team names only)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserMemberships' }
   /internal/admin/v1/devices/{deviceID}/revoke:
     post:
       operationId: revokeCloudDevice
@@ -108,6 +137,14 @@ paths:
         - { $ref: '#/components/parameters/IdempotencyKey' }
       requestBody: { $ref: '#/components/requestBodies/Command' }
       responses: { '200': { $ref: '#/components/responses/Operation' } }
+  /internal/admin/v1/users/{userID}/sessions/revoke-all:
+    post:
+      operationId: revokeAllCloudUserSessions
+      parameters:
+        - { $ref: '#/components/parameters/UserID' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody: { $ref: '#/components/requestBodies/Command' }
+      responses: { '200': { $ref: '#/components/responses/Operation' } }
   /internal/admin/v1/users/{userID}/disable:
     post:
       operationId: disableCloudUser
@@ -119,6 +156,14 @@ paths:
   /internal/admin/v1/users/{userID}/enable:
     post:
       operationId: enableCloudUser
+      parameters:
+        - { $ref: '#/components/parameters/UserID' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody: { $ref: '#/components/requestBodies/Command' }
+      responses: { '200': { $ref: '#/components/responses/Operation' } }
+  /internal/admin/v1/users/{userID}/password/reset:
+    post:
+      operationId: forceResetCloudUserPassword
       parameters:
         - { $ref: '#/components/parameters/UserID' }
         - { $ref: '#/components/parameters/IdempotencyKey' }
@@ -674,6 +719,54 @@ components:
       additionalProperties: false
       required: [status]
       properties: { status: { const: ok } }
+    PlatformStats:
+      type: object
+      additionalProperties: false
+      required: [user_total, user_active, user_disabled, user_pending_deletion, device_total, device_active]
+      properties:
+        user_total: { type: integer, format: int64, minimum: 0 }
+        user_active: { type: integer, format: int64, minimum: 0 }
+        user_disabled: { type: integer, format: int64, minimum: 0 }
+        user_pending_deletion: { type: integer, format: int64, minimum: 0 }
+        device_total: { type: integer, format: int64, minimum: 0 }
+        device_active: { type: integer, format: int64, minimum: 0 }
+    DeviceStats:
+      type: object
+      additionalProperties: false
+      required: [buckets]
+      properties:
+        buckets:
+          type: array
+          items: { $ref: '#/components/schemas/DeviceVersionStat' }
+    DeviceVersionStat:
+      type: object
+      additionalProperties: false
+      required: [platform, app_version, total, active]
+      properties:
+        platform: { type: string }
+        app_version: { type: string }
+        total: { type: integer, format: int64, minimum: 0 }
+        active: { type: integer, format: int64, minimum: 0 }
+    Membership:
+      type: object
+      additionalProperties: false
+      required: [id, display_name, role, status]
+      properties:
+        id: { type: string, format: uuid }
+        display_name: { type: string }
+        role: { type: string }
+        status: { type: string }
+    UserMemberships:
+      type: object
+      additionalProperties: false
+      required: [organizations, workspaces]
+      properties:
+        organizations:
+          type: array
+          items: { $ref: '#/components/schemas/Membership' }
+        workspaces:
+          type: array
+          items: { $ref: '#/components/schemas/Membership' }
     LookupRequest:
       type: object
       additionalProperties: false

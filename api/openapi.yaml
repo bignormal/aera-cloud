@@ -75,16 +75,45 @@ paths:
               $ref: '#/components/schemas/BrowserLoginRequest'
       responses:
         '200':
-          description: Host-only browser session started.
+          description: Host-only browser session started. The response sets a short-lived session cookie and a separate persistent browser-session cookie for the configured retention period.
           headers:
             Set-Cookie:
               schema:
                 type: string
-              description: HttpOnly, SameSite=Lax browser session cookie; Secure outside loopback development.
+              description: Multiple HttpOnly, SameSite=Lax browser-session cookies; the persistent cookie survives short-session expiry and is Secure outside loopback development.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/BrowserLoginResponse'
+        '401':
+          $ref: '#/components/responses/InvalidCredentials'
+        '403':
+          $ref: '#/components/responses/AccountUnavailable'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/browser/login/code:
+    post:
+      operationId: browserLoginWithCode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BrowserCodeLoginRequest'
+      responses:
+        '200':
+          description: Host-only browser session started from a consumed login-purpose verification receipt. The response sets both short-lived and persistent browser-session cookies.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: Multiple HttpOnly, SameSite=Lax browser-session cookies; the persistent cookie survives short-session expiry and is Secure outside loopback development.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrowserLoginResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
         '401':
           $ref: '#/components/responses/InvalidCredentials'
         '403':
@@ -100,7 +129,7 @@ paths:
         - $ref: '#/components/parameters/CSRFToken'
       responses:
         '204':
-          description: Browser session ended.
+          description: Browser session and its persistent browser-session credential ended.
         '401':
           $ref: '#/components/responses/SessionRevoked'
         '403':
@@ -3640,7 +3669,7 @@ components:
       enum: [email, phone]
     VerificationPurpose:
       type: string
-      enum: [registration, password_reset, bind_identity, account_deletion, deletion_recovery]
+      enum: [registration, login, password_reset, bind_identity, account_deletion, deletion_recovery]
     VerificationChallengeRequest:
       type: object
       additionalProperties: false
@@ -3731,6 +3760,14 @@ components:
           type: string
           minLength: 10
           maxLength: 128
+    BrowserCodeLoginRequest:
+      type: object
+      additionalProperties: false
+      required: [verification_receipt]
+      properties:
+        verification_receipt:
+          type: string
+          maxLength: 8192
     BrowserLoginResponse:
       type: object
       additionalProperties: false

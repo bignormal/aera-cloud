@@ -24,6 +24,8 @@ type ServicePort interface {
 	Profile(context.Context, uuid.UUID) (Profile, error)
 	Register(context.Context, RegisterCommand) (Registration, error)
 	AuthenticatePassword(context.Context, string, string) (Principal, error)
+	AuthenticateVerification(context.Context, string) (Principal, error)
+	CompleteVerificationLogin(context.Context, string, uuid.UUID) error
 	ResetPassword(context.Context, string, string) error
 	BindIdentity(context.Context, uuid.UUID, string, string) error
 	RemoveIdentity(context.Context, uuid.UUID, secure.IdentityKind, string) error
@@ -65,6 +67,24 @@ type httpHandler struct {
 	directRegistration   bool
 }
 
+type stagedResponseWriter struct {
+	header http.Header
+}
+
+func newStagedResponseWriter() *stagedResponseWriter {
+	return &stagedResponseWriter{header: make(http.Header)}
+}
+
+func (w *stagedResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (*stagedResponseWriter) Write(payload []byte) (int, error) {
+	return len(payload), nil
+}
+
+func (*stagedResponseWriter) WriteHeader(int) {}
+
 func NewHandler(config HTTPConfig) http.Handler {
 	handler := &httpHandler{
 		accounts: config.Accounts, browserSessions: config.BrowserSessions, legal: config.Legal,
@@ -74,6 +94,7 @@ func NewHandler(config HTTPConfig) http.Handler {
 	router := chi.NewRouter()
 	router.Post("/api/v1/accounts/register", handler.register)
 	router.Post("/api/v1/browser/login", handler.login)
+	router.Post("/api/v1/browser/login/code", handler.loginWithCode)
 	router.Post("/api/v1/browser/logout", handler.logout)
 	router.Post("/api/v1/accounts/password/reset", handler.resetPassword)
 	router.Get("/api/v1/accounts/me", handler.profile)
@@ -327,6 +348,76 @@ func (h *httpHandler) login(response http.ResponseWriter, request *http.Request)
 		UserID: principal.UserID, PersonalSpaceID: principal.PersonalSpaceID,
 		Nickname: principal.Nickname, CSRFToken: csrfToken,
 	})
+}
+
+func (h *httpHandler) loginWithCode(response http.ResponseWriter, request *http.Request) {
+	var payload struct {
+		VerificationReceipt string `json:"verification_receipt"`
+	}
+	if h.accounts == nil || h.browserSessions == nil || !decodeAccountJSON(response, request, &payload) {
+		writeAccountError(response, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	ctx := WithLoginIPAddress(request.Context(), requestIP(request))
+	principal, err := h.accounts.AuthenticateVerification(ctx, payload.VerificationReceipt)
+	if err != nil {
+		writeMappedAccountError(response, err)
+		return
+	}
+	staged := newStagedResponseWriter()
+	csrfToken, err := h.browserSessions.Start(request.Context(), staged, browser.Principal{
+		UserID: principal.UserID, PersonalSpaceID: principal.PersonalSpaceID, Nickname: principal.Nickname,
+	})
+	if err != nil {
+		writeAccountError(response, http.StatusServiceUnavailable, "service_unavailable")
+		return
+	}
+	if err := h.accounts.CompleteVerificationLogin(
+		request.Context(),
+		payload.VerificationReceipt,
+		principal.UserID,
+	); err != nil {
+		h.discardStagedBrowserSession(request, staged.Header())
+		writeMappedAccountError(response, err)
+		return
+	}
+	for key, values := range staged.Header() {
+		for _, value := range values {
+			response.Header().Add(key, value)
+		}
+	}
+	writeAccountJSON(response, http.StatusOK, struct {
+		UserID          uuid.UUID `json:"user_id"`
+		PersonalSpaceID uuid.UUID `json:"personal_space_id"`
+		Nickname        string    `json:"nickname,omitempty"`
+		CSRFToken       string    `json:"csrf_token"`
+	}{
+		UserID: principal.UserID, PersonalSpaceID: principal.PersonalSpaceID,
+		Nickname: principal.Nickname, CSRFToken: csrfToken,
+	})
+}
+
+func (h *httpHandler) discardStagedBrowserSession(
+	request *http.Request,
+	header http.Header,
+) {
+	if h.browserSessions == nil || request == nil {
+		return
+	}
+	cookies := (&http.Response{Header: header.Clone()}).Cookies()
+	if len(cookies) == 0 {
+		return
+	}
+	cleanupRequest := request.Clone(request.Context())
+	cleanupRequest.Header = make(http.Header)
+	for _, cookie := range cookies {
+		cleanupRequest.AddCookie(cookie)
+	}
+	_ = h.browserSessions.End(
+		request.Context(),
+		newStagedResponseWriter(),
+		cleanupRequest,
+	)
 }
 
 func (h *httpHandler) logout(response http.ResponseWriter, request *http.Request) {

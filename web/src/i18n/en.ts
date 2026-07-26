@@ -5,15 +5,20 @@ export const en = {
   languageChinese: "中文",
   loginTitle: "Sign in to AgentEra",
   loginSubtitle:
-    "Authenticate securely in your browser, then return to AgentEra Studio.",
+    "Sign in or register securely in your browser, then return to AgentEra Studio automatically.",
   identity: "Email or phone",
   password: "Password",
   login: "Sign in",
+  passwordLoginTab: "Password",
+  codeLoginTab: "SMS code",
+  codeLogin: "Sign in with code",
   createAccount: "Create account",
   forgotPassword: "Forgot password",
   recoverDeletion: "Recover pending deletion",
-  registered: "Registration complete. Please sign in.",
+  registered: "Registration complete. Continue to sign in.",
   loginError: "Sign-in failed. Check your account and password.",
+  codeLoginError:
+    "The verification code is invalid or expired. Request a new code.",
   serviceError: "The service is temporarily unavailable. Try again later.",
   networkError: "Unable to reach the service. Check your network and retry.",
   registerTitle: "Create an AgentEra account",
@@ -21,6 +26,8 @@ export const en = {
   internalBetaRecoveryUnavailable:
     "This internal Beta account does not verify mailbox ownership. Password reset, identity binding, and deletion recovery are unavailable. Keep the password safe.",
   invalidInternalBetaEmail: "Enter a valid internal Beta sign-in email.",
+  identityConflict:
+    "This email or phone is already registered. Sign in instead.",
   verificationUnavailableTitle:
     "This feature is unavailable in the current Beta",
   registrationUnavailable: "Account registration is currently closed.",
@@ -39,8 +46,12 @@ export const en = {
   confirmPassword: "Confirm password",
   acceptLegal: "I agree to the Terms of Service and Privacy Policy",
   createAgentEraAccount: "Create AgentEra account",
-  registrationComplete:
-    "Your account is ready. You can now sign in to AgentEra.",
+  registrationComplete: "Your account is ready",
+  registrationReturning: "Account created. Signing you in",
+  registrationReturningSubtitle:
+    "You will return to AgentEra Studio automatically.",
+  registrationLoginFailed:
+    "Automatic sign-in did not finish. Use the button below to continue.",
   backToLogin: "Back to sign in",
   passwordMismatch: "The passwords do not match.",
   legalRequired: "Accept the Terms of Service and Privacy Policy first.",
@@ -73,16 +84,21 @@ export const en = {
   deviceRevoked: "Device revoked. Return to AgentEra Studio and retry sign-in.",
   noDevices: "There are no active devices.",
   lastSeen: "Last active",
-  authorizeTitle: "Allow AgentEra Studio to sign in",
+  authorizeTitle: "Signing in to AgentEra Studio",
   authorizeSubtitle:
-    "AgentEra Studio is requesting access to your personal space. Passwords, codes, and tokens never enter the desktop renderer.",
+    "You will return to the desktop app automatically after sign-in. Passwords, codes, and tokens never enter the desktop renderer.",
   signedInAs: "Signed in as",
-  approve: "Allow and return to AgentEra Studio",
-  authorizationCancelled: "Authorization cancelled. You can close this page.",
+  approve: "Sign in and return to AgentEra Studio",
+  authorizationCancelled: "Sign-in cancelled. You can close this page.",
   authorizationExpired:
-    "This authorization request is invalid or expired. Return to AgentEra Studio and retry.",
-  authorizationWorking: "Authorized. Returning securely to AgentEra Studio…",
-  reauthenticate: "Sign in again to continue this security-sensitive action.",
+    "This sign-in request is invalid or expired. Return to AgentEra Studio and retry.",
+  authorizationWorking: "Signed in. Returning securely to AgentEra Studio…",
+  loginReturnTitle: "Signed in",
+  loginReturnSubtitle:
+    "Connecting you to the desktop app. You will be ready to go in a moment.",
+  loginReturning: "Returning to AgentEra Studio…",
+  retryLogin: "Sign in again",
+  reauthenticate: "Sign in before continuing.",
   deleteTitle: "Delete AgentEra account",
   deleteWarning:
     "Deletion immediately revokes cloud sessions and starts a seven-day cooling-off period. It does not delete local Hermes sessions, Memory, files, or learned state. Handle local data separately first.",

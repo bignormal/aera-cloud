@@ -17,11 +17,11 @@ func TestInternalAdminOpenAPIRequiresDualAuthenticationAndOfficialAgentRoutes(t 
 		!strings.Contains(document, "serviceJWT: { type: http, scheme: bearer, bearerFormat: JWT }") {
 		t.Fatal("Internal Admin OpenAPI does not require the approved dual authentication")
 	}
-	if got := strings.Count(document, "  /internal/admin/v1/"); got != 37 {
-		t.Fatalf("Internal Admin route count = %d, want 37", got)
+	if got := strings.Count(document, "  /internal/admin/v1/"); got != 42 {
+		t.Fatalf("Internal Admin route count = %d, want 42", got)
 	}
-	if got := strings.Count(document, "'200': { $ref: '#/components/responses/Operation' }"); got != 20 {
-		t.Fatalf("operation response count = %d, want 20 including quality mutations", got)
+	if got := strings.Count(document, "'200': { $ref: '#/components/responses/Operation' }"); got != 22 {
+		t.Fatalf("operation response count = %d, want 22 including quality mutations", got)
 	}
 	for _, path := range []string{
 		"/official-agent-definitions:", "/official-agent-drafts:",

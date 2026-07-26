@@ -95,11 +95,14 @@ func NewHandler(config HandlerConfig) (http.Handler, error) {
 		router.Group(func(read chi.Router) {
 			read.Use(config.Auth.RequireScope(ScopeUsersRead))
 			read.Get("/health", h.health)
+			read.Get("/stats", h.stats)
+			read.Get("/devices/stats", h.deviceStats)
 			read.Get("/users", h.listUsers)
 			read.Post("/users/lookup", h.lookupUser)
 			read.Get("/users/{userID}", h.getUser)
 			read.Get("/users/{userID}/devices", h.listUserDevices)
 			read.Get("/users/{userID}/sessions", h.listUserSessions)
+			read.Get("/users/{userID}/memberships", h.userMemberships)
 		})
 		router.Group(func(devices chi.Router) {
 			devices.Use(config.Auth.RequireScope(ScopeDevicesWrite))
@@ -108,11 +111,13 @@ func NewHandler(config HandlerConfig) (http.Handler, error) {
 		router.Group(func(sessions chi.Router) {
 			sessions.Use(config.Auth.RequireScope(ScopeSessionsWrite))
 			sessions.Post("/sessions/{sessionID}/revoke", h.execute(admin.RevokeSession, "sessionID"))
+			sessions.Post("/users/{userID}/sessions/revoke-all", h.execute(admin.RevokeAllSessions, "userID"))
 		})
 		router.Group(func(accounts chi.Router) {
 			accounts.Use(config.Auth.RequireScope(ScopeAccountsWrite))
 			accounts.Post("/users/{userID}/disable", h.execute(admin.DisableUser, "userID"))
 			accounts.Post("/users/{userID}/enable", h.execute(admin.EnableUser, "userID"))
+			accounts.Post("/users/{userID}/password/reset", h.execute(admin.ForcePasswordReset, "userID"))
 		})
 		router.Group(func(operations chi.Router) {
 			operations.Use(config.Auth.RequireScope(ScopeOperationsRead))
@@ -148,6 +153,32 @@ func (h *handler) health(response http.ResponseWriter, request *http.Request) {
 		return
 	}
 	writeJSON(response, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *handler) stats(response http.ResponseWriter, request *http.Request) {
+	if !hasNoQuery(request.URL) {
+		writeErrorResponse(response, request, http.StatusBadRequest, "INVALID_REQUEST")
+		return
+	}
+	result, err := h.service.Stats(request.Context())
+	if err != nil {
+		writeDomainError(response, request, err, "STATS_UNAVAILABLE", admin.Operation{})
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (h *handler) deviceStats(response http.ResponseWriter, request *http.Request) {
+	if !hasNoQuery(request.URL) {
+		writeErrorResponse(response, request, http.StatusBadRequest, "INVALID_REQUEST")
+		return
+	}
+	result, err := h.service.DeviceStats(request.Context())
+	if err != nil {
+		writeDomainError(response, request, err, "STATS_UNAVAILABLE", admin.Operation{})
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
 }
 
 func (h *handler) listUsers(response http.ResponseWriter, request *http.Request) {
@@ -218,6 +249,24 @@ func (h *handler) listUserSessions(response http.ResponseWriter, request *http.R
 	h.listUserResource(response, request, func(ctx context.Context, userID uuid.UUID, page admin.PageRequest) (any, error) {
 		return h.service.ListUserSessions(ctx, userID, page)
 	})
+}
+
+func (h *handler) userMemberships(response http.ResponseWriter, request *http.Request) {
+	if !hasNoQuery(request.URL) {
+		writeErrorResponse(response, request, http.StatusBadRequest, "INVALID_REQUEST")
+		return
+	}
+	userID, ok := parsePathUUID(request, "userID")
+	if !ok {
+		writeErrorResponse(response, request, http.StatusBadRequest, "INVALID_REQUEST")
+		return
+	}
+	result, err := h.service.UserMemberships(request.Context(), userID)
+	if err != nil {
+		writeDomainError(response, request, err, "USER_NOT_FOUND", admin.Operation{})
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
 }
 
 func (h *handler) listUserResource(

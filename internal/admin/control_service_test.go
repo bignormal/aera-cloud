@@ -212,6 +212,12 @@ type controlRepositoryStub struct {
 	userPage         DataPage[User]
 	devicePage       DataPage[Device]
 	sessionPage      DataPage[Session]
+	stats            PlatformStats
+	statsErr         error
+	deviceStats      DeviceStats
+	deviceStatsErr   error
+	memberships      UserMemberships
+	membershipsErr   error
 	userQuery        UserQuery
 	deviceQuery      DeviceQuery
 	sessionQuery     SessionQuery
@@ -232,6 +238,21 @@ func (s *controlRepositoryStub) ListUsers(_ context.Context, query UserQuery) (D
 func (s *controlRepositoryStub) GetUser(context.Context, uuid.UUID) (User, error) {
 	s.calls++
 	return s.lookupUser, nil
+}
+
+func (s *controlRepositoryStub) Stats(context.Context) (PlatformStats, error) {
+	s.calls++
+	return s.stats, s.statsErr
+}
+
+func (s *controlRepositoryStub) DeviceStats(context.Context) (DeviceStats, error) {
+	s.calls++
+	return s.deviceStats, s.deviceStatsErr
+}
+
+func (s *controlRepositoryStub) UserMemberships(context.Context, uuid.UUID) (UserMemberships, error) {
+	s.calls++
+	return s.memberships, s.membershipsErr
 }
 
 func (s *controlRepositoryStub) ListUserDevices(_ context.Context, query DeviceQuery) (DataPage[Device], error) {

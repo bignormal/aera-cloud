@@ -27,7 +27,8 @@ const directConfig = {
   identity_verification_available: false,
 };
 
-function renderRegistration() {
+function renderRegistration(path = "/register") {
+  window.history.replaceState(null, "", path);
   return render(
     <I18nProvider>
       <PublicConfigProvider>
@@ -39,7 +40,30 @@ function renderRegistration() {
   );
 }
 
+test("keeps the OAuth continuation on the registration back link", async () => {
+  vi.spyOn(window, "fetch").mockImplementation(async (input) => {
+    const url = String(input);
+    if (url === "/api/v1/public/config") return jsonResponse(verifiedConfig);
+    if (url === "/api/v1/legal/current") {
+      return jsonResponse({
+        terms_version: "2026-07",
+        privacy_version: "2026-07",
+      });
+    }
+    throw new Error(`unexpected request: ${url}`);
+  });
+  renderRegistration(
+    "/register?next=%2Fauthorize%3Frequest_id%3D019f8ccf-effa-71a1-bdde-d4c935ee1670",
+  );
+
+  expect(await screen.findByRole("link", { name: "返回登录" })).toHaveAttribute(
+    "href",
+    "/login?next=%2Fauthorize%3Frequest_id%3D019f8ccf-effa-71a1-bdde-d4c935ee1670",
+  );
+});
+
 test("completes verified email registration using current legal versions", async () => {
+  const requestID = "019f8ccf-effa-71a1-bdde-d4c935ee1670";
   const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
   vi.spyOn(window, "fetch").mockImplementation(async (input, init) => {
     const url = String(input);
@@ -70,9 +94,18 @@ test("completes verified email registration using current legal versions", async
         201,
       );
     }
+    if (url === "/api/v1/browser/login") {
+      return jsonResponse({
+        user_id: crypto.randomUUID(),
+        personal_space_id: crypto.randomUUID(),
+        csrf_token: "c".repeat(43),
+      });
+    }
     return jsonResponse({ status: "accepted" }, 202);
   });
-  renderRegistration();
+  renderRegistration(
+    `/register?next=${encodeURIComponent(`/authorize?request_id=${requestID}`)}`,
+  );
 
   fireEvent.change(await screen.findByRole("textbox", { name: "邮箱" }), {
     target: { value: "alice@example.com" },
@@ -94,7 +127,9 @@ test("completes verified email registration using current legal versions", async
   fireEvent.click(screen.getByRole("button", { name: "创建 AgentEra 账户" }));
 
   await waitFor(() =>
-    expect(calls.some((call) => call.url.endsWith("/register"))).toBe(true),
+    expect(calls.some((call) => call.url === "/api/v1/browser/login")).toBe(
+      true,
+    ),
   );
   const registration = calls.find((call) => call.url.endsWith("/register"));
   expect(registration?.body).toMatchObject({
@@ -103,6 +138,15 @@ test("completes verified email registration using current legal versions", async
     terms_version: "2026-07",
     privacy_version: "2026-07",
   });
+  expect(
+    calls.find((call) => call.url === "/api/v1/browser/login")?.body,
+  ).toEqual({
+    identity: "alice@example.com",
+    password: "correct horse battery",
+  });
+  expect(`${window.location.pathname}${window.location.search}`).toBe(
+    `/authorize?request_id=${requestID}`,
+  );
 });
 
 test("supports mainland phone registration as an explicit identity choice", async () => {
@@ -200,6 +244,13 @@ test("direct internal beta submits an unverified normalized email identifier wit
         201,
       );
     }
+    if (url === "/api/v1/browser/login") {
+      return jsonResponse({
+        user_id: crypto.randomUUID(),
+        personal_space_id: crypto.randomUUID(),
+        csrf_token: "c".repeat(43),
+      });
+    }
     throw new Error(`unexpected request: ${url}`);
   });
 
@@ -280,4 +331,56 @@ test("direct internal beta rejects an invalid email before account creation", as
 
   expect(await screen.findByText("请输入有效的内测登录邮箱。")).toBeVisible();
   expect(registrationCalls).toBe(0);
+});
+
+test("direct internal beta surfaces an identity conflict instead of a generic service error", async () => {
+  vi.spyOn(window, "fetch").mockImplementation(async (input) => {
+    const url = String(input);
+    if (url === "/api/v1/public/config") {
+      return jsonResponse(directConfig);
+    }
+    if (url === "/api/v1/legal/current") {
+      return jsonResponse({
+        terms_version: "2026-07",
+        privacy_version: "2026-07",
+      });
+    }
+    if (url === "/api/v1/accounts/register") {
+      return jsonResponse(
+        {
+          error: {
+            code: "identity_conflict",
+            message: "localized by the client",
+            request_id: crypto.randomUUID(),
+          },
+        },
+        409,
+      );
+    }
+    throw new Error(`unexpected request: ${url}`);
+  });
+
+  renderRegistration();
+
+  fireEvent.change(
+    await screen.findByRole("textbox", {
+      name: "内测登录邮箱（未验证）",
+    }),
+    { target: { value: "alice@example.com" } },
+  );
+  fireEvent.change(screen.getByLabelText("设置密码"), {
+    target: { value: "correct horse battery" },
+  });
+  fireEvent.change(screen.getByLabelText("确认密码"), {
+    target: { value: "correct horse battery" },
+  });
+  fireEvent.click(screen.getByLabelText("我已阅读并同意服务条款和隐私政策"));
+  fireEvent.click(screen.getByRole("button", { name: "创建 AgentEra 账户" }));
+
+  expect(
+    await screen.findByText("该邮箱或手机号已被注册，请直接登录。"),
+  ).toBeVisible();
+  expect(
+    screen.queryByText("服务暂时不可用，请稍后重试。"),
+  ).not.toBeInTheDocument();
 });

@@ -28,7 +28,7 @@ func TestManagerStartsReadsAndEndsOpaqueHostOnlySession(t *testing.T) {
 		t.Fatal("Start() returned an empty CSRF token")
 	}
 	cookies := response.Result().Cookies()
-	if len(cookies) != 1 {
+	if len(cookies) != 2 {
 		t.Fatalf("Set-Cookie count = %d", len(cookies))
 	}
 	cookie := cookies[0]
@@ -36,8 +36,17 @@ func TestManagerStartsReadsAndEndsOpaqueHostOnlySession(t *testing.T) {
 		!cookie.HttpOnly || !cookie.Secure || cookie.SameSite != http.SameSiteLaxMode || cookie.MaxAge <= 0 {
 		t.Fatalf("session cookie = %+v", cookie)
 	}
+	persistentCookie := cookies[1]
+	if persistentCookie.Name != DefaultPersistentCookieName || persistentCookie.Domain != "" ||
+		persistentCookie.Path != "/" || !persistentCookie.HttpOnly || !persistentCookie.Secure ||
+		persistentCookie.SameSite != http.SameSiteLaxMode || persistentCookie.MaxAge <= cookie.MaxAge {
+		t.Fatalf("persistent session cookie = %+v", persistentCookie)
+	}
 	if strings.Contains(cookie.Value, principal.UserID.String()) || strings.Contains(cookie.Value, principal.Nickname) {
 		t.Fatal("session cookie exposed principal data")
+	}
+	if cookie.Value == persistentCookie.Value {
+		t.Fatal("short and persistent session cookies reused the same bearer token")
 	}
 
 	keys, err := fixture.redis.Keys(fixture.ctx, redisSessionPrefix+"*").Result()
@@ -47,9 +56,17 @@ func TestManagerStartsReadsAndEndsOpaqueHostOnlySession(t *testing.T) {
 	if strings.Contains(keys[0], cookie.Value) {
 		t.Fatal("Redis key contains the raw browser session token")
 	}
+	persistentKeys, err := fixture.redis.Keys(fixture.ctx, redisPersistentPrefix+"*").Result()
+	if err != nil || len(persistentKeys) != 1 {
+		t.Fatalf("Redis persistent session keys = %+v, error:%v", persistentKeys, err)
+	}
+	if strings.Contains(persistentKeys[0], persistentCookie.Value) {
+		t.Fatal("Redis key contains the raw persistent browser session token")
+	}
 
 	request := httptest.NewRequest(http.MethodGet, "https://app.agentera.example/account", nil)
 	request.AddCookie(cookie)
+	request.AddCookie(persistentCookie)
 	session, err := fixture.manager.Read(fixture.ctx, request)
 	if err != nil {
 		t.Fatalf("Read() error = %v", err)
@@ -63,11 +80,64 @@ func TestManagerStartsReadsAndEndsOpaqueHostOnlySession(t *testing.T) {
 		t.Fatalf("End() error = %v", err)
 	}
 	deletedCookies := logoutResponse.Result().Cookies()
-	if len(deletedCookies) != 1 || deletedCookies[0].MaxAge >= 0 || !deletedCookies[0].HttpOnly || !deletedCookies[0].Secure {
+	if len(deletedCookies) != 2 || deletedCookies[0].MaxAge >= 0 || deletedCookies[1].MaxAge >= 0 ||
+		!deletedCookies[0].HttpOnly || !deletedCookies[1].HttpOnly ||
+		!deletedCookies[0].Secure || !deletedCookies[1].Secure {
 		t.Fatalf("logout cookie = %+v", deletedCookies)
 	}
 	if _, err := fixture.manager.Read(fixture.ctx, request); !errors.Is(err, ErrUnauthenticated) {
 		t.Fatalf("Read() after End() error = %v", err)
+	}
+	if keys, err := fixture.redis.Keys(fixture.ctx, redisSessionPrefix+"*").Result(); err != nil || len(keys) != 0 {
+		t.Fatalf("short session keys after End() = %+v, error:%v", keys, err)
+	}
+	if keys, err := fixture.redis.Keys(fixture.ctx, redisPersistentPrefix+"*").Result(); err != nil || len(keys) != 0 {
+		t.Fatalf("persistent session keys after End() = %+v, error:%v", keys, err)
+	}
+}
+
+func TestManagerReadsPersistentSessionAfterShortSessionExpires(t *testing.T) {
+	fixture := newBrowserFixture(t, false)
+	principal := Principal{UserID: uuid.New(), PersonalSpaceID: uuid.New(), Nickname: "Persistent Alice"}
+	response := httptest.NewRecorder()
+	csrfToken, err := fixture.manager.Start(fixture.ctx, response, principal)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	cookies := response.Result().Cookies()
+	if len(cookies) != 2 {
+		t.Fatalf("Set-Cookie count = %d", len(cookies))
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8086/account", nil)
+	request.AddCookie(cookies[0])
+	request.AddCookie(cookies[1])
+	request.Header.Set(CSRFHeader, csrfToken)
+	fixture.now = fixture.now.Add(16 * time.Minute)
+	session, err := fixture.manager.Read(fixture.ctx, request)
+	if err != nil {
+		t.Fatalf("Read() after short session expiry error = %v", err)
+	}
+	if session.Principal != principal {
+		t.Fatalf("Read() after short session expiry principal = %+v", session.Principal)
+	}
+	if err := fixture.manager.RequireCSRF(request, session); err != nil {
+		t.Fatalf("RequireCSRF() after persistent restore error = %v", err)
+	}
+
+	relaunchRequest := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8086/account", nil)
+	relaunchRequest.AddCookie(cookies[1])
+	relaunchSession, err := fixture.manager.Read(fixture.ctx, relaunchRequest)
+	if err != nil {
+		t.Fatalf("Read() with only persistent cookie error = %v", err)
+	}
+	if relaunchSession.Principal != principal {
+		t.Fatalf("Read() with only persistent cookie principal = %+v", relaunchSession.Principal)
+	}
+
+	fixture.now = fixture.now.Add(30 * 24 * time.Hour)
+	if _, err := fixture.manager.Read(fixture.ctx, request); !errors.Is(err, ErrUnauthenticated) {
+		t.Fatalf("Read() after persistent expiry error = %v", err)
 	}
 }
 

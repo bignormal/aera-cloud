@@ -1,8 +1,9 @@
-import { getCSRFToken } from "../auth/csrf";
+import { clearCSRFToken, getCSRFToken } from "../auth/csrf";
 
 export type IdentityKind = "email" | "phone";
 export type VerificationPurpose =
   | "registration"
+  | "login"
   | "password_reset"
   | "bind_identity"
   | "account_deletion"
@@ -122,6 +123,9 @@ async function request<T>(
       nested && typeof nested.request_id === "string"
         ? nested.request_id
         : undefined;
+    if (response.status === 401 && code === "session_revoked") {
+      clearCSRFToken();
+    }
     throw new APIError(response.status, code, requestID);
   }
   return payload as T;
@@ -195,6 +199,15 @@ export function login(
   return request<BrowserLoginResponse>("/api/v1/browser/login", {
     method: "POST",
     body: { identity, password },
+  });
+}
+
+export function loginWithCode(
+  verificationReceipt: string,
+): Promise<BrowserLoginResponse> {
+  return request<BrowserLoginResponse>("/api/v1/browser/login/code", {
+    method: "POST",
+    body: { verification_receipt: verificationReceipt },
   });
 }
 

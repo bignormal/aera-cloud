@@ -51,8 +51,10 @@ type Action string
 const (
 	RevokeDevice                  Action = "revoke_device"
 	RevokeSession                 Action = "revoke_session"
+	RevokeAllSessions             Action = "revoke_all_sessions"
 	DisableUser                   Action = "disable_user"
 	EnableUser                    Action = "enable_user"
+	ForcePasswordReset            Action = "force_password_reset"
 	OfficialDefinitionReserve     Action = "official_definition_reserve"
 	OfficialDraftCreate           Action = "official_draft_create"
 	OfficialDraftUpdate           Action = "official_draft_update"
@@ -214,6 +216,45 @@ type PagePosition struct {
 	ID   uuid.UUID
 }
 
+// PlatformStats aggregates account and device counters for the admin overview
+// dashboard. Counts are point-in-time and carry no personal data.
+type PlatformStats struct {
+	UserTotal           int64 `json:"user_total"`
+	UserActive          int64 `json:"user_active"`
+	UserDisabled        int64 `json:"user_disabled"`
+	UserPendingDeletion int64 `json:"user_pending_deletion"`
+	DeviceTotal         int64 `json:"device_total"`
+	DeviceActive        int64 `json:"device_active"`
+}
+
+// DeviceVersionStat is one bucket of the device version/platform distribution.
+type DeviceVersionStat struct {
+	Platform   string `json:"platform"`
+	AppVersion string `json:"app_version"`
+	Total      int64  `json:"total"`
+	Active     int64  `json:"active"`
+}
+
+// DeviceStats groups the installed base by platform and app version.
+type DeviceStats struct {
+	Buckets []DeviceVersionStat `json:"buckets"`
+}
+
+// Membership is one organization or workspace the user belongs to. The display
+// name is a team/org name, not personal data.
+type Membership struct {
+	ID          uuid.UUID `json:"id"`
+	DisplayName string    `json:"display_name"`
+	Role        string    `json:"role"`
+	Status      string    `json:"status"`
+}
+
+// UserMemberships lists the organizations and workspaces a user belongs to.
+type UserMemberships struct {
+	Organizations []Membership `json:"organizations"`
+	Workspaces    []Membership `json:"workspaces"`
+}
+
 type Digest struct {
 	KeyID string
 	Sum   []byte
@@ -225,6 +266,9 @@ type Service interface {
 	GetUser(context.Context, uuid.UUID) (User, error)
 	ListUserDevices(context.Context, uuid.UUID, PageRequest) (Page[Device], error)
 	ListUserSessions(context.Context, uuid.UUID, PageRequest) (Page[Session], error)
+	Stats(context.Context) (PlatformStats, error)
+	DeviceStats(context.Context) (DeviceStats, error)
+	UserMemberships(context.Context, uuid.UUID) (UserMemberships, error)
 	Execute(context.Context, Action, uuid.UUID, Command) (Operation, error)
 	GetOperation(context.Context, uuid.UUID) (Operation, error)
 }
@@ -307,7 +351,8 @@ func validateOperation(operation Operation) error {
 }
 
 func validControlAction(action Action) bool {
-	return action == RevokeDevice || action == RevokeSession || action == DisableUser || action == EnableUser
+	return action == RevokeDevice || action == RevokeSession || action == RevokeAllSessions ||
+		action == DisableUser || action == EnableUser || action == ForcePasswordReset
 }
 
 func validOfficialAction(action Action) bool {

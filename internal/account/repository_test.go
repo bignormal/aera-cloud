@@ -298,6 +298,91 @@ func TestPostgresRepositoryPasswordResetConsumesReceiptAndRevokesAllSessionFamil
 	}
 }
 
+func TestPostgresRepositoryLoginReceiptConsumptionAndSuccessAuditAreAtomic(t *testing.T) {
+	fixture := newRepositoryFixture(t)
+	registrationClaims := fixture.verifiedReceipt(
+		t,
+		secure.IdentityPhone,
+		"+8613800138000",
+		verification.PurposeRegistration,
+		13,
+	)
+	registrationRecord := fixture.registrationRecord(t, registrationClaims, "Alice")
+	if _, err := fixture.repository.Register(fixture.ctx, registrationRecord); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	loginClaims := fixture.verifiedReceipt(
+		t,
+		secure.IdentityPhone,
+		"+8613800138000",
+		verification.PurposeLogin,
+		14,
+	)
+
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		CREATE OR REPLACE FUNCTION fail_browser_login_audit() RETURNS trigger
+		LANGUAGE plpgsql AS $$
+		BEGIN
+			IF NEW.event_type = 'browser_login' THEN
+				RAISE EXCEPTION 'forced browser login audit failure';
+			END IF;
+			RETURN NEW;
+		END
+		$$;
+		CREATE TRIGGER fail_browser_login_audit
+		BEFORE INSERT ON audit_events
+		FOR EACH ROW EXECUTE FUNCTION fail_browser_login_audit()
+	`); err != nil {
+		t.Fatalf("install audit failure trigger: %v", err)
+	}
+	removeFailureTrigger := func() {
+		if _, err := fixture.postgres.Exec(fixture.ctx, `
+			DROP TRIGGER IF EXISTS fail_browser_login_audit ON audit_events;
+			DROP FUNCTION IF EXISTS fail_browser_login_audit()
+		`); err != nil {
+			t.Fatalf("remove audit failure trigger: %v", err)
+		}
+	}
+	t.Cleanup(removeFailureTrigger)
+
+	loginRecord := LoginReceiptRecord{
+		ReceiptClaims: loginClaims,
+		UserID:        registrationRecord.UserID,
+		AuditEventID:  uuid.New(),
+		ConsumedAt:    fixture.now,
+	}
+	if err := fixture.repository.ConsumeLoginReceipt(
+		fixture.ctx,
+		loginRecord,
+	); !errors.Is(err, ErrServiceUnavailable) {
+		t.Fatalf("ConsumeLoginReceipt(audit failure) error = %v", err)
+	}
+	fixture.requireReceiptAvailable(t, loginClaims.ChallengeID)
+
+	removeFailureTrigger()
+	loginRecord.AuditEventID = uuid.New()
+	if err := fixture.repository.ConsumeLoginReceipt(
+		fixture.ctx,
+		loginRecord,
+	); err != nil {
+		t.Fatalf("ConsumeLoginReceipt(retry) error = %v", err)
+	}
+	fixture.requireReceiptConsumed(t, loginClaims.ChallengeID)
+
+	var auditCount int64
+	if err := fixture.postgres.QueryRow(fixture.ctx, `
+		SELECT count(*) FROM audit_events
+		WHERE event_type = 'browser_login'
+			AND outcome = 'success'
+			AND actor_user_id = $1
+	`, registrationRecord.UserID).Scan(&auditCount); err != nil {
+		t.Fatalf("count browser login audits: %v", err)
+	}
+	if auditCount != 1 {
+		t.Fatalf("browser login audit count = %d, want 1", auditCount)
+	}
+}
+
 type repositoryFixture struct {
 	ctx        context.Context
 	postgres   *pgxpool.Pool

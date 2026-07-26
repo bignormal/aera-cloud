@@ -166,6 +166,86 @@ func (r *PostgresRepository) UpdatePasswordHash(
 	return nil
 }
 
+// ConsumeLoginReceipt records the successful browser login and marks its
+// verification receipt as spent in one transaction. A failed audit insert
+// therefore leaves the receipt available for a safe retry.
+func (r *PostgresRepository) ConsumeLoginReceipt(
+	ctx context.Context,
+	record LoginReceiptRecord,
+) error {
+	if r == nil || r.postgres == nil || r.identity == nil ||
+		record.ReceiptClaims.Purpose != verification.PurposeLogin ||
+		record.ReceiptClaims.ChallengeID == uuid.Nil ||
+		record.UserID == uuid.Nil ||
+		record.AuditEventID == uuid.Nil ||
+		record.ConsumedAt.IsZero() {
+		return ErrInvalidRequest
+	}
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return ErrServiceUnavailable
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	userID, found, err := r.findUserByClaims(ctx, tx, record.ReceiptClaims)
+	if err != nil {
+		return err
+	}
+	if !found || userID != record.UserID {
+		return ErrInvalidCredentials
+	}
+	if err := lockAccountUser(ctx, tx, record.UserID); err != nil {
+		return err
+	}
+	status, err := accountStatusForUpdate(ctx, tx, record.UserID)
+	if err != nil {
+		return err
+	}
+	switch status {
+	case "active":
+	case "pending_deletion":
+		return ErrAccountPendingDeletion
+	case "disabled":
+		return ErrAccountDisabled
+	default:
+		return ErrServiceUnavailable
+	}
+	if err := r.lockAvailableReceipt(ctx, tx, record.ReceiptClaims); err != nil {
+		return err
+	}
+	userID, stillBound, err := r.findUserByClaims(
+		ctx,
+		tx,
+		record.ReceiptClaims,
+	)
+	if err != nil {
+		return err
+	}
+	if !stillBound || userID != record.UserID {
+		return ErrInvalidCredentials
+	}
+	if err := insertBrowserLoginAudit(
+		ctx,
+		tx,
+		record.AuditEventID,
+		record.UserID,
+		record.ConsumedAt,
+	); err != nil {
+		return ErrServiceUnavailable
+	}
+	if err := markReceiptConsumed(
+		ctx,
+		tx,
+		record.ReceiptClaims.ChallengeID,
+		record.ConsumedAt,
+	); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return classifyWriteError(err)
+	}
+	return nil
+}
+
 func (r *PostgresRepository) ResetPassword(ctx context.Context, record PasswordResetRecord) error {
 	if r == nil || r.postgres == nil || r.identity == nil || record.ReceiptClaims.Purpose != verification.PurposePasswordReset ||
 		record.AuditEventID == uuid.Nil {
@@ -444,6 +524,21 @@ func insertAuditEvent(
 			outcome, metadata, created_at
 		) VALUES ($1, $2, $3, $4, $5, 'success', '{}'::jsonb, $6)
 	`, eventID, eventType, actorUserID, objectType, objectID, createdAt)
+	return err
+}
+
+func insertBrowserLoginAudit(
+	ctx context.Context,
+	tx pgx.Tx,
+	eventID uuid.UUID,
+	actorUserID uuid.UUID,
+	createdAt time.Time,
+) error {
+	_, err := tx.Exec(ctx, `
+		INSERT INTO audit_events (
+			id, event_type, actor_user_id, outcome, metadata, created_at
+		) VALUES ($1, 'browser_login', $2, 'success', '{}'::jsonb, $3)
+	`, eventID, actorUserID, createdAt)
 	return err
 }
 

@@ -43,6 +43,7 @@ type ControlRepository struct {
 	postgres   *pgxpool.Pool
 	identities *secure.IdentityCodec
 	protector  *Protector
+	passwords  *secure.PasswordHasher
 	clock      func() time.Time
 }
 
@@ -55,7 +56,11 @@ func NewControlRepository(
 	if postgres == nil || identities == nil || protector == nil || clock == nil {
 		return nil, errors.New("admin control repository dependencies are required")
 	}
-	return &ControlRepository{postgres: postgres, identities: identities, protector: protector, clock: clock}, nil
+	passwords, err := secure.DefaultPasswordHasher()
+	if err != nil {
+		return nil, errors.New("admin control repository password hasher is unavailable")
+	}
+	return &ControlRepository{postgres: postgres, identities: identities, protector: protector, passwords: passwords, clock: clock}, nil
 }
 
 func (r *ControlRepository) ListUsers(ctx context.Context, query UserQuery) (DataPage[User], error) {
@@ -141,6 +146,121 @@ func (r *ControlRepository) GetUser(ctx context.Context, userID uuid.UUID) (User
 		return User{}, err
 	}
 	return users[0], nil
+}
+
+// Stats computes point-in-time account and device counters in a single round
+// trip for the admin overview dashboard.
+func (r *ControlRepository) Stats(ctx context.Context) (PlatformStats, error) {
+	if r == nil {
+		return PlatformStats{}, ErrInvalidCommand
+	}
+	var stats PlatformStats
+	err := r.postgres.QueryRow(ctx, `
+		SELECT
+			(SELECT count(*) FROM users) AS user_total,
+			(SELECT count(*) FROM users WHERE status = 'active') AS user_active,
+			(SELECT count(*) FROM users WHERE status = 'disabled') AS user_disabled,
+			(SELECT count(*) FROM users WHERE status = 'pending_deletion') AS user_pending_deletion,
+			(SELECT count(*) FROM devices) AS device_total,
+			(SELECT count(*) FROM devices WHERE status = 'active') AS device_active
+	`).Scan(
+		&stats.UserTotal, &stats.UserActive, &stats.UserDisabled,
+		&stats.UserPendingDeletion, &stats.DeviceTotal, &stats.DeviceActive,
+	)
+	if err != nil {
+		return PlatformStats{}, ErrUnavailable
+	}
+	return stats, nil
+}
+
+// DeviceStats groups the installed base by platform and app version for the
+// admin device distribution view.
+func (r *ControlRepository) DeviceStats(ctx context.Context) (DeviceStats, error) {
+	if r == nil {
+		return DeviceStats{}, ErrInvalidCommand
+	}
+	rows, err := r.postgres.Query(ctx, `
+		SELECT platform, app_version,
+			count(*) AS total,
+			count(*) FILTER (WHERE status = 'active') AS active
+		FROM devices
+		GROUP BY platform, app_version
+		ORDER BY total DESC, platform ASC, app_version ASC
+		LIMIT 500
+	`)
+	if err != nil {
+		return DeviceStats{}, ErrUnavailable
+	}
+	defer rows.Close()
+	buckets := make([]DeviceVersionStat, 0)
+	for rows.Next() {
+		var bucket DeviceVersionStat
+		if err := rows.Scan(&bucket.Platform, &bucket.AppVersion, &bucket.Total, &bucket.Active); err != nil {
+			return DeviceStats{}, ErrUnavailable
+		}
+		buckets = append(buckets, bucket)
+	}
+	if rows.Err() != nil {
+		return DeviceStats{}, ErrUnavailable
+	}
+	return DeviceStats{Buckets: buckets}, nil
+}
+
+// UserMemberships lists the organizations and workspaces a user belongs to.
+func (r *ControlRepository) UserMemberships(ctx context.Context, userID uuid.UUID) (UserMemberships, error) {
+	if r == nil || userID == uuid.Nil {
+		return UserMemberships{}, ErrInvalidCommand
+	}
+	exists, err := r.userExists(ctx, userID)
+	if err != nil {
+		return UserMemberships{}, err
+	}
+	if !exists {
+		return UserMemberships{}, ErrNotFound
+	}
+	organizations, err := r.scanMemberships(ctx, `
+		SELECT o.id, o.display_name, m.role, o.status
+		FROM organization_memberships m
+		JOIN organizations o ON o.id = m.organization_id
+		WHERE m.user_id = $1
+		ORDER BY o.created_at DESC, o.id DESC
+		LIMIT 500
+	`, userID)
+	if err != nil {
+		return UserMemberships{}, err
+	}
+	workspaces, err := r.scanMemberships(ctx, `
+		SELECT w.id, w.display_name, m.role, w.status
+		FROM workspace_memberships m
+		JOIN workspaces w ON w.id = m.workspace_id
+		WHERE m.user_id = $1
+		ORDER BY w.created_at DESC, w.id DESC
+		LIMIT 500
+	`, userID)
+	if err != nil {
+		return UserMemberships{}, err
+	}
+	return UserMemberships{Organizations: organizations, Workspaces: workspaces}, nil
+}
+
+func (r *ControlRepository) scanMemberships(ctx context.Context, query string, userID uuid.UUID) ([]Membership, error) {
+	rows, err := r.postgres.Query(ctx, query, userID)
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	defer rows.Close()
+	memberships := make([]Membership, 0)
+	for rows.Next() {
+		var membership Membership
+		if err := rows.Scan(&membership.ID, &membership.DisplayName, &membership.Role, &membership.Status); err != nil {
+			return nil, ErrUnavailable
+		}
+		memberships = append(memberships, membership)
+	}
+	if rows.Err() != nil {
+		return nil, ErrUnavailable
+	}
+	return memberships, nil
 }
 
 func (r *ControlRepository) ListUserDevices(ctx context.Context, query DeviceQuery) (DataPage[Device], error) {
@@ -773,6 +893,24 @@ func (r *ControlRepository) applyAction(
 			return mutation, controlFailure(ErrStateConflict, mutation.ErrorCode)
 		}
 		afterRevision, err = revokeSessionFamilyLifecycle(ctx, tx, userID, familyID, now)
+	case RevokeAllSessions:
+		var activeCount int64
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM sessions WHERE user_id = $1 AND revoked_at IS NULL
+		`, userID).Scan(&activeCount); err != nil {
+			return mutationResult{}, ErrUnavailable
+		}
+		if activeCount == 0 {
+			mutation.ErrorCode = "NO_ACTIVE_SESSIONS"
+			return mutation, controlFailure(ErrStateConflict, mutation.ErrorCode)
+		}
+		afterRevision, err = revokeAllSessionsLifecycle(ctx, tx, userID, now)
+	case ForcePasswordReset:
+		if status != "active" || deletionFinalizedAt.Valid {
+			mutation.ErrorCode = "USER_STATE_CONFLICT"
+			return mutation, controlFailure(ErrStateConflict, mutation.ErrorCode)
+		}
+		afterRevision, err = r.forcePasswordResetLifecycle(ctx, tx, userID, now)
 	case DisableUser:
 		if status != "active" || administrativelyDisabled || deletionFinalizedAt.Valid {
 			mutation.ErrorCode = "USER_STATE_CONFLICT"
@@ -992,7 +1130,7 @@ func scanStoredOperation(scanner controlRowScanner) (storedOperation, error) {
 }
 
 func resolveControlTargetUser(ctx context.Context, tx pgx.Tx, action Action, targetID uuid.UUID) (uuid.UUID, error) {
-	if action == DisableUser || action == EnableUser {
+	if action == DisableUser || action == EnableUser || action == RevokeAllSessions || action == ForcePasswordReset {
 		var userID uuid.UUID
 		if err := tx.QueryRow(ctx, `SELECT id FROM users WHERE id = $1`, targetID).Scan(&userID); err != nil {
 			return uuid.Nil, err
@@ -1023,7 +1161,7 @@ func controlNotFoundCode(action Action) string {
 		return "DEVICE_NOT_FOUND"
 	case RevokeSession:
 		return "SESSION_NOT_FOUND"
-	case DisableUser, EnableUser:
+	case DisableUser, EnableUser, RevokeAllSessions, ForcePasswordReset:
 		return "USER_NOT_FOUND"
 	default:
 		return "TARGET_NOT_FOUND"
@@ -1036,7 +1174,7 @@ func controlTargetType(action Action) (string, bool) {
 		return "device", true
 	case RevokeSession:
 		return "session", true
-	case DisableUser, EnableUser:
+	case DisableUser, EnableUser, RevokeAllSessions, ForcePasswordReset:
 		return "user", true
 	default:
 		return "", false
@@ -1049,6 +1187,10 @@ func controlEventType(action Action) (string, bool) {
 		return "device_admin_revoked", true
 	case RevokeSession:
 		return "session_admin_revoked", true
+	case RevokeAllSessions:
+		return "sessions_admin_revoked_all", true
+	case ForcePasswordReset:
+		return "account_password_reset", true
 	case DisableUser:
 		return "account_disabled", true
 	case EnableUser:

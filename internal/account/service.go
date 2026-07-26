@@ -28,6 +28,7 @@ type Repository interface {
 	Register(context.Context, RegistrationRecord) (Registration, error)
 	FindCredential(context.Context, secure.IdentityKind, []secure.LookupIndex) (Credential, bool, error)
 	FindCredentialByUserID(context.Context, uuid.UUID) (Credential, bool, error)
+	ConsumeLoginReceipt(context.Context, LoginReceiptRecord) error
 	UpdatePasswordHash(context.Context, uuid.UUID, string, int, time.Time) error
 	ResetPassword(context.Context, PasswordResetRecord) error
 	BindIdentity(context.Context, IdentityBindingRecord) error
@@ -221,6 +222,93 @@ func (s *Service) AuthenticatePassword(ctx context.Context, rawIdentity, passwor
 		return Principal{}, ErrServiceUnavailable
 	}
 	return Principal{UserID: credential.UserID, PersonalSpaceID: credential.PersonalSpaceID, Nickname: credential.Nickname}, nil
+}
+
+// AuthenticateVerification validates a login-purpose verification receipt
+// without consuming it. The HTTP layer completes the receipt only after the
+// browser session store has accepted the new session.
+func (s *Service) AuthenticateVerification(ctx context.Context, verificationReceipt string) (Principal, error) {
+	claims, err := s.receipts.Parse(verificationReceipt, verification.PurposeLogin)
+	if err != nil {
+		s.recordLoginAudit(ctx, nil, audit.OutcomeFailure, "invalid_credentials")
+		return Principal{}, ErrVerificationRequired
+	}
+	lookupCandidates := s.identity.LookupCandidates(claims.Kind, claims.NormalizedIdentity)
+	limiterHMAC := invalidLoginLookupHMAC()
+	if len(lookupCandidates) > 0 {
+		limiterHMAC = lookupCandidates[0].HMAC
+	}
+	allowed, limiterErr := s.loginLimiter.Allow(ctx, limiterHMAC, loginIPAddress(ctx))
+	if limiterErr != nil {
+		return Principal{}, ErrServiceUnavailable
+	}
+	if !allowed {
+		s.recordLoginAudit(ctx, nil, audit.OutcomeFailure, "invalid_credentials")
+		return Principal{}, ErrInvalidCredentials
+	}
+	credential, found, repositoryErr := s.repository.FindCredential(ctx, claims.Kind, lookupCandidates)
+	if repositoryErr != nil {
+		return Principal{}, ErrServiceUnavailable
+	}
+	if !found {
+		s.recordLoginAudit(ctx, nil, audit.OutcomeFailure, "invalid_credentials")
+		return Principal{}, ErrInvalidCredentials
+	}
+	switch credential.Status {
+	case "active":
+	case "pending_deletion":
+		s.recordLoginAudit(ctx, &credential.UserID, audit.OutcomeDenied, "account_pending_deletion")
+		return Principal{}, ErrAccountPendingDeletion
+	case "disabled":
+		s.recordLoginAudit(ctx, &credential.UserID, audit.OutcomeDenied, "account_disabled")
+		return Principal{}, ErrAccountDisabled
+	default:
+		return Principal{}, ErrServiceUnavailable
+	}
+	return Principal{UserID: credential.UserID, PersonalSpaceID: credential.PersonalSpaceID, Nickname: credential.Nickname}, nil
+}
+
+// CompleteVerificationLogin atomically consumes the receipt and records the
+// successful browser login after the browser session has been staged.
+func (s *Service) CompleteVerificationLogin(
+	ctx context.Context,
+	verificationReceipt string,
+	userID uuid.UUID,
+) error {
+	if userID == uuid.Nil {
+		return ErrInvalidRequest
+	}
+	claims, err := s.receipts.Parse(
+		verificationReceipt,
+		verification.PurposeLogin,
+	)
+	if err != nil {
+		return ErrVerificationRequired
+	}
+	identifiers, err := randomUUIDs(1)
+	if err != nil {
+		return ErrServiceUnavailable
+	}
+	err = s.repository.ConsumeLoginReceipt(ctx, LoginReceiptRecord{
+		ReceiptClaims: claims,
+		UserID:        userID,
+		AuditEventID:  identifiers[0],
+		ConsumedAt:    s.clock().UTC(),
+	})
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrReceiptUnavailable):
+		return ErrVerificationRequired
+	case errors.Is(err, ErrInvalidCredentials):
+		return ErrInvalidCredentials
+	case errors.Is(err, ErrAccountPendingDeletion):
+		return ErrAccountPendingDeletion
+	case errors.Is(err, ErrAccountDisabled):
+		return ErrAccountDisabled
+	default:
+		return ErrServiceUnavailable
+	}
 }
 
 func (s *Service) ResetPassword(ctx context.Context, verificationReceipt, password string) error {

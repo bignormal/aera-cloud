@@ -1,12 +1,15 @@
 import { useEffect, useState, type FormEvent } from "react";
 import {
+  APIError,
   getLegalDocuments,
+  login,
   registerAccount,
   sendVerification,
   verifyIdentity,
   type IdentityKind,
   type LegalDocuments,
 } from "../api/client";
+import { setCSRFToken } from "../auth/csrf";
 import {
   Card,
   PageFrame,
@@ -16,7 +19,12 @@ import {
 import { validPassword } from "../components/forms";
 import { useI18n } from "../i18n";
 import { usePublicConfig } from "../public-config";
-import { Link, useRouter } from "../router";
+import {
+  isSafeInternalTarget,
+  Link,
+  useRouter,
+  withSafeNextTarget,
+} from "../router";
 
 function validDirectEmail(value: string): boolean {
   const normalized = value.trim().toLowerCase();
@@ -43,7 +51,7 @@ function validDirectEmail(value: string): boolean {
 
 export function RegisterPage() {
   const { t } = useI18n();
-  const { navigate } = useRouter();
+  const { location, navigate } = useRouter();
   const {
     config,
     error: configError,
@@ -58,9 +66,9 @@ export function RegisterPage() {
   const [confirmation, setConfirmation] = useState("");
   const [nickname, setNickname] = useState("");
   const [accepted, setAccepted] = useState(false);
-  const [status, setStatus] = useState<"" | "sent" | "verified" | "complete">(
-    "",
-  );
+  const [status, setStatus] = useState<
+    "" | "sent" | "verified" | "returning" | "complete"
+  >("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const directRegistration = config?.registration_mode === "direct";
@@ -137,13 +145,15 @@ export function RegisterPage() {
     }
     setBusy(true);
     setError("");
+    const shared = {
+      password,
+      nickname: nickname.trim(),
+      terms_version: legal.terms_version,
+      privacy_version: legal.privacy_version,
+    };
+    const loginIdentity =
+      kind === "email" ? destination.trim().toLowerCase() : destination.trim();
     try {
-      const shared = {
-        password,
-        nickname: nickname.trim(),
-        terms_version: legal.terms_version,
-        privacy_version: legal.privacy_version,
-      };
       if (directRegistration) {
         await registerAccount({
           ...shared,
@@ -157,9 +167,27 @@ export function RegisterPage() {
           verification_receipt: receipt,
         });
       }
-      setStatus("complete");
+    } catch (caught) {
+      setError(
+        caught instanceof APIError && caught.code === "identity_conflict"
+          ? t("identityConflict")
+          : t("serviceError"),
+      );
+      setBusy(false);
+      return;
+    }
+
+    setStatus("returning");
+    try {
+      const signedIn = await login(loginIdentity, password);
+      setCSRFToken(signedIn.csrf_token);
+      const requested = new URLSearchParams(location.search).get("next") ?? "";
+      navigate(isSafeInternalTarget(requested) ? requested : "/account", {
+        replace: true,
+      });
     } catch {
-      setError(t("serviceError"));
+      setStatus("complete");
+      setError(t("registrationLoginFailed"));
     } finally {
       setBusy(false);
     }
@@ -197,15 +225,32 @@ export function RegisterPage() {
       </PageFrame>
     );
   }
+  if (status === "returning") {
+    return (
+      <PageFrame compact>
+        <Card className="auth-card completion-card">
+          <SpinnerLabel />
+          <h1>{t("registrationReturning")}</h1>
+          <p className="lede">{t("registrationReturningSubtitle")}</p>
+        </Card>
+      </PageFrame>
+    );
+  }
   if (status === "complete") {
     return (
       <PageFrame compact>
         <Card className="auth-card completion-card">
           <div className="success-mark">✓</div>
           <h1>{t("registrationComplete")}</h1>
+          {error && <StatusMessage tone="warning">{error}</StatusMessage>}
           <button
             className="primary-button"
-            onClick={() => navigate("/login?registered=1", { replace: true })}
+            onClick={() =>
+              navigate(
+                withSafeNextTarget("/login?registered=1", location.search),
+                { replace: true },
+              )
+            }
           >
             {t("backToLogin")}
           </button>
@@ -368,7 +413,9 @@ export function RegisterPage() {
           </form>
         )}
         <div className="secondary-link">
-          <Link href="/login">{t("backToLogin")}</Link>
+          <Link href={withSafeNextTarget("/login", location.search)}>
+            {t("backToLogin")}
+          </Link>
         </div>
       </Card>
     </PageFrame>

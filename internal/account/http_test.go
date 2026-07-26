@@ -15,6 +15,7 @@ import (
 	"github.com/bignormal/aera-cloud/internal/legal"
 	"github.com/bignormal/aera-cloud/internal/secure"
 	"github.com/bignormal/aera-cloud/internal/session"
+	"github.com/bignormal/aera-cloud/internal/verification"
 	"github.com/google/uuid"
 )
 
@@ -205,6 +206,127 @@ func TestHTTPHandlerLoginCreatesBrowserSessionWithoutEchoingCredentials(t *testi
 	body := response.Body.String()
 	if !strings.Contains(body, `"csrf_token":"opaque-csrf"`) || strings.Contains(body, "correct horse") || strings.Contains(body, "alice@example.com") {
 		t.Fatalf("login response = %s", body)
+	}
+}
+
+func TestHTTPHandlerCodeLoginCreatesBrowserSessionFromReceiptOnly(t *testing.T) {
+	principal := Principal{UserID: uuid.New(), PersonalSpaceID: uuid.New(), Nickname: "Alice"}
+	service := &stubAccountService{principal: principal}
+	sessions := &stubBrowserSessions{csrfToken: "opaque-csrf"}
+	handler := NewHandler(HTTPConfig{Accounts: service, BrowserSessions: sessions, Legal: currentLegal(t)})
+	request := accountJSONRequest(http.MethodPost, "/api/v1/browser/login/code", `{
+		"verification_receipt":"opaque-receipt"
+	}`)
+	request.RemoteAddr = "203.0.113.10:43210"
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK || service.loginIP != "203.0.113.10" || service.loginReceipt != "opaque-receipt" {
+		t.Fatalf("code login response = %d %s; IP=%q receipt=%q", response.Code, response.Body.String(), service.loginIP, service.loginReceipt)
+	}
+	if sessions.started.Principal.UserID != principal.UserID {
+		t.Fatalf("started browser session = %+v", sessions.started)
+	}
+	if !strings.Contains(response.Body.String(), `"csrf_token":"opaque-csrf"`) {
+		t.Fatalf("code login response = %s", response.Body.String())
+	}
+
+	unknownField := accountJSONRequest(http.MethodPost, "/api/v1/browser/login/code", `{
+		"verification_receipt":"opaque-receipt",
+		"password":"must-be-rejected"
+	}`)
+	rejected := httptest.NewRecorder()
+	handler.ServeHTTP(rejected, unknownField)
+	assertErrorEnvelope(t, rejected, http.StatusBadRequest, "invalid_request")
+}
+
+func TestHTTPHandlerCodeLoginKeepsReceiptRetryableWhenBrowserSessionStartFails(t *testing.T) {
+	fixture := newAccountFixture(t)
+	userID := uuid.New()
+	spaceID := uuid.New()
+	fixture.repository.credential = Credential{
+		UserID: userID, PersonalSpaceID: spaceID, Nickname: "Alice",
+		Status: "active", PasswordHash: "hash:unused", ParamsVersion: 7,
+	}
+	fixture.repository.found = true
+	receipt := fixture.receipt(
+		t,
+		secure.IdentityPhone,
+		"+8613800138000",
+		verification.PurposeLogin,
+	)
+	sessions := &stubBrowserSessions{startErr: errors.New("redis unavailable")}
+	handler := NewHandler(HTTPConfig{
+		Accounts: fixture.service, BrowserSessions: sessions, Legal: currentLegal(t),
+	})
+
+	first := httptest.NewRecorder()
+	handler.ServeHTTP(
+		first,
+		accountJSONRequest(
+			http.MethodPost,
+			"/api/v1/browser/login/code",
+			`{"verification_receipt":"`+receipt+`"}`,
+		),
+	)
+	assertErrorEnvelope(t, first, http.StatusServiceUnavailable, "service_unavailable")
+	if len(fixture.repository.receiptsUsed) != 0 {
+		t.Fatal("browser session failure consumed the verification receipt")
+	}
+
+	sessions.startErr = nil
+	sessions.csrfToken = "retry-csrf"
+	second := httptest.NewRecorder()
+	handler.ServeHTTP(
+		second,
+		accountJSONRequest(
+			http.MethodPost,
+			"/api/v1/browser/login/code",
+			`{"verification_receipt":"`+receipt+`"}`,
+		),
+	)
+	if second.Code != http.StatusOK {
+		t.Fatalf("retry response = %d %s", second.Code, second.Body.String())
+	}
+}
+
+func TestHTTPHandlerCodeLoginDoesNotExposeSessionWhenReceiptCompletionFails(t *testing.T) {
+	principal := Principal{
+		UserID: uuid.New(), PersonalSpaceID: uuid.New(), Nickname: "Alice",
+	}
+	service := &stubAccountService{
+		principal: principal, completeLoginErr: ErrServiceUnavailable,
+	}
+	sessions := &stubBrowserSessions{
+		csrfToken: "must-not-be-returned", startCookie: "must-not-be-exposed",
+	}
+	handler := NewHandler(HTTPConfig{
+		Accounts: service, BrowserSessions: sessions, Legal: currentLegal(t),
+	})
+	request := accountJSONRequest(
+		http.MethodPost,
+		"/api/v1/browser/login/code",
+		`{"verification_receipt":"opaque-receipt"}`,
+	)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	assertErrorEnvelope(t, response, http.StatusServiceUnavailable, "service_unavailable")
+	if len(response.Result().Cookies()) != 0 {
+		t.Fatalf("failed completion exposed cookies: %+v", response.Result().Cookies())
+	}
+	if sessions.endCalls != 1 {
+		t.Fatalf("browser session cleanup calls = %d, want 1", sessions.endCalls)
+	}
+	if service.completedLoginReceipt != "opaque-receipt" ||
+		service.completedLoginUserID != principal.UserID {
+		t.Fatalf(
+			"completed login receipt=%q user=%s",
+			service.completedLoginReceipt,
+			service.completedLoginUserID,
+		)
 	}
 }
 
@@ -416,31 +538,35 @@ func TestHTTPHandlerDeletionOwnershipConflictReturnsOnlySafeCount(t *testing.T) 
 }
 
 type stubAccountService struct {
-	registration    Registration
-	registerErr     error
-	registerCalls   int
-	registerIP      string
-	lastRegister    RegisterCommand
-	principal       Principal
-	loginErr        error
-	loginCalls      int
-	loginIP         string
-	resetErr        error
-	resetReceipt    string
-	profile         Profile
-	profileUserID   uuid.UUID
-	bindCalls       int
-	bindUserID      uuid.UUID
-	bindPassword    string
-	bindReceipt     string
-	removeUserID    uuid.UUID
-	removeKind      secure.IdentityKind
-	changeUserID    uuid.UUID
-	changeSessionID uuid.UUID
-	deleteUserID    uuid.UUID
-	deleteErr       error
-	recoverIdentity string
-	recoverReceipt  string
+	registration          Registration
+	registerErr           error
+	registerCalls         int
+	registerIP            string
+	lastRegister          RegisterCommand
+	principal             Principal
+	loginErr              error
+	loginCalls            int
+	loginIP               string
+	loginReceipt          string
+	completeLoginErr      error
+	completedLoginReceipt string
+	completedLoginUserID  uuid.UUID
+	resetErr              error
+	resetReceipt          string
+	profile               Profile
+	profileUserID         uuid.UUID
+	bindCalls             int
+	bindUserID            uuid.UUID
+	bindPassword          string
+	bindReceipt           string
+	removeUserID          uuid.UUID
+	removeKind            secure.IdentityKind
+	changeUserID          uuid.UUID
+	changeSessionID       uuid.UUID
+	deleteUserID          uuid.UUID
+	deleteErr             error
+	recoverIdentity       string
+	recoverReceipt        string
 }
 
 func (s *stubAccountService) Register(ctx context.Context, command RegisterCommand) (Registration, error) {
@@ -472,6 +598,23 @@ func (s *stubAccountService) AuthenticatePassword(ctx context.Context, _, _ stri
 	s.loginCalls++
 	s.loginIP = loginIPAddress(ctx)
 	return s.principal, s.loginErr
+}
+
+func (s *stubAccountService) AuthenticateVerification(ctx context.Context, receipt string) (Principal, error) {
+	s.loginCalls++
+	s.loginIP = loginIPAddress(ctx)
+	s.loginReceipt = receipt
+	return s.principal, s.loginErr
+}
+
+func (s *stubAccountService) CompleteVerificationLogin(
+	_ context.Context,
+	receipt string,
+	userID uuid.UUID,
+) error {
+	s.completedLoginReceipt = receipt
+	s.completedLoginUserID = userID
+	return s.completeLoginErr
 }
 
 func (s *stubAccountService) ResetPassword(_ context.Context, receipt, _ string) error {
@@ -522,6 +665,7 @@ func (s *stubAccountAccessAuthenticator) Authenticate(context.Context, string) (
 type stubBrowserSessions struct {
 	csrfToken   string
 	startErr    error
+	startCookie string
 	started     browser.Session
 	readSession browser.Session
 	readErr     error
@@ -530,8 +674,13 @@ type stubBrowserSessions struct {
 	endCalls    int
 }
 
-func (s *stubBrowserSessions) Start(_ context.Context, _ http.ResponseWriter, principal browser.Principal) (string, error) {
+func (s *stubBrowserSessions) Start(_ context.Context, response http.ResponseWriter, principal browser.Principal) (string, error) {
 	s.started = browser.Session{Principal: principal}
+	if s.startErr == nil && s.startCookie != "" {
+		http.SetCookie(response, &http.Cookie{
+			Name: browser.DefaultCookieName, Value: s.startCookie, Path: "/",
+		})
+	}
 	return s.csrfToken, s.startErr
 }
 

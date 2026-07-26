@@ -27,11 +27,29 @@ function currentLocation(): AppLocation {
 }
 
 export function isSafeInternalTarget(target: string): boolean {
-  if (!target.startsWith("/") || target.startsWith("//") || target.includes("\n") || target.includes("\r")) {
+  if (
+    !target.startsWith("/") ||
+    target.startsWith("//") ||
+    target.includes("\n") ||
+    target.includes("\r")
+  ) {
     return false;
   }
   const parsed = new URL(target, window.location.origin);
   return parsed.origin === window.location.origin;
+}
+
+/**
+ * Preserve an OAuth continuation target without ever carrying an external
+ * URL through the account-center navigation. OAuth starts on /authorize and
+ * may pass through /login and /register before returning to that same path.
+ */
+export function withSafeNextTarget(path: string, search: string): string {
+  if (!isSafeInternalTarget(path)) return path;
+  const next = new URLSearchParams(search).get("next") ?? "";
+  if (!isSafeInternalTarget(next)) return path;
+  const separator = path.includes("?") ? "&" : "?";
+  return `${path}${separator}next=${encodeURIComponent(next)}`;
 }
 
 export function RouterProvider({ children }: { children: ReactNode }) {
@@ -41,21 +59,26 @@ export function RouterProvider({ children }: { children: ReactNode }) {
     window.addEventListener("popstate", update);
     return () => window.removeEventListener("popstate", update);
   }, []);
-  const navigate = useCallback((target: string, options?: { replace?: boolean }) => {
-    if (!isSafeInternalTarget(target)) {
-      return;
-    }
-    if (options?.replace) {
-      window.history.replaceState(null, "", target);
-    } else {
-      window.history.pushState(null, "", target);
-    }
-    setLocation(currentLocation());
-    document.documentElement.scrollTop = 0;
-    document.body.scrollTop = 0;
-  }, []);
+  const navigate = useCallback(
+    (target: string, options?: { replace?: boolean }) => {
+      if (!isSafeInternalTarget(target)) {
+        return;
+      }
+      if (options?.replace) {
+        window.history.replaceState(null, "", target);
+      } else {
+        window.history.pushState(null, "", target);
+      }
+      setLocation(currentLocation());
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+    },
+    [],
+  );
   const value = useMemo(() => ({ location, navigate }), [location, navigate]);
-  return <RouterContext.Provider value={value}>{children}</RouterContext.Provider>;
+  return (
+    <RouterContext.Provider value={value}>{children}</RouterContext.Provider>
+  );
 }
 
 export function useRouter(): RouterValue {
@@ -66,11 +89,23 @@ export function useRouter(): RouterValue {
   return value;
 }
 
-export function Link({ href, onClick, ...props }: AnchorHTMLAttributes<HTMLAnchorElement>) {
+export function Link({
+  href,
+  onClick,
+  ...props
+}: AnchorHTMLAttributes<HTMLAnchorElement>) {
   const { navigate } = useRouter();
   const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
     onClick?.(event);
-    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || !href) {
+    if (
+      event.defaultPrevented ||
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey ||
+      !href
+    ) {
       return;
     }
     if (isSafeInternalTarget(href)) {

@@ -14,7 +14,7 @@ const verifiedConfig = {
 
 function renderDeletion() {
   window.history.replaceState(null, "", "/delete-account");
-  window.sessionStorage.setItem("agentera.csrf_token", "c".repeat(43));
+  window.localStorage.setItem("agentera.csrf_token", "c".repeat(43));
   return render(
     <I18nProvider>
       <PublicConfigProvider>
