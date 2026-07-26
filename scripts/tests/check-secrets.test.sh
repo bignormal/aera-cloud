@@ -48,6 +48,7 @@ printf 'var fakeProviderFixture = map[string]string{"AGENTERA_CLOUD_SMTP_HOST": 
 printf 'package internal\nconst maximumChunkCount = 131072\n' > "$safe/internal/limits.go"
 printf 'CHECK (octet_length(icon_data) <= 524288);\n' > "$safe/migrations/000001_size_limit.sql"
 printf 'CHECK (chunk_count BETWEEN 1 AND 131072);\nCHECK (chunk_index BETWEEN 0 AND 131071);\nCHECK (cardinality(object_keys) BETWEEN 0 AND 131073);\n' >> "$safe/migrations/000001_size_limit.sql"
+printf '%s\n' '-- Extend the checks from 000015_internal_admin_api.sql.' >> "$safe/migrations/000001_size_limit.sql"
 printf 'maxLength: 262144\ncontent: { type: string, maxLength: 262144 }\nicon_data: { type: string, format: byte, maxLength: 699052 }\n' > "$safe/api/openapi.yaml"
 printf 'Apply migration 000015_internal_admin_api.sql before enabling.\n' > "$safe/docs/runbooks/private-staging.md"
 printf '%s%s\ntoken=eyJfixture.fixture.fixture\n' '-----BEGIN ' 'PRIVATE KEY-----' > "$safe/api/experience-candidate-v1-vectors.json"

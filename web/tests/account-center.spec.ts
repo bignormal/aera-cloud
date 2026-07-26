@@ -53,11 +53,11 @@ test("defaults to Chinese, switches to English, and keeps login secrets out of U
   await expect(page.getByRole("heading", { name: "登录 AgentEra" })).toBeVisible();
   await page.getByLabel("邮箱或手机号").focus();
   await page.keyboard.press("Tab");
-  await expect(page.getByLabel("密码")).toBeFocused();
+  await expect(page.getByLabel("密码", { exact: true })).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(page.getByRole("button", { name: "登录", exact: true })).toBeFocused();
   await page.getByLabel("邮箱或手机号").fill("alice@example.com");
-  await page.getByLabel("密码").fill("correct horse battery");
+  await page.getByLabel("密码", { exact: true }).fill("correct horse battery");
   await page.getByRole("button", { name: "登录", exact: true }).click();
   await expect(page).toHaveURL(/\/account$/);
   expect(page.url()).not.toContain("alice@example.com");
@@ -178,19 +178,38 @@ test("warns that cloud deletion preserves local Hermes data before entering the 
   await expect(page.getByText("账户已进入 7 天注销冷静期，所有云端设备会话已撤销。")).toBeVisible();
 });
 
-test("supports OAuth cancel and maps an expired approval without exposing callback values", async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem("agentera.csrf_token", "c".repeat(43)));
+test("automatically approves OAuth and maps an expired request without exposing callback values", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("agentera.csrf_token", "c".repeat(43)));
   await page.route("**/api/v1/accounts/me", (route) => json(route, profile));
   const requestID = "40000000-0000-4000-8000-000000000004";
-  await page.goto(`/authorize?request_id=${requestID}`);
-  await page.getByRole("button", { name: "取消" }).click();
-  await expect(page.getByText("你已取消本次授权，可以关闭此页面。")).toBeVisible();
+  let approvalBody: unknown;
+  let approvalCSRF = "";
+  await page.route("**/api/v1/oauth/authorize/approve", async (route) => {
+    approvalBody = route.request().postDataJSON();
+    approvalCSRF = route.request().headers()["x-csrf-token"] ?? "";
+    await json(
+      route,
+      {
+        error: {
+          code: "authorization_expired",
+          message: "localized by the client",
+          request_id: requestID,
+        },
+      },
+      400,
+    );
+  });
 
-  await page.route("**/api/v1/oauth/authorize/approve", (route) => json(route, {
-    error: { code: "authorization_expired", message: "localized by the client", request_id: requestID },
-  }, 400));
-  await page.reload();
-  await page.getByRole("button", { name: "允许并返回 AgentEra Studio" }).click();
-  await expect(page.getByText("授权请求无效或已过期，请返回 AgentEra Studio 重试。")).toBeVisible();
-  expect(await page.locator("body").innerText()).not.toContain("callback?code=");
+  await page.goto(`/authorize?request_id=${requestID}`);
+
+  await expect(
+    page.getByText(
+      "登录请求无效或已过期，请返回 AgentEra Studio 重试。",
+    ),
+  ).toBeVisible();
+  expect(approvalBody).toEqual({ request_id: requestID });
+  expect(approvalCSRF).toBe("c".repeat(43));
+  const body = await page.locator("body").innerText();
+  expect(body).not.toContain("callback?code=");
+  expect(body).not.toContain(requestID);
 });

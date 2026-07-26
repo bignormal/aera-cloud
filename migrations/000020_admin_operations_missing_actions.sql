@@ -1,6 +1,6 @@
 -- The admin control service dispatches force_password_reset and
 -- revoke_all_sessions (internal/admin/control_model.go), but the
--- The original Internal Admin migration's admin_operations checks never allowed
+-- admin_operations checks from 000015_internal_admin_api.sql never allowed
 -- them, so every such command failed with SERVICE_UNAVAILABLE. Align the
 -- action allowlist and the action/target pairing with the code.
 ALTER TABLE admin_operations

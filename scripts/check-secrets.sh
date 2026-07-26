@@ -50,6 +50,7 @@ has_plaintext_verification_code_shape() {
     sed -E \
       -e 's/octet_length\([A-Za-z_][A-Za-z0-9_]*\)[[:space:]]*<=[[:space:]]*[0-9]{6}/ /g' \
       -e 's/([A-Za-z_][A-Za-z0-9_]*(count|index|size|length|bytes|capacity)|cardinality\([A-Za-z_][A-Za-z0-9_]*\))[[:space:]]+BETWEEN[[:space:]]+[0-9]+[[:space:]]+AND[[:space:]]+[0-9]{6}/ /g' \
+      -e 's/000[0-9]{3}_[a-z0-9_]+\.sql/ /g' \
       "$absolute" |
       grep -Eq -- "$pattern"
     return
