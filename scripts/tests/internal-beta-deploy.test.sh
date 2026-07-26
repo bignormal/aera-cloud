@@ -123,7 +123,7 @@ manifest() {
       repository: "bignormal/aera-cloud",
       commitSha: $sha,
       image: {reference: $reference, digest: $digest},
-      schema: {minimum: 17, maximum: 19, highestMigration: $highest}
+      schema: {minimum: 17, maximum: 20, highestMigration: $highest}
     }' >"$directory/manifest.json"
   printf '\n' >>"$directory/manifest.json"
 }
