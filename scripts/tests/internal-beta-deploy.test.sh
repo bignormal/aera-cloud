@@ -81,6 +81,8 @@ require_text "$caddy_file" 'redir https://\{\$AERA_INTERNAL_BETA_IP\}\{uri\}'
 require_text "$caddy_file" 'tls /etc/letsencrypt/live/\{\$AERA_INTERNAL_BETA_CERTIFICATE_NAME\}/fullchain\.pem /etc/letsencrypt/live/\{\$AERA_INTERNAL_BETA_CERTIFICATE_NAME\}/privkey\.pem'
 require_text "$caddy_file" 'X-Frame-Options "DENY"'
 require_text "$caddy_file" "Content-Security-Policy \"frame-ancestors 'none'\""
+require_text "$caddy_file" '@private_admin path /admin /admin/\*'
+require_text "$caddy_file" 'respond @private_admin 404'
 require_text "$caddy_file" 'reverse_proxy 127\.0\.0\.1:18086'
 forbid_text "$caddy_file" '^[[:space:]]*log[[:space:]]*\{'
 
