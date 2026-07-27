@@ -64,8 +64,10 @@ Caddy service environment.
 
 Port 80 serves only `/.well-known/acme-challenge/` from
 `/var/lib/aera-certbot`; all other requests redirect to HTTPS. Port 443 uses
-the Certbot-managed IP certificate and proxies only to
-`127.0.0.1:18086`. Request access logging is deliberately omitted because
+the Certbot-managed IP certificate, rejects `/admin` and every `/admin/*`
+request with 404, and proxies all remaining traffic only to
+`127.0.0.1:18086`. The Admin UI is available exclusively through its separate
+SSH loopback tunnel. Request access logging is deliberately omitted because
 OAuth start URLs contain short-lived state and public device metadata.
 
 Certificate issuance and renewal belong to the host ceremony. A certificate
