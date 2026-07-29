@@ -74,6 +74,17 @@ export function RegisterPage() {
   const directRegistration = config?.registration_mode === "direct";
 
   useEffect(() => {
+    if (!config || config.registration_identity_kinds.includes(kind)) return;
+    const next = config.registration_identity_kinds[0];
+    setKind(next);
+    setDestination("");
+    setCode("");
+    setReceipt("");
+    setStatus("");
+    setError("");
+  }, [config, kind]);
+
+  useEffect(() => {
     let active = true;
     getLegalDocuments()
       .then((documents) => {

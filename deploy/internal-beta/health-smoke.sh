@@ -8,11 +8,16 @@ fail() {
 
 origin=${AERA_INTERNAL_BETA_PUBLIC_ORIGIN:-}
 expected_features=${AERA_INTERNAL_BETA_EXPECT_FEATURES:-}
+expected_registration_mode=${AERA_INTERNAL_BETA_EXPECT_REGISTRATION_MODE:-direct}
 [[ $origin =~ ^https://([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] ||
   fail 'AERA_INTERNAL_BETA_PUBLIC_ORIGIN must be an exact HTTPS IPv4 origin'
 case "$expected_features" in
   disabled | enabled) ;;
   *) fail 'AERA_INTERNAL_BETA_EXPECT_FEATURES must be disabled or enabled' ;;
+esac
+case "$expected_registration_mode" in
+  direct | verified) ;;
+  *) fail 'AERA_INTERNAL_BETA_EXPECT_REGISTRATION_MODE must be direct or verified' ;;
 esac
 command -v curl >/dev/null 2>&1 || fail 'curl is required'
 command -v jq >/dev/null 2>&1 || fail 'jq is required'
@@ -42,32 +47,36 @@ jq -e '.status == "ok"' "$tmp/ready.json" >/dev/null ||
   fail 'readiness response is not ok'
 
 curl "${curl_args[@]}" "$origin/api/v1/public/config" >"$tmp/public-config.json"
+expected_registration=false
 if [[ $expected_features == enabled ]]; then
-  jq -e '
-    keys == [
-      "environment",
-      "identity_verification_available",
-      "public_registration_enabled",
-      "registration_identity_kinds",
-      "registration_mode"
-    ] and
-    .environment == "internal_beta" and
-    .public_registration_enabled == true and
-    .registration_mode == "direct" and
-    .registration_identity_kinds == ["email"] and
-    .identity_verification_available == false
-  ' "$tmp/public-config.json" >/dev/null ||
-    fail 'enabled public capability document is incorrect'
-else
-  jq -e '
-    .environment == "internal_beta" and
-    .public_registration_enabled == false and
-    .registration_mode == "direct" and
-    .registration_identity_kinds == ["email"] and
-    .identity_verification_available == false
-  ' "$tmp/public-config.json" >/dev/null ||
-    fail 'disabled public capability document is incorrect'
+  expected_registration=true
 fi
+if [[ $expected_registration_mode == verified ]]; then
+  expected_identity_kinds='["phone"]'
+  expected_verification=true
+else
+  expected_identity_kinds='["email"]'
+  expected_verification=false
+fi
+jq -e \
+  --arg mode "$expected_registration_mode" \
+  --argjson registration "$expected_registration" \
+  --argjson kinds "$expected_identity_kinds" \
+  --argjson verification "$expected_verification" '
+  keys == [
+    "environment",
+    "identity_verification_available",
+    "public_registration_enabled",
+    "registration_identity_kinds",
+    "registration_mode"
+  ] and
+  .environment == "internal_beta" and
+  .public_registration_enabled == $registration and
+  .registration_mode == $mode and
+  .registration_identity_kinds == $kinds and
+  .identity_verification_available == $verification
+' "$tmp/public-config.json" >/dev/null ||
+  fail 'public capability document is incorrect'
 
 if [[ -n ${AERA_INTERNAL_BETA_EXPECTED_OFFLINE_KEY_ID:-} ||
   -n ${AERA_INTERNAL_BETA_EXPECTED_OFFLINE_PUBLIC_KEY:-} ]]; then

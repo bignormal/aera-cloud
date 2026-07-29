@@ -179,10 +179,9 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 }
 
 func buildPublicConfig(cfg config.Config) httpapi.PublicConfig {
-	identityKinds := []string{"email", "phone"}
+	identityKinds := append([]string(nil), cfg.RegistrationIdentityKinds...)
 	verificationAvailable := true
 	if cfg.RegistrationMode == config.RegistrationModeDirect {
-		identityKinds = []string{"email"}
 		verificationAvailable = false
 	}
 	return httpapi.PublicConfig{
@@ -371,38 +370,60 @@ func buildVerificationHandler(
 	if err != nil {
 		return nil, err
 	}
-	email, err := notification.NewSMTPEmail(notification.SMTPConfig{
-		Host:        cfg.SMTPHost,
-		Port:        cfg.SMTPPort,
-		Username:    cfg.SMTPUsername,
-		Password:    cfg.SMTPPassword,
-		FromAddress: cfg.SMTPFromAddress,
-		FromName:    cfg.SMTPFromName,
-	}, nil)
-	if err != nil {
-		return nil, err
+	var email notification.Provider
+	if registrationIdentityEnabled(cfg.RegistrationIdentityKinds, "email") {
+		email, err = notification.NewSMTPEmail(notification.SMTPConfig{
+			Host:        cfg.SMTPHost,
+			Port:        cfg.SMTPPort,
+			Username:    cfg.SMTPUsername,
+			Password:    cfg.SMTPPassword,
+			FromAddress: cfg.SMTPFromAddress,
+			FromName:    cfg.SMTPFromName,
+		}, nil)
+		if err != nil {
+			return nil, err
+		}
 	}
 	allowInsecureLoopback := cfg.Environment != "production"
-	sms, err := notification.NewHTTPSMS(notification.HTTPSMSConfig{
-		Endpoint:                  cfg.SMSEndpoint,
-		APIKey:                    cfg.SMSAPIKey,
-		SenderID:                  cfg.SMSSenderID,
-		AllowInsecureLoopbackHTTP: allowInsecureLoopback,
-	})
-	if err != nil {
-		return nil, err
+	var sms notification.Provider
+	if registrationIdentityEnabled(cfg.RegistrationIdentityKinds, "phone") {
+		switch cfg.SMSProvider {
+		case config.SMSProviderHTTP:
+			sms, err = notification.NewHTTPSMS(notification.HTTPSMSConfig{
+				Endpoint:                  cfg.SMSEndpoint,
+				APIKey:                    cfg.SMSAPIKey,
+				SenderID:                  cfg.SMSSenderID,
+				AllowInsecureLoopbackHTTP: allowInsecureLoopback,
+			})
+		case config.SMSProviderAliyun:
+			sms, err = notification.NewAliyunSMS(notification.AliyunSMSConfig{
+				AccessKeyID:     cfg.AliyunSMSAccessKeyID,
+				AccessKeySecret: cfg.AliyunSMSAccessKeySecret,
+				RegionID:        cfg.AliyunSMSRegionID,
+				SignName:        cfg.AliyunSMSSignName,
+				TemplateCode:    cfg.AliyunSMSTemplateCode,
+			})
+		default:
+			err = errors.New("SMS provider is unavailable")
+		}
+		if err != nil {
+			return nil, err
+		}
 	}
 	sender, err := notification.NewRouter(email, sms)
 	if err != nil {
 		return nil, err
 	}
-	captcha, err := abuse.NewHTTPChallengeVerifier(abuse.HTTPChallengeConfig{
-		Endpoint:                  cfg.CaptchaEndpoint,
-		Secret:                    cfg.CaptchaSecret,
-		AllowInsecureLoopbackHTTP: allowInsecureLoopback,
-	})
-	if err != nil {
-		return nil, err
+	var captcha verification.CaptchaVerifier = unavailableCaptchaVerifier{}
+	if cfg.CaptchaEndpoint != "" {
+		captcha, err = abuse.NewHTTPChallengeVerifier(abuse.HTTPChallengeConfig{
+			Endpoint:                  cfg.CaptchaEndpoint,
+			Secret:                    cfg.CaptchaSecret,
+			AllowInsecureLoopbackHTTP: allowInsecureLoopback,
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 	service, err := verification.NewService(verification.ServiceConfig{
 		Sender:          sender,
@@ -434,6 +455,21 @@ func (unavailableVerificationService) Verify(
 	verification.VerifyRequest,
 ) (verification.VerificationResult, error) {
 	return verification.VerificationResult{}, errors.New("identity verification is unavailable")
+}
+
+type unavailableCaptchaVerifier struct{}
+
+func (unavailableCaptchaVerifier) Verify(context.Context, string, string) (bool, error) {
+	return false, nil
+}
+
+func registrationIdentityEnabled(kinds []string, expected string) bool {
+	for _, kind := range kinds {
+		if kind == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func buildAccountHandler(

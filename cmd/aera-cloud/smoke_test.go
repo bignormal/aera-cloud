@@ -15,7 +15,6 @@ import (
 	"net/url"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -148,10 +147,10 @@ func runSmokeAuthLifecycle(t *testing.T) {
 		t.Fatal("smoke legal contract is incomplete")
 	}
 
-	destination := "smoke-" + strings.ReplaceAll(uuid.NewString(), "-", "") + "@example.com"
+	destination := "+8613800138000"
 	password := "Smoke-only correct battery"
 	smokeRequest(t, client, http.MethodPost, server.URL+"/api/v1/verification/challenges", map[string]any{
-		"kind": "email", "destination": destination, "purpose": "registration", "captcha_token": "",
+		"kind": "phone", "destination": destination, "purpose": "registration", "captcha_token": "",
 	}, map[string]string{
 		"Idempotency-Key": uuid.NewString(), "X-AgentEra-Installation-ID": uuid.NewString(),
 	}, http.StatusAccepted, nil)
@@ -163,7 +162,7 @@ func runSmokeAuthLifecycle(t *testing.T) {
 		Receipt string `json:"receipt"`
 	}
 	smokeRequest(t, client, http.MethodPost, server.URL+"/api/v1/verification/challenges/verify", map[string]any{
-		"kind": "email", "destination": destination, "purpose": "registration", "code": code,
+		"kind": "phone", "destination": destination, "purpose": "registration", "code": code,
 	}, nil, http.StatusOK, &verified)
 	if verified.Receipt == "" {
 		t.Fatal("smoke verification receipt is missing")
@@ -173,16 +172,59 @@ func runSmokeAuthLifecycle(t *testing.T) {
 		PersonalSpaceID uuid.UUID `json:"personal_space_id"`
 	}
 	smokeRequest(t, client, http.MethodPost, server.URL+"/api/v1/accounts/register", map[string]any{
-		"kind": "email", "verification_receipt": verified.Receipt, "password": password,
+		"kind": "phone", "verification_receipt": verified.Receipt, "password": password,
 		"nickname": "Smoke User", "terms_version": legal.TermsVersion, "privacy_version": legal.PrivacyVersion,
 	}, nil, http.StatusCreated, &registration)
 	if registration.UserID == uuid.Nil || registration.PersonalSpaceID == uuid.Nil {
 		t.Fatal("smoke registration did not create an account and personal space")
 	}
+	var persisted int
+	if err := postgres.QueryRow(ctx, `
+		SELECT count(*)
+		FROM users u
+		JOIN identities i ON i.user_id = u.id
+		JOIN personal_spaces ps ON ps.owner_user_id = u.id
+		WHERE u.id = $1 AND ps.id = $2 AND u.status = 'active'
+		  AND i.kind = 'phone' AND i.verified_at IS NOT NULL
+	`, registration.UserID, registration.PersonalSpaceID).Scan(&persisted); err != nil {
+		t.Fatalf("read persisted phone account: %v", err)
+	}
+	if persisted != 1 {
+		t.Fatalf("persisted phone account rows = %d, want 1", persisted)
+	}
 
 	var browserLogin struct {
 		CSRFToken string `json:"csrf_token"`
 	}
+	smokeRequest(t, client, http.MethodPost, server.URL+"/api/v1/verification/challenges", map[string]any{
+		"kind": "phone", "destination": destination, "purpose": "login", "captcha_token": "",
+	}, map[string]string{
+		"Idempotency-Key": uuid.NewString(), "X-AgentEra-Installation-ID": uuid.NewString(),
+	}, http.StatusAccepted, nil)
+	loginCode := sender.code(destination)
+	if len(loginCode) != 6 {
+		t.Fatal("smoke login verification provider did not capture a six-digit code")
+	}
+	var loginVerified struct {
+		Receipt string `json:"receipt"`
+	}
+	smokeRequest(t, client, http.MethodPost, server.URL+"/api/v1/verification/challenges/verify", map[string]any{
+		"kind": "phone", "destination": destination, "purpose": "login", "code": loginCode,
+	}, nil, http.StatusOK, &loginVerified)
+	smokeRequest(t, client, http.MethodPost, server.URL+"/api/v1/browser/login/code", map[string]any{
+		"verification_receipt": loginVerified.Receipt,
+	}, nil, http.StatusOK, &browserLogin)
+	if browserLogin.CSRFToken == "" {
+		t.Fatal("smoke code login did not return a CSRF token")
+	}
+	smokeRequest(t, client, http.MethodPost, server.URL+"/api/v1/browser/login/code", map[string]any{
+		"verification_receipt": loginVerified.Receipt,
+	}, nil, http.StatusBadRequest, nil)
+	smokeRequest(t, client, http.MethodPost, server.URL+"/api/v1/browser/logout", nil, map[string]string{
+		"X-CSRF-Token": browserLogin.CSRFToken,
+	}, http.StatusNoContent, nil)
+
+	browserLogin.CSRFToken = ""
 	smokeRequest(t, client, http.MethodPost, server.URL+"/api/v1/browser/login", map[string]any{
 		"identity": destination, "password": password,
 	}, nil, http.StatusOK, &browserLogin)

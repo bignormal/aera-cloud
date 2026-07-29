@@ -70,6 +70,11 @@ printf 'token: ghp_%s%s\n' 'abcdefghijklmnopqr' 'stuvwxyz1234567890' > "$token/c
 track "$token"
 expect_fail "$token"
 
+aliyun_token=$(new_repo aliyun-token)
+printf 'access_key_id: LTAI%s%s\n' 'abcdefghijkl' 'mnop1234' > "$aliyun_token/config.yaml"
+track "$aliyun_token"
+expect_fail "$aliyun_token"
+
 verification_code=$(new_repo verification-code)
 mkdir -p "$verification_code/deploy"
 printf 'verification_code: "%s%s"\n' '654' '321' > "$verification_code/deploy/config.yaml"

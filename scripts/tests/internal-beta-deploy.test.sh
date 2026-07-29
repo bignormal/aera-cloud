@@ -257,6 +257,20 @@ grep -q '^AGENTERA_CLOUD_ENCRYPTED_BACKUP_ENABLED=true$' "$feature_file"
 jq -e '.features.publicRegistration == true and .features.encryptedBackup == true' \
   "$state_file" >/dev/null
 
+# An explicitly approved phone-verification rollout keeps the disabled phase
+# backward-compatible, then enables only verified phone registration.
+export AERA_INTERNAL_BETA_REGISTRATION_MODE=verified
+"$deploy_script" enable "$tmp/evidence/a/manifest.json"
+grep -q '^AGENTERA_CLOUD_PUBLIC_REGISTRATION_ENABLED=true$' "$feature_file"
+grep -q '^AGENTERA_CLOUD_REGISTRATION_MODE=verified$' "$feature_file"
+grep -q '^AGENTERA_CLOUD_REGISTRATION_IDENTITY_KINDS=phone$' "$feature_file"
+if grep -q '^AGENTERA_CLOUD_DIRECT_REGISTRATION_' "$feature_file"; then
+  fail 'verified rollout retained direct-registration limits'
+fi
+jq -e '.features.publicRegistration == true and .features.registrationMode == "verified"' \
+  "$state_file" >/dev/null
+unset AERA_INTERNAL_BETA_REGISTRATION_MODE
+
 # A failed update may roll back only to the manifest already recorded as
 # current. State remains on A and every feature is disabled after the failure.
 export AERA_INTERNAL_BETA_EXPECTED_SHA="$sha_b"
@@ -296,7 +310,9 @@ case "$url" in
     printf '{"status":"ok"}\n'
     ;;
   */api/v1/public/config)
-    if test "$AERA_INTERNAL_BETA_HEALTH_FIXTURE" = enabled; then
+    if test "$AERA_INTERNAL_BETA_HEALTH_FIXTURE" = verified; then
+      printf '%s\n' '{"environment":"internal_beta","public_registration_enabled":true,"registration_mode":"verified","registration_identity_kinds":["phone"],"identity_verification_available":true}'
+    elif test "$AERA_INTERNAL_BETA_HEALTH_FIXTURE" = enabled; then
       printf '%s\n' '{"environment":"internal_beta","public_registration_enabled":true,"registration_mode":"direct","registration_identity_kinds":["email"],"identity_verification_available":false}'
     else
       printf '%s\n' '{"environment":"internal_beta","public_registration_enabled":false,"registration_mode":"direct","registration_identity_kinds":["email"],"identity_verification_available":false}'
@@ -312,6 +328,10 @@ export AERA_INTERNAL_BETA_HEALTH_FIXTURE=disabled
 AERA_INTERNAL_BETA_EXPECT_FEATURES=disabled "$health_script"
 export AERA_INTERNAL_BETA_HEALTH_FIXTURE=enabled
 AERA_INTERNAL_BETA_EXPECT_FEATURES=enabled "$health_script"
+export AERA_INTERNAL_BETA_HEALTH_FIXTURE=verified
+AERA_INTERNAL_BETA_EXPECT_FEATURES=enabled \
+  AERA_INTERNAL_BETA_EXPECT_REGISTRATION_MODE=verified \
+  "$health_script"
 
 # Exposure audit: only SSH/HTTP/HTTPS may bind publicly, while application
 # ingress may remain on loopback. Both host and Docker data-port leaks fail.

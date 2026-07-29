@@ -43,6 +43,11 @@ compose_project=${AERA_INTERNAL_BETA_COMPOSE_PROJECT:-aera-cloud-internal-beta}
 verify_command=${AERA_INTERNAL_BETA_VERIFY_COMMAND:-"$repo_root/scripts/release/verify-manifest.sh"}
 health_command=${AERA_INTERNAL_BETA_HEALTH_COMMAND:-"$repo_root/deploy/internal-beta/health-smoke.sh"}
 exposure_command=${AERA_INTERNAL_BETA_EXPOSURE_COMMAND:-"$repo_root/deploy/internal-beta/exposure-check.sh"}
+enabled_registration_mode=${AERA_INTERNAL_BETA_REGISTRATION_MODE:-direct}
+case "$enabled_registration_mode" in
+  direct | verified) ;;
+  *) fail 'AERA_INTERNAL_BETA_REGISTRATION_MODE must be direct or verified' ;;
+esac
 
 require_value AERA_INTERNAL_BETA_PUBLIC_ORIGIN
 require_value AERA_CLOUD_ENV_FILE
@@ -147,7 +152,7 @@ write_features() {
       ;;
     enabled)
       registration=true
-      mode=direct
+      mode=$enabled_registration_mode
       official=true
       quality=true
       backup=true
@@ -157,8 +162,13 @@ write_features() {
   {
     printf 'AGENTERA_CLOUD_PUBLIC_REGISTRATION_ENABLED=%s\n' "$registration"
     printf 'AGENTERA_CLOUD_REGISTRATION_MODE=%s\n' "$mode"
-    printf 'AGENTERA_CLOUD_DIRECT_REGISTRATION_IP_LIMIT=30\n'
-    printf 'AGENTERA_CLOUD_DIRECT_REGISTRATION_WINDOW=1h\n'
+    if [[ $mode == verified ]]; then
+      printf 'AGENTERA_CLOUD_REGISTRATION_IDENTITY_KINDS=phone\n'
+    else
+      printf 'AGENTERA_CLOUD_REGISTRATION_IDENTITY_KINDS=email\n'
+      printf 'AGENTERA_CLOUD_DIRECT_REGISTRATION_IP_LIMIT=30\n'
+      printf 'AGENTERA_CLOUD_DIRECT_REGISTRATION_WINDOW=1h\n'
+    fi
     printf 'AGENTERA_CLOUD_OFFICIAL_AGENTS_ENABLED=%s\n' "$official"
     printf 'AGENTERA_CLOUD_OFFICIAL_QUALITY_ENABLED=%s\n' "$quality"
     printf 'AGENTERA_CLOUD_ENCRYPTED_BACKUP_ENABLED=%s\n' "$backup"
@@ -170,7 +180,8 @@ write_features() {
 feature_json() {
   local status=$1
   if [[ $status == enabled ]]; then
-    printf '%s' '{"encryptedBackup":true,"officialAgents":true,"officialQuality":true,"publicRegistration":true,"registrationMode":"direct"}'
+    printf '{"encryptedBackup":true,"officialAgents":true,"officialQuality":true,"publicRegistration":true,"registrationMode":"%s"}' \
+      "$enabled_registration_mode"
   else
     printf '%s' '{"encryptedBackup":false,"officialAgents":false,"officialQuality":false,"publicRegistration":false,"registrationMode":"direct"}'
   fi
@@ -214,7 +225,13 @@ start_image() {
 
 check_image() {
   local feature_status=$1
-  AERA_INTERNAL_BETA_EXPECT_FEATURES="$feature_status" "$health_command" &&
+  local expected_registration_mode=direct
+  if [[ $feature_status == enabled ]]; then
+    expected_registration_mode=$enabled_registration_mode
+  fi
+  AERA_INTERNAL_BETA_EXPECT_FEATURES="$feature_status" \
+    AERA_INTERNAL_BETA_EXPECT_REGISTRATION_MODE="$expected_registration_mode" \
+    "$health_command" &&
     "$exposure_command"
 }
 

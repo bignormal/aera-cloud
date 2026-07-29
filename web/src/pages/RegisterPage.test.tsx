@@ -27,6 +27,14 @@ const directConfig = {
   identity_verification_available: false,
 };
 
+const phoneOnlyConfig = {
+  environment: "internal_beta",
+  public_registration_enabled: true,
+  registration_mode: "verified",
+  registration_identity_kinds: ["phone"],
+  identity_verification_available: true,
+};
+
 function renderRegistration(path = "/register") {
   window.history.replaceState(null, "", path);
   return render(
@@ -179,6 +187,42 @@ test("supports mainland phone registration as an explicit identity choice", asyn
   );
   const init = verificationCall?.[1];
   expect(JSON.parse(String(init?.body))).toMatchObject({
+    kind: "phone",
+    destination: "13800138000",
+    purpose: "registration",
+  });
+});
+
+test("defaults to phone when the deployment enables only phone registration", async () => {
+  const fetchMock = vi
+    .spyOn(window, "fetch")
+    .mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === "/api/v1/public/config") {
+        return jsonResponse(phoneOnlyConfig);
+      }
+      if (url === "/api/v1/legal/current") {
+        return jsonResponse({
+          terms_version: "2026-07",
+          privacy_version: "2026-07",
+        });
+      }
+      return jsonResponse({ status: "accepted" }, 202);
+    });
+  renderRegistration();
+
+  const phone = await screen.findByRole("textbox", {
+    name: "中国大陆手机号",
+  });
+  expect(screen.queryByRole("radio", { name: "邮箱" })).not.toBeInTheDocument();
+  fireEvent.change(phone, { target: { value: "13800138000" } });
+  fireEvent.click(screen.getByRole("button", { name: "发送验证码" }));
+
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+  const verificationCall = fetchMock.mock.calls.find(
+    ([input]) => String(input) === "/api/v1/verification/challenges",
+  );
+  expect(JSON.parse(String(verificationCall?.[1]?.body))).toMatchObject({
     kind: "phone",
     destination: "13800138000",
     purpose: "registration",

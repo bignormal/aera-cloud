@@ -39,6 +39,36 @@ func TestRouterSelectsEmailOrSMSWithoutCrossDelivery(t *testing.T) {
 	}
 }
 
+func TestRouterSupportsPhoneOnlyVerification(t *testing.T) {
+	sms := &recordingProvider{}
+	router, err := NewRouter(nil, sms)
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+	if err := router.SendVerification(
+		context.Background(),
+		"+8613800138000",
+		"123456",
+		verification.PurposeLogin,
+	); err != nil {
+		t.Fatalf("phone SendVerification() error = %v", err)
+	}
+	if len(sms.deliveries) != 1 {
+		t.Fatalf("SMS deliveries = %d", len(sms.deliveries))
+	}
+	if err := router.SendVerification(
+		context.Background(),
+		"alice@example.com",
+		"123456",
+		verification.PurposeRegistration,
+	); err == nil {
+		t.Fatal("phone-only router accepted email delivery")
+	}
+	if _, err := NewRouter(nil, nil); err == nil {
+		t.Fatal("NewRouter() accepted no providers")
+	}
+}
+
 func TestSMTPEmailBuildsSafeMessageAndKeepsCredentialsOutOfPayload(t *testing.T) {
 	transport := &recordingSMTPTransport{}
 	provider, err := NewSMTPEmail(SMTPConfig{

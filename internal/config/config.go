@@ -86,11 +86,22 @@ const (
 	envSMTPPassword                    = "AGENTERA_CLOUD_SMTP_PASSWORD"
 	envSMTPFromAddress                 = "AGENTERA_CLOUD_SMTP_FROM_ADDRESS"
 	envSMTPFromName                    = "AGENTERA_CLOUD_SMTP_FROM_NAME"
+	envSMSProvider                     = "AGENTERA_CLOUD_SMS_PROVIDER"
 	envSMSEndpoint                     = "AGENTERA_CLOUD_SMS_ENDPOINT"
 	envSMSAPIKey                       = "AGENTERA_CLOUD_SMS_API_KEY"
 	envSMSSenderID                     = "AGENTERA_CLOUD_SMS_SENDER_ID"
+	envAliyunSMSAccessKeyID            = "AGENTERA_CLOUD_ALIYUN_SMS_ACCESS_KEY_ID"
+	envAliyunSMSAccessKeySecret        = "AGENTERA_CLOUD_ALIYUN_SMS_ACCESS_KEY_SECRET"
+	envAliyunSMSRegionID               = "AGENTERA_CLOUD_ALIYUN_SMS_REGION_ID"
+	envAliyunSMSSignName               = "AGENTERA_CLOUD_ALIYUN_SMS_SIGN_NAME"
+	envAliyunSMSTemplateCode           = "AGENTERA_CLOUD_ALIYUN_SMS_TEMPLATE_CODE"
 	envCaptchaEndpoint                 = "AGENTERA_CLOUD_CAPTCHA_ENDPOINT"
 	envCaptchaSecret                   = "AGENTERA_CLOUD_CAPTCHA_SECRET"
+)
+
+const (
+	SMSProviderHTTP   = "http"
+	SMSProviderAliyun = "aliyun"
 )
 
 type LookupEnv func(string) (string, bool)
@@ -104,6 +115,7 @@ type Config struct {
 	Environment                    string
 	PublicRegistrationEnabled      bool
 	RegistrationMode               string
+	RegistrationIdentityKinds      []string
 	DirectRegistrationIPLimit      int64
 	DirectRegistrationWindow       time.Duration
 	ListenAddr                     string
@@ -170,9 +182,15 @@ type Config struct {
 	SMTPPassword                   string
 	SMTPFromAddress                string
 	SMTPFromName                   string
+	SMSProvider                    string
 	SMSEndpoint                    string
 	SMSAPIKey                      string
 	SMSSenderID                    string
+	AliyunSMSAccessKeyID           string
+	AliyunSMSAccessKeySecret       string
+	AliyunSMSRegionID              string
+	AliyunSMSSignName              string
+	AliyunSMSTemplateCode          string
 	CaptchaEndpoint                string
 	CaptchaSecret                  string
 }
@@ -193,6 +211,10 @@ func Load(lookup LookupEnv) (Config, error) {
 		lookup,
 		environment,
 	)
+	if err != nil {
+		return Config{}, err
+	}
+	registrationIdentityKinds, err := loadRegistrationIdentityKinds(lookup, registrationMode)
 	if err != nil {
 		return Config{}, err
 	}
@@ -526,63 +548,100 @@ func Load(lookup LookupEnv) (Config, error) {
 	}
 	var (
 		smtpHost, smtpUsername, smtpPassword, smtpFromAddress, smtpFromName string
-		smsEndpoint, smsAPIKey, smsSenderID                                 string
+		smsProvider, smsEndpoint, smsAPIKey, smsSenderID                    string
+		aliyunSMSAccessKeyID, aliyunSMSAccessKeySecret                      string
+		aliyunSMSRegionID, aliyunSMSSignName, aliyunSMSTemplateCode         string
 		captchaEndpoint, captchaSecret                                      string
 		smtpPort                                                            int
 	)
 	if registrationMode == RegistrationModeVerified {
-		smtpHost, err = required(lookup, envSMTPHost)
-		if err != nil {
-			return Config{}, err
+		emailEnabled := registrationIdentityEnabled(registrationIdentityKinds, "email")
+		phoneEnabled := registrationIdentityEnabled(registrationIdentityKinds, "phone")
+		if emailEnabled {
+			smtpHost, err = required(lookup, envSMTPHost)
+			if err != nil {
+				return Config{}, err
+			}
+			smtpPortText, requiredErr := required(lookup, envSMTPPort)
+			if requiredErr != nil {
+				return Config{}, requiredErr
+			}
+			smtpPort, err = strconv.Atoi(smtpPortText)
+			if err != nil || smtpPort <= 0 || smtpPort > 65535 {
+				return Config{}, fmt.Errorf("%s must be an integer between 1 and 65535", envSMTPPort)
+			}
+			smtpUsername, err = required(lookup, envSMTPUsername)
+			if err != nil {
+				return Config{}, err
+			}
+			smtpPassword, err = required(lookup, envSMTPPassword)
+			if err != nil {
+				return Config{}, err
+			}
+			smtpFromAddress, err = required(lookup, envSMTPFromAddress)
+			if err != nil {
+				return Config{}, err
+			}
+			smtpFromName, err = required(lookup, envSMTPFromName)
+			if err != nil {
+				return Config{}, err
+			}
 		}
-		smtpPortText, requiredErr := required(lookup, envSMTPPort)
-		if requiredErr != nil {
-			return Config{}, requiredErr
+		if phoneEnabled {
+			smsProvider = SMSProviderHTTP
+			if value, ok := lookup(envSMSProvider); ok && strings.TrimSpace(value) != "" {
+				smsProvider = strings.TrimSpace(value)
+			}
+			switch smsProvider {
+			case SMSProviderHTTP:
+				smsEndpoint, err = required(lookup, envSMSEndpoint)
+				if err != nil {
+					return Config{}, err
+				}
+				smsAPIKey, err = required(lookup, envSMSAPIKey)
+				if err != nil {
+					return Config{}, err
+				}
+				smsSenderID, err = required(lookup, envSMSSenderID)
+				if err != nil {
+					return Config{}, err
+				}
+			case SMSProviderAliyun:
+				aliyunSMSAccessKeyID, err = required(lookup, envAliyunSMSAccessKeyID)
+				if err != nil {
+					return Config{}, err
+				}
+				aliyunSMSAccessKeySecret, err = required(lookup, envAliyunSMSAccessKeySecret)
+				if err != nil {
+					return Config{}, err
+				}
+				aliyunSMSRegionID = "cn-hangzhou"
+				if value, ok := lookup(envAliyunSMSRegionID); ok && strings.TrimSpace(value) != "" {
+					aliyunSMSRegionID = strings.TrimSpace(value)
+				}
+				aliyunSMSSignName, err = required(lookup, envAliyunSMSSignName)
+				if err != nil {
+					return Config{}, err
+				}
+				aliyunSMSTemplateCode, err = required(lookup, envAliyunSMSTemplateCode)
+				if err != nil {
+					return Config{}, err
+				}
+			default:
+				return Config{}, fmt.Errorf("%s must be http or aliyun", envSMSProvider)
+			}
 		}
-		smtpPort, err = strconv.Atoi(smtpPortText)
-		if err != nil || smtpPort <= 0 || smtpPort > 65535 {
-			return Config{}, fmt.Errorf("%s must be an integer between 1 and 65535", envSMTPPort)
-		}
-		smtpUsername, err = required(lookup, envSMTPUsername)
-		if err != nil {
-			return Config{}, err
-		}
-		smtpPassword, err = required(lookup, envSMTPPassword)
-		if err != nil {
-			return Config{}, err
-		}
-		smtpFromAddress, err = required(lookup, envSMTPFromAddress)
-		if err != nil {
-			return Config{}, err
-		}
-		smtpFromName, err = required(lookup, envSMTPFromName)
-		if err != nil {
-			return Config{}, err
-		}
-		smsEndpoint, err = required(lookup, envSMSEndpoint)
-		if err != nil {
-			return Config{}, err
-		}
-		smsAPIKey, err = required(lookup, envSMSAPIKey)
-		if err != nil {
-			return Config{}, err
-		}
-		smsSenderID, err = required(lookup, envSMSSenderID)
-		if err != nil {
-			return Config{}, err
-		}
-		captchaEndpoint, err = required(lookup, envCaptchaEndpoint)
-		if err != nil {
-			return Config{}, err
-		}
-		captchaSecret, err = required(lookup, envCaptchaSecret)
+		captchaEndpoint, captchaSecret, err = loadCaptchaProvider(lookup, environment)
 		if err != nil {
 			return Config{}, err
 		}
 		if err := validateProductionProviders(
 			environment,
+			emailEnabled,
 			smtpHost,
 			smtpFromAddress,
+			phoneEnabled,
+			smsProvider,
 			smsEndpoint,
 			captchaEndpoint,
 		); err != nil {
@@ -594,6 +653,7 @@ func Load(lookup LookupEnv) (Config, error) {
 		Environment:                    environment,
 		PublicRegistrationEnabled:      publicRegistrationEnabled,
 		RegistrationMode:               registrationMode,
+		RegistrationIdentityKinds:      registrationIdentityKinds,
 		DirectRegistrationIPLimit:      directRegistrationIPLimit,
 		DirectRegistrationWindow:       directRegistrationWindow,
 		ListenAddr:                     listenAddr,
@@ -660,9 +720,15 @@ func Load(lookup LookupEnv) (Config, error) {
 		SMTPPassword:                   smtpPassword,
 		SMTPFromAddress:                smtpFromAddress,
 		SMTPFromName:                   smtpFromName,
+		SMSProvider:                    smsProvider,
 		SMSEndpoint:                    smsEndpoint,
 		SMSAPIKey:                      smsAPIKey,
 		SMSSenderID:                    smsSenderID,
+		AliyunSMSAccessKeyID:           aliyunSMSAccessKeyID,
+		AliyunSMSAccessKeySecret:       aliyunSMSAccessKeySecret,
+		AliyunSMSRegionID:              aliyunSMSRegionID,
+		AliyunSMSSignName:              aliyunSMSSignName,
+		AliyunSMSTemplateCode:          aliyunSMSTemplateCode,
 		CaptchaEndpoint:                captchaEndpoint,
 		CaptchaSecret:                  captchaSecret,
 	}, nil
@@ -859,18 +925,51 @@ func validateDatabaseURL(raw string) error {
 	return nil
 }
 
-func validateProductionProviders(environment, smtpHost, smtpFromAddress, smsEndpoint, captchaEndpoint string) error {
+func loadCaptchaProvider(lookup LookupEnv, environment string) (string, string, error) {
+	endpoint, endpointConfigured := lookup(envCaptchaEndpoint)
+	secret, secretConfigured := lookup(envCaptchaSecret)
+	endpoint = strings.TrimSpace(endpoint)
+	secret = strings.TrimSpace(secret)
+	if environment == "internal_beta" && !endpointConfigured && !secretConfigured {
+		return "", "", nil
+	}
+	if endpoint == "" || secret == "" {
+		missing := envCaptchaEndpoint
+		if endpoint != "" {
+			missing = envCaptchaSecret
+		}
+		return "", "", fmt.Errorf("%s is required", missing)
+	}
+	return endpoint, secret, nil
+}
+
+func validateProductionProviders(
+	environment string,
+	emailEnabled bool,
+	smtpHost string,
+	smtpFromAddress string,
+	phoneEnabled bool,
+	smsProvider string,
+	smsEndpoint string,
+	captchaEndpoint string,
+) error {
 	if environment != "production" {
 		return nil
 	}
-	if fakeProviderHost(smtpHost) {
-		return errors.New("production requires real providers instead of reserved SMTP hosts")
+	if emailEnabled {
+		if fakeProviderHost(smtpHost) {
+			return errors.New("production requires real providers instead of reserved SMTP hosts")
+		}
+		_, fromDomain, ok := strings.Cut(strings.ToLower(strings.TrimSpace(smtpFromAddress)), "@")
+		if !ok || fakeProviderHost(fromDomain) {
+			return errors.New("production requires real providers instead of reserved sender addresses")
+		}
 	}
-	_, fromDomain, ok := strings.Cut(strings.ToLower(strings.TrimSpace(smtpFromAddress)), "@")
-	if !ok || fakeProviderHost(fromDomain) {
-		return errors.New("production requires real providers instead of reserved sender addresses")
+	endpoints := []string{captchaEndpoint}
+	if phoneEnabled && smsProvider == SMSProviderHTTP {
+		endpoints = append(endpoints, smsEndpoint)
 	}
-	for _, endpoint := range []string{smsEndpoint, captchaEndpoint} {
+	for _, endpoint := range endpoints {
 		parsed, err := url.Parse(endpoint)
 		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || fakeProviderHost(parsed.Hostname()) {
 			return errors.New("production requires real providers on trusted HTTPS endpoints")

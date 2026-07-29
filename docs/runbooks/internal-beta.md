@@ -5,10 +5,14 @@ Cloud account listener through trusted HTTPS on the reviewed IP origin. Cloud
 PostgreSQL, Redis, encrypted-backup MinIO, and the mTLS Internal Admin listener
 have no host-public ports.
 
-SMTP and SMS are intentionally absent. The enabled phase uses the isolated
-`internal_beta` direct-registration mode: an email-shaped identifier is stored
-as unverified and mailbox ownership is not claimed. Password reset and other
-verification-dependent operations remain unavailable.
+The default rollout still omits SMTP and SMS. In that mode the enabled phase
+uses isolated `internal_beta` direct registration: an email-shaped identifier
+is stored as unverified and mailbox ownership is not claimed. A separately
+approved rollout may enable verified phone-only registration and login with a
+real Alibaba Cloud SMS provider. That rollout never treats SMS delivery alone
+as account creation: the verification receipt, account, encrypted phone
+identity, personal space, legal acceptance, audit event, and one-time login
+receipt must all persist successfully.
 
 ## Immutable inputs
 
@@ -35,6 +39,18 @@ independent values for Cloud PostgreSQL and Redis, encrypted-backup MinIO,
 identity encryption and lookup, verification, browser/login limits, OAuth
 state, refresh tokens, access/offline/agent-control signing, Official Agent
 rollout, quality pseudonyms, and Internal Admin HMAC settings.
+
+For an approved verified phone rollout, the same owner-only file also contains:
+
+- `AGENTERA_CLOUD_SMS_PROVIDER=aliyun`
+- `AGENTERA_CLOUD_ALIYUN_SMS_ACCESS_KEY_ID`
+- `AGENTERA_CLOUD_ALIYUN_SMS_ACCESS_KEY_SECRET`
+- `AGENTERA_CLOUD_ALIYUN_SMS_REGION_ID`
+- `AGENTERA_CLOUD_ALIYUN_SMS_SIGN_NAME`
+- `AGENTERA_CLOUD_ALIYUN_SMS_TEMPLATE_CODE`
+
+Use a dedicated least-privilege RAM identity. Never print, source into an
+interactive transcript, commit, or copy these credentials into Desktop.
 
 The Compose interpolation contract also requires:
 
@@ -132,6 +148,21 @@ manifest:
   enable /opt/aera/internal-beta/candidates/cloud/manifest.json
 ```
 
+To enable the separately approved phone-only verification mode, set the
+operator choice only for the `enable` command:
+
+```sh
+AERA_INTERNAL_BETA_REGISTRATION_MODE=verified \
+  /opt/aera/internal-beta/cloud/deploy/internal-beta/deploy.sh \
+  enable /opt/aera/internal-beta/candidates/cloud/manifest.json
+```
+
+The generated public capability must then report
+`registration_mode=verified`, `registration_identity_kinds=["phone"]`, and
+`identity_verification_available=true`. The deploy and rollback disabled phases
+remain in backward-compatible direct mode so the previously signed candidate
+can still be restored without requiring the new provider configuration.
+
 The generated feature file is replaced atomically and remains owner-only. An
 enabled smoke failure immediately recreates the same digest with all four
 features disabled. It never records a successful enablement after a failed
@@ -163,6 +194,7 @@ Run after each host change and after reboot:
 
 ```sh
 AERA_INTERNAL_BETA_EXPECT_FEATURES=enabled \
+  AERA_INTERNAL_BETA_EXPECT_REGISTRATION_MODE=verified \
   /opt/aera/internal-beta/cloud/deploy/internal-beta/health-smoke.sh
 /opt/aera/internal-beta/cloud/deploy/internal-beta/exposure-check.sh
 ```
