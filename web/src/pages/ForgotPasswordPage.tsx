@@ -6,7 +6,11 @@ import {
   SpinnerLabel,
   StatusMessage,
 } from "../components/Layout";
-import { inferIdentityKind, validPassword } from "../components/forms";
+import {
+  inferIdentityKind,
+  validPassword,
+  verificationSendErrorKey,
+} from "../components/forms";
 import { useI18n } from "../i18n";
 import { usePublicConfig } from "../public-config";
 import { Link } from "../router";
@@ -73,8 +77,8 @@ export function ForgotPasswordPage() {
         "password_reset",
       );
       setStatus("sent");
-    } catch {
-      setError(t("serviceError"));
+    } catch (caught) {
+      setError(t(verificationSendErrorKey(caught)));
     } finally {
       setBusy(false);
     }

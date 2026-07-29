@@ -8,7 +8,7 @@ import {
 } from "../api/client";
 import { setCSRFToken } from "../auth/csrf";
 import { Card, PageFrame, StatusMessage } from "../components/Layout";
-import { errorKey } from "../components/forms";
+import { errorKey, verificationSendErrorKey } from "../components/forms";
 import { useI18n } from "../i18n";
 import { usePublicConfig } from "../public-config";
 import {
@@ -79,8 +79,8 @@ export function LoginPage() {
     try {
       await sendVerification("phone", phone, "login");
       setCodeStatus("sent");
-    } catch {
-      setError(t("serviceError"));
+    } catch (caught) {
+      setError(t(verificationSendErrorKey(caught)));
     } finally {
       setBusy(false);
     }

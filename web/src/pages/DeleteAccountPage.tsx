@@ -13,7 +13,10 @@ import {
   SpinnerLabel,
   StatusMessage,
 } from "../components/Layout";
-import { inferIdentityKind } from "../components/forms";
+import {
+  inferIdentityKind,
+  verificationSendErrorKey,
+} from "../components/forms";
 import { useI18n } from "../i18n";
 import { usePublicConfig } from "../public-config";
 import { Link, useRouter } from "../router";
@@ -86,8 +89,8 @@ function RecoveryForm() {
         "deletion_recovery",
       );
       setStatus("sent");
-    } catch {
-      setError(t("serviceError"));
+    } catch (caught) {
+      setError(t(verificationSendErrorKey(caught)));
     } finally {
       setBusy(false);
     }
@@ -117,8 +120,8 @@ function RecoveryForm() {
     try {
       await recoverDeletion(identity, password, receipt);
       setStatus("complete");
-    } catch {
-      setError(t("serviceError"));
+    } catch (caught) {
+      setError(t(verificationSendErrorKey(caught)));
     } finally {
       setBusy(false);
     }
@@ -269,8 +272,8 @@ function DeletionForm() {
         "account_deletion",
       );
       setStatus("sent");
-    } catch {
-      setError(t("serviceError"));
+    } catch (caught) {
+      setError(t(verificationSendErrorKey(caught)));
     } finally {
       setBusy(false);
     }

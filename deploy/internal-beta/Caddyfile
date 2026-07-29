@@ -34,6 +34,22 @@ https://{$AERA_INTERNAL_BETA_IP} {
 	@private_admin path /admin /admin/*
 	respond @private_admin 404
 
+	@desktop_update_metadata path /desktop-updates/internal-beta/manifest.json /desktop-updates/internal-beta/manifest.sig
+	handle @desktop_update_metadata {
+		header Cache-Control "no-store"
+		uri strip_prefix /desktop-updates/internal-beta
+		root * /var/lib/aera/desktop-updates/internal-beta/current
+		file_server
+	}
+
+	@desktop_update_release path /desktop-updates/internal-beta/releases/*
+	handle @desktop_update_release {
+		header Cache-Control "public, max-age=31536000, immutable"
+		uri strip_prefix /desktop-updates/internal-beta
+		root * /var/lib/aera/desktop-updates/internal-beta
+		file_server
+	}
+
 	reverse_proxy 127.0.0.1:18086 {
 		health_uri /health/ready
 		health_interval 30s

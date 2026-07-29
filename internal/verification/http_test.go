@@ -118,6 +118,9 @@ func TestHTTPHandlerMapsSendFailuresToStableCodes(t *testing.T) {
 			if response.Code != tt.status || strings.TrimSpace(response.Body.String()) != `{"error":"`+tt.code+`"}` {
 				t.Fatalf("response = %d %q", response.Code, response.Body.String())
 			}
+			if tt.status == http.StatusTooManyRequests && response.Header().Get("Retry-After") != "60" {
+				t.Fatalf("Retry-After = %q, want 60", response.Header().Get("Retry-After"))
+			}
 			if strings.Contains(response.Body.String(), "secret") || strings.Contains(response.Body.String(), "private") {
 				t.Fatalf("response leaked internal error: %s", response.Body.String())
 			}

@@ -72,6 +72,18 @@ type VerificationResult struct {
 	ExpiresAt time.Time
 }
 
+type DeliveryFailureMetadata struct {
+	Provider    string
+	Code        string
+	RequestID   string
+	RateLimited bool
+}
+
+type DeliveryFailure interface {
+	error
+	VerificationDeliveryFailure() DeliveryFailureMetadata
+}
+
 func validPurpose(purpose Purpose) bool {
 	return purpose == PurposeRegistration || purpose == PurposeLogin || purpose == PurposePasswordReset ||
 		purpose == PurposeBindIdentity || purpose == PurposeAccountDeletion || purpose == PurposeDeletionRecovery

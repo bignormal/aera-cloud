@@ -229,6 +229,36 @@ test("defaults to phone when the deployment enables only phone registration", as
   });
 });
 
+test("shows the unified one-minute prompt when registration SMS is rate limited", async () => {
+  vi.spyOn(window, "fetch").mockImplementation(async (input) => {
+    const url = String(input);
+    if (url === "/api/v1/public/config") {
+      return jsonResponse(phoneOnlyConfig);
+    }
+    if (url === "/api/v1/legal/current") {
+      return jsonResponse({
+        terms_version: "2026-07",
+        privacy_version: "2026-07",
+      });
+    }
+    if (url === "/api/v1/verification/challenges") {
+      return jsonResponse({ error: "rate_limited" }, 429);
+    }
+    throw new Error(`unexpected request: ${url}`);
+  });
+  renderRegistration();
+
+  const phone = await screen.findByRole("textbox", {
+    name: "中国大陆手机号",
+  });
+  fireEvent.change(phone, { target: { value: "13800138000" } });
+  fireEvent.click(screen.getByRole("button", { name: "发送验证码" }));
+
+  expect(
+    await screen.findByText("请求过于频繁，请下一分钟后重试"),
+  ).toBeVisible();
+});
+
 test("direct internal beta waits for both capability and legal configuration before rendering", async () => {
   let resolveConfig!: (response: Response) => void;
   let resolveLegal!: (response: Response) => void;

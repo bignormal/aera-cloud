@@ -17,6 +17,7 @@ import {
   SpinnerLabel,
   StatusMessage,
 } from "../components/Layout";
+import { verificationSendErrorKey } from "../components/forms";
 import { useI18n } from "../i18n";
 import { usePublicConfig } from "../public-config";
 import { Link, useRouter } from "../router";
@@ -87,8 +88,8 @@ export function AccountPage() {
     try {
       await sendVerification(missingKind, destination, "bind_identity");
       setBindStage("sent");
-    } catch {
-      setError(t("serviceError"));
+    } catch (caught) {
+      setError(t(verificationSendErrorKey(caught)));
     } finally {
       setBusy(false);
     }
