@@ -241,7 +241,7 @@ func newOfficialInstallationFixture(t *testing.T) (*platformRepositoryFixture, *
 	signer, _ := signingFixture(t)
 	platform, err := NewPlatformService(PlatformServiceConfig{
 		Repository: fixture.repository, Signer: signer, PlatformID: fixture.platformID,
-		PlatformKey: "agentera_official", PlatformDisplayName: "AgentEra Official",
+		PlatformKey: "agentera_official", PlatformDisplayName: "Aera Official",
 		RolloutKeyID: "rollout-v1",
 		RolloutKeys:  map[string][]byte{"rollout-v1": []byte("0123456789abcdef0123456789abcdef")},
 		Clock:        func() time.Time { return fixture.now.Add(30 * time.Minute) }, NewID: uuid.New,

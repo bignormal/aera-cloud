@@ -373,7 +373,7 @@ func newPlatformRepositoryFixture(t *testing.T) *platformRepositoryFixture {
 func (fixture *platformRepositoryFixture) ensureCommand(discriminator byte) EnsurePlatformCommand {
 	return EnsurePlatformCommand{
 		PlatformID: fixture.platformID, PlatformKey: "agentera_official",
-		PlatformDisplayName: "AgentEra Official", EnsuredAt: fixture.now,
+		PlatformDisplayName: "Aera Official", EnsuredAt: fixture.now,
 		BuildPolicy: func(version int64) (PlatformPolicyMaterial, error) {
 			canonical := []byte(`{"schema_version":1,"manifest_schema_version":1,"dlp_version":"agent-publication-dlp-v1","model_constraint_mode":"manifest_allowlist","tool_constraint_mode":"manifest_allowlist","runtime_compatibility_mode":"strict_semver","dependency_mode":"immutable_versions","permitted_channels":["internal","stable"],"maximum_asset_count":128,"maximum_asset_bytes":262144,"maximum_bundle_bytes":2097152,"maximum_manifest_bytes":262144,"maximum_icon_bytes":524288,"maximum_rollout_basis_points":10000}`)
 			digest := sha256.Sum256(canonical)

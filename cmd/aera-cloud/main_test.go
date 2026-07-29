@@ -660,10 +660,10 @@ func integrationLookup(services testkit.Services) config.LookupEnv {
 		"AGENTERA_CLOUD_SMTP_USERNAME":                  "smtp-user",
 		"AGENTERA_CLOUD_SMTP_PASSWORD":                  "smtp-secret",
 		"AGENTERA_CLOUD_SMTP_FROM_ADDRESS":              "accounts@agentera.invalid",
-		"AGENTERA_CLOUD_SMTP_FROM_NAME":                 "AgentEra",
+		"AGENTERA_CLOUD_SMTP_FROM_NAME":                 "Aera",
 		"AGENTERA_CLOUD_SMS_ENDPOINT":                   "https://sms.agentera.invalid/v1/messages",
 		"AGENTERA_CLOUD_SMS_API_KEY":                    "sms-secret",
-		"AGENTERA_CLOUD_SMS_SENDER_ID":                  "AgentEra",
+		"AGENTERA_CLOUD_SMS_SENDER_ID":                  "Aera",
 		"AGENTERA_CLOUD_CAPTCHA_ENDPOINT":               "https://captcha.agentera.invalid/siteverify",
 		"AGENTERA_CLOUD_CAPTCHA_SECRET":                 "captcha-secret",
 	}

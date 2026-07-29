@@ -7,7 +7,7 @@ on:
         description: Exact verified Cloud commit SHA
         required: true
       ci_run_id:
-        description: Successful AgentEra cloud CI run ID for source_sha
+        description: Successful Aera cloud CI run ID for source_sha
         required: true
 
 permissions:

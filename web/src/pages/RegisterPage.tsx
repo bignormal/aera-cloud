@@ -276,7 +276,7 @@ export function RegisterPage() {
   return (
     <PageFrame compact>
       <Card className="auth-card wide-card">
-        <div className="eyebrow">AGENTERA ID</div>
+        <div className="eyebrow">Aera ID</div>
         <h1>{t("registerTitle")}</h1>
         {error && <StatusMessage tone="error">{error}</StatusMessage>}
         {!directRegistration && (

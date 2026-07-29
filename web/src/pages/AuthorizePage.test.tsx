@@ -42,7 +42,7 @@ test("completes desktop sign-in automatically and never renders returned credent
 
   await waitFor(() => expect(redirect).toHaveBeenCalledOnce());
   expect(
-    screen.queryByRole("button", { name: "允许并返回 AgentEra Studio" }),
+    screen.queryByRole("button", { name: "允许并返回 Aera" }),
   ).not.toBeInTheDocument();
   const [, init] = fetchMock.mock.calls.find(([url]) =>
     String(url).endsWith("/approve"),

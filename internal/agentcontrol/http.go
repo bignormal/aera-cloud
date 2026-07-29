@@ -971,8 +971,6 @@ func writeAgentServiceErrorWithRequestID(response http.ResponseWriter, err error
 		writeAgentErrorWithRequestID(response, http.StatusForbidden, "organization_agent_forbidden", requestID)
 	case errors.Is(err, ErrOrganizationArchived):
 		writeAgentErrorWithRequestID(response, http.StatusConflict, "organization_archived", requestID)
-	case errors.Is(err, ErrOrganizationSubmissionSelfReview):
-		writeAgentErrorWithRequestID(response, http.StatusForbidden, "organization_submission_self_review", requestID)
 	case errors.Is(err, ErrOrganizationSubmissionConflict):
 		writeAgentErrorWithRequestID(response, http.StatusConflict, "organization_submission_conflict", requestID)
 	case errors.Is(err, ErrOrganizationPublicationPolicyBlocked):

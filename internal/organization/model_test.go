@@ -16,7 +16,7 @@ func TestNormalizeOrganizationNameUsesNFCAndUnicodeScalarBounds(t *testing.T) {
 		want    string
 		wantErr bool
 	}{
-		{name: "trims Unicode space", value: "\u2003AgentEra 企业\u3000", want: "AgentEra 企业"},
+		{name: "trims Unicode space", value: "\u2003Aera 企业\u3000", want: "Aera 企业"},
 		{name: "normalizes NFC", value: "Cafe\u0301", want: "Café"},
 		{name: "one hundred twenty scalars", value: strings.Repeat("界", 120), want: strings.Repeat("界", 120)},
 		{name: "one hundred twenty one scalars", value: strings.Repeat("界", 121), wantErr: true},

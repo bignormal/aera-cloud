@@ -203,6 +203,11 @@ func TestServiceOrganizationInvitationIsSecretOnceFragmentOnlyAndActorBound(t *t
 	if err != nil || replayedAcceptance.Member.UserID != member.UserID {
 		t.Fatalf("AcceptInvitation(actor replay) = %+v, %v", replayedAcceptance, err)
 	}
+	if _, err := service.AcceptInvitation(t.Context(), member, AcceptInvitationCommand{
+		Token: created.Token, IdempotencyKey: "invitation-accept-member-second-use", RequestID: "invitation-accept-second-use",
+	}); !errors.Is(err, ErrInvitationUnavailable) {
+		t.Fatalf("AcceptInvitation(same actor second use) error = %v", err)
+	}
 	if _, err := service.AcceptInvitation(t.Context(), other, AcceptInvitationCommand{
 		Token: created.Token, IdempotencyKey: "invitation-accept-member", RequestID: "invitation-accept-other",
 	}); !errors.Is(err, ErrInvitationUnavailable) {

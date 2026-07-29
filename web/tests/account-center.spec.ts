@@ -50,7 +50,7 @@ test("defaults to Chinese, switches to English, and keeps login secrets out of U
   await page.route("**/api/v1/accounts/me", (route) => json(route, profile));
   await page.goto("/login");
 
-  await expect(page.getByRole("heading", { name: "登录 AgentEra" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "登录 Aera" })).toBeVisible();
   await page.getByLabel("邮箱或手机号").focus();
   await page.keyboard.press("Tab");
   await expect(page.getByLabel("密码", { exact: true })).toBeFocused();
@@ -132,7 +132,7 @@ test("shows and explicitly revokes an active device before authorization retry",
   await expect(page.getByText("Alice Mac")).toBeVisible();
   await page.getByRole("button", { name: "撤销这台设备" }).click();
   await page.getByRole("button", { name: "确认撤销" }).click();
-  await expect(page.getByText("设备已撤销，可以返回 AgentEra Studio 重试登录")).toBeVisible();
+  await expect(page.getByText("设备已撤销，可以返回 Aera 重试登录")).toBeVisible();
 });
 
 test("recovers a pending deletion through a verified identity without URL leakage", async ({ page }) => {
@@ -155,7 +155,7 @@ test("recovers a pending deletion through a verified identity without URL leakag
   expect(page.url()).not.toContain("123456");
 });
 
-test("warns that cloud deletion preserves local Hermes data before entering the cooling-off period", async ({ page }) => {
+test("warns that cloud deletion preserves local Aera Runtime data before entering the cooling-off period", async ({ page }) => {
   await page.addInitScript(() => sessionStorage.setItem("agentera.csrf_token", "c".repeat(43)));
   await page.route("**/api/v1/accounts/me", (route) => json(route, profile));
   await page.route("**/api/v1/verification/challenges", (route) => json(route, { status: "accepted" }, 202));
@@ -165,14 +165,14 @@ test("warns that cloud deletion preserves local Hermes data before entering the 
   await page.route("**/api/v1/accounts/deletion", (route) => route.fulfill({ status: 204 }));
   await page.goto("/delete-account");
 
-  await expect(page.getByText(/不会删除本机 Hermes 会话、Memory、文件或学习成果/)).toBeVisible();
+  await expect(page.getByText(/不会删除本机 Aera Runtime 会话、Memory、文件或学习成果/)).toBeVisible();
   await expect(page.getByText(/此账户拥有 2 个工作空间/)).toBeVisible();
   await page.getByLabel("用于接收验证码的已绑定邮箱或手机号").fill("alice@example.com");
   await page.getByRole("button", { name: "发送注销验证码" }).click();
   await page.getByLabel("6 位验证码").fill("123456");
   await page.getByRole("button", { name: "验证注销身份" }).click();
   await page.getByLabel("当前密码").fill("correct horse battery");
-  await page.getByLabel("我理解云端账户注销不会删除本地 Hermes 数据").check();
+  await page.getByLabel("我理解云端账户注销不会删除本地 Aera Runtime 数据").check();
   await page.getByRole("button", { name: "开始 7 天注销冷静期" }).click();
 
   await expect(page.getByText("账户已进入 7 天注销冷静期，所有云端设备会话已撤销。")).toBeVisible();
@@ -204,7 +204,7 @@ test("automatically approves OAuth and maps an expired request without exposing 
 
   await expect(
     page.getByText(
-      "登录请求无效或已过期，请返回 AgentEra Studio 重试。",
+      "登录请求无效或已过期，请返回 Aera 重试。",
     ),
   ).toBeVisible();
   expect(approvalBody).toEqual({ request_id: requestID });

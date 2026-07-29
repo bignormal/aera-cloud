@@ -73,7 +73,7 @@ func TestSMTPEmailBuildsSafeMessageAndKeepsCredentialsOutOfPayload(t *testing.T)
 	transport := &recordingSMTPTransport{}
 	provider, err := NewSMTPEmail(SMTPConfig{
 		Host: "smtp.example.com", Port: 587, Username: "smtp-user", Password: "smtp-password",
-		FromAddress: "accounts@agentera.example", FromName: "AgentEra",
+		FromAddress: "accounts@agentera.example", FromName: "Aera",
 	}, transport)
 	if err != nil {
 		t.Fatalf("NewSMTPEmail() error = %v", err)
@@ -89,7 +89,7 @@ func TestSMTPEmailBuildsSafeMessageAndKeepsCredentialsOutOfPayload(t *testing.T)
 		t.Fatalf("SMTP envelope = %+v", envelope)
 	}
 	message := string(envelope.Message)
-	for _, expected := range []string{"Subject: AgentEra verification code", "To: alice@example.com", "123456", "5 minutes"} {
+	for _, expected := range []string{"Subject: Aera verification code", "To: alice@example.com", "123456", "5 minutes"} {
 		if !strings.Contains(message, expected) {
 			t.Errorf("SMTP message missing %q: %s", expected, message)
 		}
@@ -105,7 +105,7 @@ func TestSMTPEmailRejectsHeaderInjectionAndSanitizesTransportFailure(t *testing.
 	transport := &recordingSMTPTransport{err: errors.New("smtp-password internal server detail")}
 	provider, err := NewSMTPEmail(SMTPConfig{
 		Host: "smtp.example.com", Port: 587, Username: "smtp-user", Password: "smtp-password",
-		FromAddress: "accounts@agentera.example", FromName: "AgentEra",
+		FromAddress: "accounts@agentera.example", FromName: "Aera",
 	}, transport)
 	if err != nil {
 		t.Fatalf("NewSMTPEmail() error = %v", err)
@@ -136,7 +136,7 @@ func TestHTTPSMSSendsAuthenticatedJSONAndSanitizesFailure(t *testing.T) {
 	}))
 	defer server.Close()
 	provider, err := NewHTTPSMS(HTTPSMSConfig{
-		Endpoint: server.URL, APIKey: "api-secret", SenderID: "AgentEra", Client: server.Client(), AllowInsecureLoopbackHTTP: true,
+		Endpoint: server.URL, APIKey: "api-secret", SenderID: "Aera", Client: server.Client(), AllowInsecureLoopbackHTTP: true,
 	})
 	if err != nil {
 		t.Fatalf("NewHTTPSMS() error = %v", err)
@@ -147,7 +147,7 @@ func TestHTTPSMSSendsAuthenticatedJSONAndSanitizesFailure(t *testing.T) {
 	if authorization != "Bearer api-secret" {
 		t.Fatalf("Authorization = %q", authorization)
 	}
-	if payload["to"] != "+8613800138000" || payload["code"] != "123456" || payload["sender_id"] != "AgentEra" {
+	if payload["to"] != "+8613800138000" || payload["code"] != "123456" || payload["sender_id"] != "Aera" {
 		t.Fatalf("SMS payload = %+v", payload)
 	}
 
@@ -174,7 +174,7 @@ func TestHTTPSMSDoesNotFollowProviderRedirects(t *testing.T) {
 	}))
 	defer providerServer.Close()
 	provider, err := NewHTTPSMS(HTTPSMSConfig{
-		Endpoint: providerServer.URL, APIKey: "api-secret", SenderID: "AgentEra", Client: providerServer.Client(), AllowInsecureLoopbackHTTP: true,
+		Endpoint: providerServer.URL, APIKey: "api-secret", SenderID: "Aera", Client: providerServer.Client(), AllowInsecureLoopbackHTTP: true,
 	})
 	if err != nil {
 		t.Fatalf("NewHTTPSMS() error = %v", err)
@@ -192,7 +192,7 @@ func TestNotificationProvidersRejectIncompleteOrInsecureConfiguration(t *testing
 	if _, err := NewSMTPEmail(SMTPConfig{}, &recordingSMTPTransport{}); err == nil {
 		t.Fatal("NewSMTPEmail() accepted empty configuration")
 	}
-	if _, err := NewHTTPSMS(HTTPSMSConfig{Endpoint: "http://sms.example.com", APIKey: "key", SenderID: "AgentEra"}); err == nil {
+	if _, err := NewHTTPSMS(HTTPSMSConfig{Endpoint: "http://sms.example.com", APIKey: "key", SenderID: "Aera"}); err == nil {
 		t.Fatal("NewHTTPSMS() accepted insecure provider endpoint")
 	}
 }

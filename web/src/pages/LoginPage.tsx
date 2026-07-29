@@ -118,7 +118,7 @@ export function LoginPage() {
   return (
     <PageFrame compact>
       <Card className="auth-card">
-        <div className="eyebrow">AGENTERA ID</div>
+        <div className="eyebrow">Aera ID</div>
         <h1>{t("loginTitle")}</h1>
         <p className="lede">{t("loginSubtitle")}</p>
         {params.get("registered") === "1" && (

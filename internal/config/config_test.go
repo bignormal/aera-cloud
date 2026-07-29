@@ -628,10 +628,10 @@ func validEnvironment(environment string) map[string]string {
 		"AGENTERA_CLOUD_SMTP_USERNAME":                        "smtp-user",
 		"AGENTERA_CLOUD_SMTP_PASSWORD":                        "smtp-secret",
 		"AGENTERA_CLOUD_SMTP_FROM_ADDRESS":                    "accounts@example.com",
-		"AGENTERA_CLOUD_SMTP_FROM_NAME":                       "AgentEra",
+		"AGENTERA_CLOUD_SMTP_FROM_NAME":                       "Aera",
 		"AGENTERA_CLOUD_SMS_ENDPOINT":                         "https://sms.example.com/verify",
 		"AGENTERA_CLOUD_SMS_API_KEY":                          "sms-secret",
-		"AGENTERA_CLOUD_SMS_SENDER_ID":                        "AgentEra",
+		"AGENTERA_CLOUD_SMS_SENDER_ID":                        "Aera",
 		"AGENTERA_CLOUD_CAPTCHA_ENDPOINT":                     "https://captcha.example.com/verify",
 		"AGENTERA_CLOUD_CAPTCHA_SECRET":                       "captcha-secret",
 	}

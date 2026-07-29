@@ -86,7 +86,7 @@ func completeOfficialQualityEnvironment() map[string]string {
 	env[envOfficialAgentsEnabled] = "true"
 	env[envPlatformID] = uuid.NewString()
 	env[envPlatformKey] = "agentera_official"
-	env[envPlatformDisplayName] = "AgentEra Official"
+	env[envPlatformDisplayName] = "Aera Official"
 	env[envOfficialRolloutHMACActiveKeyID] = "rollout-v1"
 	env[envOfficialRolloutHMACKeys] = encodedKeyRing("rollout-v1", bytes.Repeat([]byte{0x62}, 32))
 	env[envOfficialQualityEnabled] = "true"

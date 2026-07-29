@@ -1,8 +1,8 @@
-# AgentEra Cloud
+# Aera Cloud
 
-Private cloud backend and browser account center for AgentEra Studio.
+Private cloud backend and browser account center for Aera.
 
-This repository owns AgentEra APP identity, personal-space metadata, device sessions, and product authorization. It does not share accounts, cookies, tokens, user IDs, balances, or API keys with `bignormal/agentera-claw-api`, and it never stores Hermes Memory, USER, sessions, files, skills, Curator state, or self-learning data.
+This repository owns Aera APP identity, personal-space metadata, device sessions, and product authorization. It does not share accounts, cookies, tokens, user IDs, balances, or API keys with `bignormal/agentera-claw-api`, and it never stores Aera Runtime Memory, USER, sessions, files, skills, Curator state, or self-learning data.
 
 ## Local development
 
@@ -46,7 +46,7 @@ Official managed Agents are disabled by default. Development or test processes e
 
 The public API exposes only eligible published catalog entries and USER-owned managed Installations. Drafts, submissions, reviews, release controls, and official audit history exist only on the separately authenticated Internal Admin listener. Official Agent mutations persist their domain change, idempotency record, operation result, and audit evidence atomically. Version selection is derived by Cloud from the current immutable release revision; clients cannot submit PLATFORM ownership or an arbitrary managed version.
 
-Cloud stores no physical Hermes Profile path and receives no Memory, conversation, session, credential, private Skill, Curator, or local-learning data. Each official Installation remains USER-owned, while `runtime_binding_records` contain only opaque profile identity and sanitized release provenance. Publishing, pausing, rollout changes, and rollback do not mutate an existing local RuntimeBinding or private adaptive state.
+Cloud stores no physical Aera Runtime Profile path and receives no Memory, conversation, session, credential, private Skill, Curator, or local-learning data. Each official Installation remains USER-owned, while `runtime_binding_records` contain only opaque profile identity and sanitized release provenance. Publishing, pausing, rollout changes, and rollback do not mutate an existing local RuntimeBinding or private adaptive state.
 
 After starting the disposable Compose PostgreSQL and Redis services, run the complete development gate with the checked-in non-production configuration:
 
@@ -85,7 +85,7 @@ The browser account center lives in `web/`. Its production build is embedded int
 
 ## Delivery boundary
 
-`deploy/compose.production.yaml` defines one bounded AgentEra application container plus dedicated PostgreSQL and Redis resources. The app is loopback-published for a trusted HTTPS reverse proxy and does not share the recharge website's accounts, cookies, database, Redis namespace, or network.
+`deploy/compose.production.yaml` defines one bounded Aera application container plus dedicated PostgreSQL and Redis resources. The app is loopback-published for a trusted HTTPS reverse proxy and does not share the recharge website's accounts, cookies, database, Redis namespace, or network.
 
 Before any public launch, follow:
 

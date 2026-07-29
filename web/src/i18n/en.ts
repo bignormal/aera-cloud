@@ -1,11 +1,11 @@
 export const en = {
-  brand: "AgentEra",
+  brand: "Aera",
   accountCenter: "Account center",
   languageEnglish: "English",
   languageChinese: "中文",
-  loginTitle: "Sign in to AgentEra",
+  loginTitle: "Sign in to Aera",
   loginSubtitle:
-    "Sign in or register securely in your browser, then return to AgentEra Studio automatically.",
+    "Sign in or register securely in your browser, then return to Aera automatically.",
   identity: "Email or phone",
   password: "Password",
   login: "Sign in",
@@ -23,7 +23,7 @@ export const en = {
   verificationRateLimit:
     "Too many requests. Please retry after the next minute.",
   networkError: "Unable to reach the service. Check your network and retry.",
-  registerTitle: "Create an AgentEra account",
+  registerTitle: "Create an Aera account",
   internalBetaLoginEmail: "Internal Beta sign-in email (unverified)",
   internalBetaRecoveryUnavailable:
     "This internal Beta account does not verify mailbox ownership. Password reset, identity binding, and deletion recovery are unavailable. Keep the password safe.",
@@ -47,11 +47,11 @@ export const en = {
   setPassword: "Set password",
   confirmPassword: "Confirm password",
   acceptLegal: "I agree to the Terms of Service and Privacy Policy",
-  createAgentEraAccount: "Create AgentEra account",
+  createAgentEraAccount: "Create Aera account",
   registrationComplete: "Your account is ready",
   registrationReturning: "Account created. Signing you in",
   registrationReturningSubtitle:
-    "You will return to AgentEra Studio automatically.",
+    "You will return to Aera automatically.",
   registrationLoginFailed:
     "Automatic sign-in did not finish. Use the button below to continue.",
   backToLogin: "Back to sign in",
@@ -75,35 +75,35 @@ export const en = {
   lastIdentity: "Keep at least one sign-in method.",
   passwordSecurity: "Password security",
   passwordDesktopNote:
-    "Start password changes from AgentEra Studio to preserve the current device session.",
+    "Start password changes from Aera to preserve the current device session.",
   devices: "Devices",
   deviceLimit: "You have reached the five-active-device limit",
   deviceLimitHelp:
-    "Revoke an old device, then return to AgentEra Studio and retry.",
+    "Revoke an old device, then return to Aera and retry.",
   revokeDevice: "Revoke this device",
   confirmRevoke: "Confirm revoke",
   cancel: "Cancel",
-  deviceRevoked: "Device revoked. Return to AgentEra Studio and retry sign-in.",
+  deviceRevoked: "Device revoked. Return to Aera and retry sign-in.",
   noDevices: "There are no active devices.",
   lastSeen: "Last active",
-  authorizeTitle: "Signing in to AgentEra Studio",
+  authorizeTitle: "Signing in to Aera",
   authorizeSubtitle:
     "You will return to the desktop app automatically after sign-in. Passwords, codes, and tokens never enter the desktop renderer.",
   signedInAs: "Signed in as",
-  approve: "Sign in and return to AgentEra Studio",
+  approve: "Sign in and return to Aera",
   authorizationCancelled: "Sign-in cancelled. You can close this page.",
   authorizationExpired:
-    "This sign-in request is invalid or expired. Return to AgentEra Studio and retry.",
-  authorizationWorking: "Signed in. Returning securely to AgentEra Studio…",
+    "This sign-in request is invalid or expired. Return to Aera and retry.",
+  authorizationWorking: "Signed in. Returning securely to Aera…",
   loginReturnTitle: "Signed in",
   loginReturnSubtitle:
     "Connecting you to the desktop app. You will be ready to go in a moment.",
-  loginReturning: "Returning to AgentEra Studio…",
+  loginReturning: "Returning to Aera…",
   retryLogin: "Sign in again",
   reauthenticate: "Sign in before continuing.",
-  deleteTitle: "Delete AgentEra account",
+  deleteTitle: "Delete Aera account",
   deleteWarning:
-    "Deletion immediately revokes cloud sessions and starts a seven-day cooling-off period. It does not delete local Hermes sessions, Memory, files, or learned state. Handle local data separately first.",
+    "Deletion immediately revokes cloud sessions and starts a seven-day cooling-off period. It does not delete local Aera Runtime sessions, Memory, files, or learned state. Handle local data separately first.",
   ownedWorkspaceDeletionPrefix: "This account owns ",
   ownedWorkspaceDeletionSuffix:
     " workspaces. They and their cloud workspace assets will be deleted when account deletion is finalized.",
@@ -111,7 +111,7 @@ export const en = {
   sendDeletionCode: "Send deletion code",
   verifyDeletionIdentity: "Verify deletion identity",
   confirmDeletion:
-    "I understand cloud account deletion does not delete local Hermes data",
+    "I understand cloud account deletion does not delete local Aera Runtime data",
   deleteAccount: "Start seven-day deletion period",
   deletionRequested:
     "Your account entered the seven-day deletion period and all cloud device sessions were revoked.",

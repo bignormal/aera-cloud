@@ -6,7 +6,7 @@ export function Brand() {
   const { t } = useI18n();
   return (
     <Link className="brand" href="/account" aria-label={`${t("brand")} ${t("accountCenter")}`}>
-      <img src="/agentera-icon.png" alt="" width="40" height="40" />
+      <img src="/aera-icon.png" alt="" width="40" height="40" />
       <span><strong>{t("brand")}</strong><small>{t("accountCenter")}</small></span>
     </Link>
   );
@@ -32,7 +32,7 @@ export function PageFrame({ children, compact = false }: { children: ReactNode; 
       <div className="ambient ambient-two" />
       <header className="topbar"><Brand /><LanguageSwitch /></header>
       <main className={compact ? "page-main page-main-compact" : "page-main"}>{children}</main>
-      <footer>© 2026 AgentEra · 独立账户体系</footer>
+      <footer>© 2026 Aera · 独立账户体系</footer>
     </div>
   );
 }

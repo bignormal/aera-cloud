@@ -474,7 +474,7 @@ func newPlatformReleaseServiceFixture(t *testing.T) *platformReleaseServiceFixtu
 	platformID := uuid.New()
 	service, err := NewPlatformService(PlatformServiceConfig{
 		Repository: repository, Signer: signer, PlatformID: platformID,
-		PlatformKey: "agentera_official", PlatformDisplayName: "AgentEra Official",
+		PlatformKey: "agentera_official", PlatformDisplayName: "Aera Official",
 		RolloutKeyID: "rollout-v1",
 		RolloutKeys:  map[string][]byte{"rollout-v1": []byte("0123456789abcdef0123456789abcdef")},
 		Clock:        func() time.Time { return time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC) },

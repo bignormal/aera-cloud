@@ -504,7 +504,7 @@ func TestPublicServerMountsPublicConfigBeforeSPAFallback(t *testing.T) {
 func TestWebAccountCenterHandlesOnlyUnmatchedNonServiceRoutes(t *testing.T) {
 	web := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.WriteHeader(http.StatusOK)
-		_, _ = response.Write([]byte("AgentEra account center: " + request.URL.Path))
+		_, _ = response.Write([]byte("Aera account center: " + request.URL.Path))
 	})
 	handler := New(Dependencies{
 		PostgreSQL: &stubHealthChecker{}, Redis: &stubHealthChecker{}, Web: web,

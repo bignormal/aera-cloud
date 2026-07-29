@@ -273,7 +273,7 @@ func newPlatformServiceFixture(t *testing.T) *platformServiceFixture {
 		Signer:              signer,
 		PlatformID:          platformID,
 		PlatformKey:         "agentera_official",
-		PlatformDisplayName: "AgentEra Official",
+		PlatformDisplayName: "Aera Official",
 		RolloutKeyID:        "rollout-v1",
 		Clock:               func() time.Time { return now },
 		NewID: func() uuid.UUID {

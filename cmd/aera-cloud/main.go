@@ -53,7 +53,7 @@ func main() {
 	defer stop()
 
 	if err := run(ctx, os.LookupEnv); err != nil {
-		slog.Error("AgentEra cloud stopped", "error", err)
+		slog.Error("Aera Cloud stopped", "error", err)
 		os.Exit(1)
 	}
 }
@@ -172,7 +172,7 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 	maintenanceCtx, stopMaintenance := context.WithCancel(ctx)
 	defer stopMaintenance()
 	return runHTTPServersWithReady(ctx, cfg, publicHandler, internalHandler, internalTLS, net.Listen, func() {
-		slog.Info("AgentEra cloud started", "address", cfg.ListenAddr, "environment", cfg.Environment,
+		slog.Info("Aera Cloud started", "address", cfg.ListenAddr, "environment", cfg.Environment,
 			"internal_admin_enabled", cfg.InternalAdmin.Enabled)
 		go maintenanceRunner.Run(maintenanceCtx)
 	})

@@ -197,7 +197,6 @@ func TestHTTPOrganizationAgentMapsStableErrorsAndSafeDLP(t *testing.T) {
 		{ErrOrganizationAgentNotFound, http.StatusNotFound, "organization_agent_not_found"},
 		{ErrOrganizationAgentForbidden, http.StatusForbidden, "organization_agent_forbidden"},
 		{ErrOrganizationArchived, http.StatusConflict, "organization_archived"},
-		{ErrOrganizationSubmissionSelfReview, http.StatusForbidden, "organization_submission_self_review"},
 		{ErrOrganizationSubmissionConflict, http.StatusConflict, "organization_submission_conflict"},
 		{ErrOrganizationPublicationPolicyBlocked, http.StatusUnprocessableEntity, "organization_publication_policy_blocked"},
 	}

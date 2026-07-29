@@ -1,8 +1,8 @@
 openapi: 3.0.3
 info:
-  title: AgentEra App Cloud API
+  title: Aera Cloud API
   version: 0.9.0
-  description: Account, device authorization, USER, Workspace, Organization, Official Managed Agent, and opt-in content-free quality contracts for AgentEra Studio.
+  description: Account, device authorization, USER, Workspace, Organization, Official Managed Agent, and opt-in content-free quality contracts for Aera.
 servers:
   - url: https://accounts.agentera.example
 paths:
@@ -586,7 +586,7 @@ paths:
   /api/v1/organizations:
     get:
       operationId: listOrganizations
-      description: Lists Organization memberships as safe control-plane summaries without login identities or Hermes runtime state.
+      description: Lists Organization memberships as safe control-plane summaries without login identities or Aera Runtime state.
       security:
         - desktopAccessToken: []
       parameters:
@@ -1618,7 +1618,7 @@ paths:
   /api/v1/organizations/{organization_id}/agent-publication-submissions/{submission_id}/reviews:
     post:
       operationId: reviewOrganizationAgentPublicationSubmission
-      description: Approves or rejects another current Owner/Admin author's immutable pending package. Approval atomically publishes one signed Version; self-review is forbidden.
+      description: Approves or rejects an immutable pending package as any current Owner/Admin. One approval atomically publishes one signed Version, including in a single-Owner organization.
       security:
         - desktopAccessToken: []
       parameters:
@@ -1661,7 +1661,7 @@ paths:
   /api/v1/workspaces:
     get:
       operationId: listWorkspaces
-      description: Lists active and archived Workspace memberships without local Hermes state.
+      description: Lists active and archived Workspace memberships without local Aera Runtime state.
       security:
         - desktopAccessToken: []
       responses:
@@ -2915,7 +2915,7 @@ paths:
   /api/v1/agent-installations/{installation_id}/archive:
     post:
       operationId: archiveUserAgentInstallation
-      description: The maximum Agent metadata request body is 65536 bytes. Archive changes cloud control metadata only and does not delete a Hermes profile.
+      description: The maximum Agent metadata request body is 65536 bytes. Archive changes cloud control metadata only and does not delete an Aera Runtime profile.
       security:
         - desktopAccessToken: []
       parameters:
@@ -3350,7 +3350,7 @@ components:
     desktopAccessToken:
       type: http
       scheme: bearer
-      bearerFormat: AgentEra access JWT
+      bearerFormat: Aera access JWT
   parameters:
     CSRFToken:
       name: X-CSRF-Token
@@ -3942,7 +3942,7 @@ components:
           pattern: '^[A-Za-z0-9_-]{43}$'
         signature:
           type: string
-          description: Ed25519 signature of the AgentEra self-revocation digest, encoded as canonical unpadded base64url.
+          description: Ed25519 signature of the Aera self-revocation digest, encoded as canonical unpadded base64url.
           pattern: '^[A-Za-z0-9_-]{86}$'
     WorkspaceRole:
       type: string
@@ -4683,7 +4683,6 @@ components:
         - organization_agent_not_found
         - organization_agent_forbidden
         - organization_archived
-        - organization_submission_self_review
         - organization_submission_conflict
         - organization_submission_superseded
         - organization_publication_policy_blocked
@@ -7094,7 +7093,6 @@ components:
         - organization_agent_not_found
         - organization_agent_forbidden
         - organization_archived
-        - organization_submission_self_review
         - organization_submission_conflict
         - organization_submission_superseded
         - organization_publication_policy_blocked

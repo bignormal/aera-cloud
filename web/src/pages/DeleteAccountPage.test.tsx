@@ -76,7 +76,7 @@ test("discloses owned workspace deletion without sending the displayed count", a
 
   expect(await screen.findByText(/此账户拥有 3 个工作空间/)).toBeVisible();
   expect(
-    screen.getByText(/不会删除本机 Hermes 会话、Memory、文件或学习成果/),
+    screen.getByText(/不会删除本机 Aera Runtime 会话、Memory、文件或学习成果/),
   ).toBeVisible();
 
   fireEvent.change(
@@ -101,7 +101,7 @@ test("discloses owned workspace deletion without sending the displayed count", a
   });
   expect(deleteButton).toBeDisabled();
   fireEvent.click(
-    screen.getByLabelText("我理解云端账户注销不会删除本地 Hermes 数据"),
+    screen.getByLabelText("我理解云端账户注销不会删除本地 Aera Runtime 数据"),
   );
   expect(deleteButton).toBeEnabled();
   fireEvent.click(deleteButton);

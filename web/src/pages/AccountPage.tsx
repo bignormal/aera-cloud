@@ -198,7 +198,7 @@ export function AccountPage() {
               <Card>
                 <div className="section-heading">
                   <div>
-                    <div className="eyebrow">AGENTERA ID</div>
+                    <div className="eyebrow">Aera ID</div>
                     <h1>{t("accountOverview")}</h1>
                   </div>
                   <button

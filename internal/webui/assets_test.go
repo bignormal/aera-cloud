@@ -11,9 +11,9 @@ import (
 
 func TestHandlerServesAssetsAndFallsBackToIndexForAccountRoutes(t *testing.T) {
 	handler, err := NewFromFS(fstest.MapFS{
-		"index.html":        {Data: []byte("<title>AgentEra Account</title>")},
+		"index.html":        {Data: []byte("<title>Aera Account</title>")},
 		"assets/app.js":     {Data: []byte("export const app = true")},
-		"agentera-icon.png": {Data: []byte("png")},
+		"aera-icon.png":     {Data: []byte("png")},
 	})
 	if err != nil {
 		t.Fatalf("NewFromFS() error = %v", err)
@@ -22,7 +22,7 @@ func TestHandlerServesAssetsAndFallsBackToIndexForAccountRoutes(t *testing.T) {
 	for _, path := range []string{"/login", "/authorize?request_id=opaque", "/devices", "/delete-account"} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
-		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "AgentEra Account") {
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Aera Account") {
 			t.Fatalf("GET %s = %d %q", path, response.Code, response.Body.String())
 		}
 		if response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Content-Security-Policy") == "" ||
@@ -40,7 +40,7 @@ func TestHandlerServesAssetsAndFallsBackToIndexForAccountRoutes(t *testing.T) {
 }
 
 func TestHandlerNeverFallsBackForReservedServicePaths(t *testing.T) {
-	handler, err := NewFromFS(fstest.MapFS{"index.html": {Data: []byte("AgentEra")}})
+	handler, err := NewFromFS(fstest.MapFS{"index.html": {Data: []byte("Aera")}})
 	if err != nil {
 		t.Fatalf("NewFromFS() error = %v", err)
 	}
@@ -49,7 +49,7 @@ func TestHandlerNeverFallsBackForReservedServicePaths(t *testing.T) {
 	} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
-		if response.Code != http.StatusNotFound || strings.Contains(response.Body.String(), "AgentEra") {
+		if response.Code != http.StatusNotFound || strings.Contains(response.Body.String(), "Aera") {
 			t.Fatalf("reserved GET %s = %d %q", path, response.Code, response.Body.String())
 		}
 	}
@@ -67,7 +67,7 @@ func TestEmbeddedAccountCenterContainsProductionEntryPoint(t *testing.T) {
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "/assets/app.js") {
 		t.Fatalf("embedded login = %d %q", response.Code, response.Body.String())
 	}
-	if _, err := fs.Stat(embeddedAssets, "static/agentera-icon.png"); err != nil {
-		t.Fatalf("embedded AgentEra icon: %v", err)
+	if _, err := fs.Stat(embeddedAssets, "static/aera-icon.png"); err != nil {
+		t.Fatalf("embedded Aera icon: %v", err)
 	}
 }

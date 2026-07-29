@@ -42,7 +42,7 @@ func TestOfficialAgentConfigurationLoadsCompleteConfiguration(t *testing.T) {
 	env[envOfficialAgentsEnabled] = "true"
 	env[envPlatformID] = platformID.String()
 	env[envPlatformKey] = "agentera_official"
-	env[envPlatformDisplayName] = "AgentEra Official"
+	env[envPlatformDisplayName] = "Aera Official"
 	env[envOfficialRolloutHMACActiveKeyID] = "rollout-v1"
 	env[envOfficialRolloutHMACKeys] = encodedKeyRing("rollout-v1", keyMaterial)
 
@@ -59,7 +59,7 @@ func TestOfficialAgentConfigurationLoadsCompleteConfiguration(t *testing.T) {
 	if cfg.OfficialAgent.PlatformKey != "agentera_official" {
 		t.Fatalf("PlatformKey = %q", cfg.OfficialAgent.PlatformKey)
 	}
-	if cfg.OfficialAgent.PlatformDisplayName != "AgentEra Official" {
+	if cfg.OfficialAgent.PlatformDisplayName != "Aera Official" {
 		t.Fatalf("PlatformDisplayName = %q", cfg.OfficialAgent.PlatformDisplayName)
 	}
 	if cfg.OfficialAgent.RolloutHMACActiveKey != "rollout-v1" {
@@ -76,7 +76,7 @@ func TestOfficialAgentConfigurationRejectsPartialOrInvalidValues(t *testing.T) {
 		env[envOfficialAgentsEnabled] = "true"
 		env[envPlatformID] = uuid.NewString()
 		env[envPlatformKey] = "agentera_official"
-		env[envPlatformDisplayName] = "AgentEra Official"
+		env[envPlatformDisplayName] = "Aera Official"
 		env[envOfficialRolloutHMACActiveKeyID] = "rollout-v1"
 		env[envOfficialRolloutHMACKeys] = encodedKeyRing("rollout-v1", bytes.Repeat([]byte{14}, 32))
 		return env
@@ -110,7 +110,7 @@ func TestOfficialAgentConfigurationRejectsPartialOrInvalidValues(t *testing.T) {
 		{name: "nil platform ID", key: envPlatformID, value: uuid.Nil.String(), want: envPlatformID},
 		{name: "non canonical platform ID", key: envPlatformID, value: "123E4567-E89B-12D3-A456-426614174000", want: envPlatformID},
 		{name: "invalid platform key", key: envPlatformKey, value: "Official Platform", want: envPlatformKey},
-		{name: "unsafe display name", key: envPlatformDisplayName, value: "AgentEra\nOfficial", want: envPlatformDisplayName},
+		{name: "unsafe display name", key: envPlatformDisplayName, value: "Aera\nOfficial", want: envPlatformDisplayName},
 		{name: "short rollout key", key: envOfficialRolloutHMACKeys, value: encodedKeyRing("rollout-v1", bytes.Repeat([]byte{14}, 31)), want: "32 bytes"},
 		{name: "missing active rollout key", key: envOfficialRolloutHMACActiveKeyID, value: "rollout-v2", want: "active key"},
 	}
@@ -133,7 +133,7 @@ func TestOfficialAgentConfigurationRejectsDuplicateOrReusedKeyMaterial(t *testin
 		env[envOfficialAgentsEnabled] = "true"
 		env[envPlatformID] = platformID
 		env[envPlatformKey] = "agentera_official"
-		env[envPlatformDisplayName] = "AgentEra Official"
+		env[envPlatformDisplayName] = "Aera Official"
 		env[envOfficialRolloutHMACActiveKeyID] = "rollout-v1"
 		return env
 	}

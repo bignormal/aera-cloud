@@ -58,7 +58,7 @@ function App() {
 }
 
 const root = document.getElementById("root");
-if (!root) throw new Error("AgentEra account center root is missing");
+if (!root) throw new Error("Aera account center root is missing");
 createRoot(root).render(
   <StrictMode>
     <I18nProvider>

@@ -183,17 +183,19 @@ func TestOrganizationSubmissionRepositoryIdempotencyWithdrawalAndLifecycle(t *te
 	}
 }
 
-func TestOrganizationApprovalRequiresDifferentCurrentPublisher(t *testing.T) {
+func TestOrganizationApprovalAllowsSingleCurrentOwnerReview(t *testing.T) {
 	fixture := newOrganizationSubmissionRepositoryFixture(t)
 	submission := fixture.submitInitial(t, fixture.owner, 0xa1)
-	_, err := fixture.repository.ReviewOrganizationAgentSubmission(
+	approved, err := fixture.repository.ReviewOrganizationAgentSubmission(
 		fixture.ctx, fixture.approvalCommand(t, submission, fixture.owner, 0xa2),
 	)
-	if !errors.Is(err, ErrOrganizationSubmissionSelfReview) {
-		t.Fatalf("self-review error = %v, want ErrOrganizationSubmissionSelfReview", err)
+	if err != nil {
+		t.Fatalf("owner approval error = %v", err)
 	}
-	fixture.assertSubmissionPending(t, submission)
-	fixture.assertNoDefinitionOrVersion(t, submission.DefinitionID)
+	if approved.Status != OrganizationSubmissionApproved || approved.Revision != 2 ||
+		approved.Review == nil || approved.Review.ReviewerUserID != fixture.owner.UserID {
+		t.Fatalf("owner-approved submission = %+v", approved)
+	}
 }
 
 func TestOrganizationApprovalPublishesOneLinkedSignedVersionAndReplays(t *testing.T) {

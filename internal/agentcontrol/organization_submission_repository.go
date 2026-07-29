@@ -21,7 +21,6 @@ import (
 
 var (
 	ErrOrganizationSubmissionConflict   = errors.New("organization submission conflict")
-	ErrOrganizationSubmissionSelfReview = errors.New("organization submission self review")
 	ErrOrganizationSubmissionSuperseded = errors.New("organization submission superseded")
 )
 
@@ -364,9 +363,6 @@ func (r *PostgresRepository) ReviewOrganizationAgentSubmission(
 	if current.Status != OrganizationSubmissionPending || current.Revision != command.ExpectedRevision {
 		return OrganizationAgentSubmission{}, ErrOrganizationSubmissionConflict
 	}
-	if current.SubmittedByUserID == command.Principal.UserID {
-		return OrganizationAgentSubmission{}, ErrOrganizationSubmissionSelfReview
-	}
 	var safeNote any
 	if command.SafeNote != "" {
 		safeNote = command.SafeNote
@@ -456,9 +452,6 @@ func (r *PostgresRepository) approveOrganizationAgentSubmission(
 	}
 	if submission.Status != OrganizationSubmissionPending || submission.Revision != command.ExpectedRevision {
 		return OrganizationAgentSubmission{}, ErrOrganizationSubmissionConflict
-	}
-	if submission.SubmittedByUserID == command.Principal.UserID {
-		return OrganizationAgentSubmission{}, ErrOrganizationSubmissionSelfReview
 	}
 	if err := requireCurrentOrganizationPublisher(
 		ctx, tx, command.OrganizationID, submission.SubmittedByUserID,

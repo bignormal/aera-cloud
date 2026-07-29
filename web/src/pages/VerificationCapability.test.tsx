@@ -79,7 +79,7 @@ test("direct internal beta labels the login identifier unverified and hides iden
     screen.queryByRole("heading", { name: "绑定另一登录方式" }),
   ).not.toBeInTheDocument();
   expect(
-    screen.queryByRole("link", { name: "注销 AgentEra 账户" }),
+    screen.queryByRole("link", { name: "注销 Aera 账户" }),
   ).not.toBeInTheDocument();
   expect(
     screen.getByText(/暂不支持找回密码、身份绑定或注销恢复/),

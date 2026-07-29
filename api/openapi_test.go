@@ -6,6 +6,35 @@ import (
 	"testing"
 )
 
+func TestOpenAPIUsesAeraVisibleBrandAndRetainsCompatibilityIdentifiers(t *testing.T) {
+	contents, err := os.ReadFile("openapi.yaml")
+	if err != nil {
+		t.Fatalf("read openapi.yaml: %v", err)
+	}
+	document := string(contents)
+	for _, required := range []string{
+		"title: Aera Cloud API",
+		"contracts for Aera.",
+		"enum: [agentera-studio]",
+		"X-AgentEra-Desktop-Version",
+	} {
+		if !strings.Contains(document, required) {
+			t.Fatalf("OpenAPI is missing required brand or compatibility fragment %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"AgentEra App Cloud API",
+		"AgentEra Studio",
+		"Hermes runtime state",
+		"local Hermes state",
+		"Hermes profile",
+	} {
+		if strings.Contains(document, forbidden) {
+			t.Fatalf("OpenAPI exposes obsolete user-visible brand fragment %q", forbidden)
+		}
+	}
+}
+
 func TestOpenAPIContainsTaskFourAccountContract(t *testing.T) {
 	contents, err := os.ReadFile("openapi.yaml")
 	if err != nil {
@@ -245,13 +274,17 @@ func TestOpenAPIContainsOrganizationAgentApprovalContract(t *testing.T) {
 	}
 	for _, code := range []string{
 		"organization_agent_not_found", "organization_agent_forbidden", "organization_archived",
-		"organization_submission_self_review", "organization_submission_conflict",
+		"organization_submission_conflict",
 		"organization_submission_superseded", "organization_publication_policy_blocked",
 		"organization_publication_dlp_blocked",
 	} {
 		if !strings.Contains(document, "- "+code) {
 			t.Fatalf("OpenAPI is missing Organization Agent error code %q", code)
 		}
+	}
+	if strings.Contains(document, "organization_submission_self_review") ||
+		strings.Contains(document, "self-review is forbidden") {
+		t.Fatal("OpenAPI still exposes the removed Organization Agent self-review restriction")
 	}
 	if strings.Contains(document, "/api/v1/organizations/{organization_id}/agent-definitions:\n    post:") {
 		t.Fatal("OpenAPI exposed direct Organization Agent publication")

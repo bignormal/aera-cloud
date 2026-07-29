@@ -532,7 +532,7 @@ func officialQualityInternalAdminTestLookup(
 		"AGENTERA_CLOUD_OFFICIAL_AGENTS_ENABLED":             "true",
 		"AGENTERA_CLOUD_PLATFORM_ID":                         "019f0000-0000-7000-8000-000000000088",
 		"AGENTERA_CLOUD_PLATFORM_KEY":                        "agentera_official_e2e",
-		"AGENTERA_CLOUD_PLATFORM_DISPLAY_NAME":               "AgentEra Official E2E",
+		"AGENTERA_CLOUD_PLATFORM_DISPLAY_NAME":               "Aera Official E2E",
 		"AGENTERA_CLOUD_OFFICIAL_ROLLOUT_HMAC_ACTIVE_KEY_ID": "rollout-e2e-v1",
 		"AGENTERA_CLOUD_OFFICIAL_ROLLOUT_HMAC_KEYS": fmt.Sprintf(
 			`{"rollout-e2e-v1":"%s"}`,

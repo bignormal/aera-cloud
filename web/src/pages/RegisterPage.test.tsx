@@ -132,7 +132,7 @@ test("completes verified email registration using current legal versions", async
     target: { value: "correct horse battery" },
   });
   fireEvent.click(screen.getByLabelText("我已阅读并同意服务条款和隐私政策"));
-  fireEvent.click(screen.getByRole("button", { name: "创建 AgentEra 账户" }));
+  fireEvent.click(screen.getByRole("button", { name: "创建 Aera 账户" }));
 
   await waitFor(() =>
     expect(calls.some((call) => call.url === "/api/v1/browser/login")).toBe(
@@ -279,19 +279,19 @@ test("direct internal beta waits for both capability and legal configuration bef
   renderRegistration();
 
   expect(
-    screen.queryByRole("button", { name: "创建 AgentEra 账户" }),
+    screen.queryByRole("button", { name: "创建 Aera 账户" }),
   ).not.toBeInTheDocument();
   resolveLegal(
     jsonResponse({ terms_version: "2026-07", privacy_version: "2026-07" }),
   );
   await Promise.resolve();
   expect(
-    screen.queryByRole("button", { name: "创建 AgentEra 账户" }),
+    screen.queryByRole("button", { name: "创建 Aera 账户" }),
   ).not.toBeInTheDocument();
 
   resolveConfig(jsonResponse(directConfig));
   expect(
-    await screen.findByRole("button", { name: "创建 AgentEra 账户" }),
+    await screen.findByRole("button", { name: "创建 Aera 账户" }),
   ).toBeVisible();
 });
 
@@ -352,7 +352,7 @@ test("direct internal beta submits an unverified normalized email identifier wit
     target: { value: "correct horse battery" },
   });
   fireEvent.click(screen.getByLabelText("我已阅读并同意服务条款和隐私政策"));
-  fireEvent.click(screen.getByRole("button", { name: "创建 AgentEra 账户" }));
+  fireEvent.click(screen.getByRole("button", { name: "创建 Aera 账户" }));
 
   await waitFor(() => expect(calls).toHaveLength(1));
   expect(calls[0].body).toEqual({
@@ -401,7 +401,7 @@ test("direct internal beta rejects an invalid email before account creation", as
     target: { value: "correct horse battery" },
   });
   fireEvent.click(screen.getByLabelText("我已阅读并同意服务条款和隐私政策"));
-  fireEvent.click(screen.getByRole("button", { name: "创建 AgentEra 账户" }));
+  fireEvent.click(screen.getByRole("button", { name: "创建 Aera 账户" }));
 
   expect(await screen.findByText("请输入有效的内测登录邮箱。")).toBeVisible();
   expect(registrationCalls).toBe(0);
@@ -449,7 +449,7 @@ test("direct internal beta surfaces an identity conflict instead of a generic se
     target: { value: "correct horse battery" },
   });
   fireEvent.click(screen.getByLabelText("我已阅读并同意服务条款和隐私政策"));
-  fireEvent.click(screen.getByRole("button", { name: "创建 AgentEra 账户" }));
+  fireEvent.click(screen.getByRole("button", { name: "创建 Aera 账户" }));
 
   expect(
     await screen.findByText("该邮箱或手机号已被注册，请直接登录。"),

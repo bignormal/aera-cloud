@@ -282,7 +282,7 @@ func runSmokeAuthLifecycle(t *testing.T) {
 		"state":                 {state},
 		"installation_id":       {installationID.String()},
 		"device_public_key":     {base64.RawURLEncoding.EncodeToString(publicKey)},
-		"device_name":           {"AgentEra Smoke Device"},
+		"device_name":           {"Aera Smoke Device"},
 		"platform":              {"darwin"},
 		"app_version":           {"0.1.0-smoke"},
 	}

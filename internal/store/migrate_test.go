@@ -21,8 +21,8 @@ func TestEmbeddedMigrationsIncludeInternalBetaDirectRegistration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadMigrations() error = %v", err)
 	}
-	if len(loaded) != 20 {
-		t.Fatalf("embedded migration count = %d, want 20", len(loaded))
+	if len(loaded) != 21 {
+		t.Fatalf("embedded migration count = %d, want 21", len(loaded))
 	}
 	directRegistration := loaded[18]
 	if directRegistration.version != 19 || directRegistration.name != "000019_internal_beta_direct_registration.sql" {
@@ -40,6 +40,19 @@ func TestEmbeddedMigrationsIncludeInternalBetaDirectRegistration(t *testing.T) {
 	for _, required := range []string{"'revoke_all_sessions'", "'force_password_reset'", "target_type = 'user'"} {
 		if !strings.Contains(string(adminActions.contents), required) {
 			t.Fatalf("migration 20 is missing %q", required)
+		}
+	}
+
+	singleApproval := loaded[20]
+	if singleApproval.version != 21 || singleApproval.name != "000021_organization_agent_single_approval.sql" {
+		t.Fatalf("migration 21 = %d/%s", singleApproval.version, singleApproval.name)
+	}
+	for _, required := range []string{
+		"DROP TRIGGER IF EXISTS organization_agent_review_separation_trigger",
+		"DROP FUNCTION IF EXISTS enforce_organization_agent_review_separation()",
+	} {
+		if !strings.Contains(string(singleApproval.contents), required) {
+			t.Fatalf("migration 21 is missing %q", required)
 		}
 	}
 }
@@ -454,7 +467,7 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	assertTriggerDefinitionContains(t, ctx, postgres, "organization_agent_submissions", "organization_agent_submission_variant_trigger", "AFTER INSERT ON")
 	assertTriggerExists(t, ctx, postgres, "organization_agent_submissions", "organization_agent_submission_immutable_trigger")
 	assertTriggerExists(t, ctx, postgres, "organization_agent_reviews", "organization_agent_review_immutable_trigger")
-	assertTriggerExists(t, ctx, postgres, "organization_agent_reviews", "organization_agent_review_separation_trigger")
+	assertTriggerAbsent(t, ctx, postgres, "organization_agent_reviews", "organization_agent_review_separation_trigger")
 	assertTriggerExists(t, ctx, postgres, "platform_agent_policy_snapshots", "platform_agent_policy_snapshot_immutable_trigger")
 	assertTriggerExists(t, ctx, postgres, "platform_agent_submissions", "platform_agent_submission_immutable_trigger")
 	assertTriggerExists(t, ctx, postgres, "platform_agent_reviews", "platform_agent_review_immutable_trigger")
@@ -472,8 +485,8 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	if err := postgres.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if applied != 20 {
-		t.Fatalf("applied migration count = %d, want 20", applied)
+	if applied != 21 {
+		t.Fatalf("applied migration count = %d, want 21", applied)
 	}
 	var receiptConsumedColumn bool
 	if err := postgres.QueryRow(ctx, `
@@ -1082,6 +1095,25 @@ func assertTriggerExists(t *testing.T, ctx context.Context, postgres *pgxpool.Po
 	}
 	if enabled != "O" {
 		t.Fatalf("trigger %s enabled state = %q, want O", name, enabled)
+	}
+}
+
+func assertTriggerAbsent(t *testing.T, ctx context.Context, postgres *pgxpool.Pool, table, name string) {
+	t.Helper()
+	var exists bool
+	err := postgres.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM pg_trigger tg
+			JOIN pg_class tbl ON tbl.oid = tg.tgrelid
+			WHERE tbl.relname = $1 AND tg.tgname = $2 AND NOT tg.tgisinternal
+		)
+	`, table, name).Scan(&exists)
+	if err != nil {
+		t.Fatalf("read trigger %s: %v", name, err)
+	}
+	if exists {
+		t.Fatalf("trigger %s still exists", name)
 	}
 }
 

@@ -76,12 +76,12 @@ func (s *SMTPEmail) SendVerification(
 	message := []byte(strings.Join([]string{
 		"From: " + from,
 		"To: " + recipient.Address,
-		"Subject: AgentEra verification code",
+		"Subject: Aera verification code",
 		"MIME-Version: 1.0",
 		"Content-Type: text/plain; charset=UTF-8",
 		"Content-Transfer-Encoding: 8bit",
 		"",
-		"Your AgentEra verification code is " + code + ".",
+		"Your Aera verification code is " + code + ".",
 		"It expires in 5 minutes. Do not share this code with anyone.",
 		"",
 	}, "\r\n"))

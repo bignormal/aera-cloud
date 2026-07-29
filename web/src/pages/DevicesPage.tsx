@@ -48,7 +48,7 @@ export function DevicesPage() {
         <aside className="side-nav"><Link href="/account">{t("accountOverview")}</Link><Link className="active" href="/devices">{t("devices")}</Link><Link className="danger-link" href="/delete-account">{t("deleteTitle")}</Link></aside>
         <div className="content-stack">
           <Card>
-            <div className="eyebrow">AGENTERA SECURITY</div>
+            <div className="eyebrow">Aera Security</div>
             <h1>{t("devices")}</h1>
             {limitReached && <StatusMessage tone="warning"><strong>{t("deviceLimit")}</strong><br />{t("deviceLimitHelp")}</StatusMessage>}
             {error && <StatusMessage tone="error">{error}</StatusMessage>}
@@ -56,7 +56,7 @@ export function DevicesPage() {
             {loading ? <SpinnerLabel /> : devices.length === 0 ? <p className="muted">{t("noDevices")}</p> : <div className="device-list">
               {devices.map((device) => <article className="device-row" key={device.device_id}>
                 <div className="device-icon">{device.platform === "darwin" ? "⌘" : device.platform === "windows" ? "⊞" : "◇"}</div>
-                <div className="device-copy"><strong>{device.display_name}</strong><span>{platformLabel(device.platform)} · AgentEra {device.app_version}</span><small>{t("lastSeen")}: {new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(new Date(device.last_seen_at))}</small></div>
+                <div className="device-copy"><strong>{device.display_name}</strong><span>{platformLabel(device.platform)} · Aera {device.app_version}</span><small>{t("lastSeen")}: {new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(new Date(device.last_seen_at))}</small></div>
                 <button className="secondary-button danger-outline" type="button" onClick={() => setPending(device)}>{t("revokeDevice")}</button>
               </article>)}
             </div>}

@@ -24,11 +24,11 @@ type assetHandler struct {
 func New() http.Handler {
 	assets, err := fs.Sub(embeddedAssets, "static")
 	if err != nil {
-		panic("embedded AgentEra account center is unavailable")
+		panic("embedded Aera account center is unavailable")
 	}
 	handler, err := NewFromFS(assets)
 	if err != nil {
-		panic("embedded AgentEra account center is invalid")
+		panic("embedded Aera account center is invalid")
 	}
 	return handler
 }
