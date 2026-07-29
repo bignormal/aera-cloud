@@ -52,6 +52,12 @@ For an approved verified phone rollout, the same owner-only file also contains:
 Use a dedicated least-privilege RAM identity. Never print, source into an
 interactive transcript, commit, or copy these credentials into Desktop.
 
+Registration and login share one Redis-backed 60-second cooldown per normalized
+phone number, with the persisted delivered challenge as a second cross-purpose
+guard. A denied request returns HTTP 429 with `Retry-After: 60`. Operational
+logs retain only the validated Aliyun error code and masked request ID; never
+copy the provider message, destination, code, or credential material into logs.
+
 The Compose interpolation contract also requires:
 
 - `AERA_CLOUD_POSTGRES_PASSWORD`

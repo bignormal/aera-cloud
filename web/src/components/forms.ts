@@ -14,6 +14,21 @@ export function errorKey(error: unknown): "loginError" | "networkError" | "servi
   return "serviceError";
 }
 
+export function verificationSendErrorKey(
+  error: unknown,
+): "verificationRateLimit" | "networkError" | "serviceError" {
+  if (
+    error instanceof APIError &&
+    (error.code === "resend_too_soon" || error.code === "rate_limited")
+  ) {
+    return "verificationRateLimit";
+  }
+  if (error instanceof APIError && error.code === "network_error") {
+    return "networkError";
+  }
+  return "serviceError";
+}
+
 export function validPassword(value: string): boolean {
   return value.length >= 10 && value.length <= 128;
 }

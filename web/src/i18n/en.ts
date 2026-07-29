@@ -20,6 +20,8 @@ export const en = {
   codeLoginError:
     "The verification code is invalid or expired. Request a new code.",
   serviceError: "The service is temporarily unavailable. Try again later.",
+  verificationRateLimit:
+    "Too many requests. Please retry after the next minute.",
   networkError: "Unable to reach the service. Check your network and retry.",
   registerTitle: "Create an AgentEra account",
   internalBetaLoginEmail: "Internal Beta sign-in email (unverified)",

@@ -22,6 +22,12 @@ const (
 	deliveryLeaseTTL  = 30 * time.Second
 )
 
+var unifiedPhoneCooldownPolicy = Policy{
+	Limit:        1,
+	CaptchaAfter: 1,
+	Window:       resendDelay,
+}
+
 type Sender interface {
 	SendVerification(ctx context.Context, destination, code string, purpose Purpose) error
 }
@@ -173,7 +179,7 @@ func (s *Service) Send(ctx context.Context, request SendRequest) error {
 	}
 	targetHMACs := lookupHMACs(candidates)
 	now := s.clock().UTC()
-	latest, found, err := s.repository.Latest(ctx, targetHMACs, request.Purpose)
+	latest, found, err := s.latestForSendCooldown(ctx, request, targetHMACs)
 	if err != nil {
 		return ErrTemporarilyUnavailable
 	}
@@ -196,6 +202,9 @@ func (s *Service) Send(ctx context.Context, request SendRequest) error {
 		if !valid {
 			return ErrCaptchaRequired
 		}
+	}
+	if err := s.allowUnifiedPhoneCooldown(ctx, request, candidates[0].HMAC); err != nil {
+		return err
 	}
 
 	code, err := randomSixDigitCode()
@@ -220,7 +229,20 @@ func (s *Service) Send(ctx context.Context, request SendRequest) error {
 		ResendAfter:        now.Add(resendDelay),
 	}
 	if err := s.sender.SendVerification(ctx, normalized, code, request.Purpose); err != nil {
-		s.logger.Warn("verification delivery failed", "purpose", request.Purpose, "kind", request.Kind)
+		metadata, hasMetadata := safeDeliveryFailureMetadata(err)
+		attributes := []any{"purpose", request.Purpose, "kind", request.Kind}
+		if hasMetadata {
+			attributes = append(
+				attributes,
+				"provider", metadata.Provider,
+				"provider_code", metadata.Code,
+				"provider_request_id", metadata.RequestID,
+			)
+		}
+		s.logger.Warn("verification delivery failed", attributes...)
+		if hasMetadata && metadata.RateLimited {
+			return ErrRateLimited
+		}
 		return ErrDeliveryUnavailable
 	}
 	if err := s.repository.SaveAfterDelivery(ctx, challenge); err != nil {
@@ -228,6 +250,81 @@ func (s *Service) Send(ctx context.Context, request SendRequest) error {
 		return ErrTemporarilyUnavailable
 	}
 	return nil
+}
+
+func (s *Service) latestForSendCooldown(
+	ctx context.Context,
+	request SendRequest,
+	targetHMACs [][]byte,
+) (Challenge, bool, error) {
+	if request.Kind != secure.IdentityPhone ||
+		(request.Purpose != PurposeRegistration && request.Purpose != PurposeLogin) {
+		return s.repository.Latest(ctx, targetHMACs, request.Purpose)
+	}
+	var latest Challenge
+	found := false
+	for _, purpose := range []Purpose{PurposeRegistration, PurposeLogin} {
+		candidate, ok, err := s.repository.Latest(ctx, targetHMACs, purpose)
+		if err != nil {
+			return Challenge{}, false, err
+		}
+		if ok && (!found || candidate.CreatedAt.After(latest.CreatedAt)) {
+			latest = candidate
+			found = true
+		}
+	}
+	return latest, found, nil
+}
+
+func (s *Service) allowUnifiedPhoneCooldown(
+	ctx context.Context,
+	request SendRequest,
+	targetHMAC []byte,
+) error {
+	if request.Kind != secure.IdentityPhone ||
+		(request.Purpose != PurposeRegistration && request.Purpose != PurposeLogin) {
+		return nil
+	}
+	key := hex.EncodeToString(
+		s.requestHMAC("cooldown", "phone", string(targetHMAC)),
+	)
+	decision, err := s.limiter.Allow(ctx, key, unifiedPhoneCooldownPolicy)
+	if err != nil {
+		return ErrTemporarilyUnavailable
+	}
+	if !decision.Allowed {
+		return ErrResendTooSoon
+	}
+	return nil
+}
+
+func safeDeliveryFailureMetadata(err error) (DeliveryFailureMetadata, bool) {
+	var failure DeliveryFailure
+	if !errors.As(err, &failure) {
+		return DeliveryFailureMetadata{}, false
+	}
+	metadata := failure.VerificationDeliveryFailure()
+	if metadata.Provider != "aliyun" ||
+		!safeLogToken(metadata.Code, 128) ||
+		(metadata.RequestID != "" && !safeLogToken(metadata.RequestID, 128)) {
+		return DeliveryFailureMetadata{}, false
+	}
+	return metadata, true
+}
+
+func safeLogToken(value string, maximumLength int) bool {
+	if value == "" || len(value) > maximumLength {
+		return false
+	}
+	for _, character := range value {
+		if (character < 'a' || character > 'z') &&
+			(character < 'A' || character > 'Z') &&
+			(character < '0' || character > '9') &&
+			character != '.' && character != '_' && character != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Service) Verify(ctx context.Context, request VerifyRequest) (VerificationResult, error) {

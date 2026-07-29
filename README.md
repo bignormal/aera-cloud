@@ -30,7 +30,7 @@ POST /api/v1/verification/challenges
 POST /api/v1/verification/challenges/verify
 ```
 
-Challenge creation requires `Idempotency-Key` and `X-AgentEra-Installation-ID` headers. The provider values in `.env.example` deliberately use the reserved `.invalid` domain, so local requests exercise failure handling without sending email or SMS. Verified deployments may explicitly enable `email`, `phone`, or both identity kinds. Phone delivery supports either the existing HTTPS gateway contract or direct Alibaba Cloud Dysmsapi; credentials are injected only through the deployment secret environment. An internal-beta deployment without CAPTCHA fails closed when a rate-limit decision requires CAPTCHA instead of bypassing the check.
+Challenge creation requires `Idempotency-Key` and `X-AgentEra-Installation-ID` headers. The provider values in `.env.example` deliberately use the reserved `.invalid` domain, so local requests exercise failure handling without sending email or SMS. Verified deployments may explicitly enable `email`, `phone`, or both identity kinds. Phone delivery supports either the existing HTTPS gateway contract or direct Alibaba Cloud Dysmsapi; credentials are injected only through the deployment secret environment. Registration and login share one atomic 60-second cooldown per normalized phone number, including across service instances and purpose changes. Aliyun failures retain only a validated provider code and masked request ID in structured logs; provider messages, credentials, phone numbers, and verification codes are discarded. An internal-beta deployment without CAPTCHA fails closed when a rate-limit decision requires CAPTCHA instead of bypassing the check.
 
 ## Internal Admin API
 

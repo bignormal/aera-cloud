@@ -56,6 +56,9 @@ func (h *handler) send(response http.ResponseWriter, request *http.Request) {
 	})
 	if err != nil {
 		status, code := sendErrorResponse(err)
+		if status == http.StatusTooManyRequests {
+			response.Header().Set("Retry-After", "60")
+		}
 		writeError(response, status, code)
 		return
 	}

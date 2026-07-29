@@ -68,8 +68,9 @@ func TestAliyunSMSSanitizesProviderFailures(t *testing.T) {
 	client := &recordingAliyunSMSClient{
 		response: &dysmsapi.SendSmsResponse{
 			Body: &dysmsapi.SendSmsResponseBody{
-				Code:    dara.String("isv.SMS_SIGNATURE_SCENE_ILLEGAL"),
-				Message: dara.String("provider-secret internal detail"),
+				Code:      dara.String("isv.SMS_SIGNATURE_SCENE_ILLEGAL"),
+				Message:   dara.String("provider-secret internal detail"),
+				RequestId: dara.String("A1B2C3D4-E5F6-G7H8-I9J0"),
 			},
 		},
 	}
@@ -92,12 +93,24 @@ func TestAliyunSMSSanitizesProviderFailures(t *testing.T) {
 	if err == nil {
 		t.Fatal("SendVerification() accepted a failed Aliyun response")
 	}
+	var failure verification.DeliveryFailure
+	if !errors.As(err, &failure) {
+		t.Fatalf("SendVerification() error does not retain safe provider metadata: %T", err)
+	}
+	metadata := failure.VerificationDeliveryFailure()
+	if metadata.Provider != "aliyun" ||
+		metadata.Code != "isv.SMS_SIGNATURE_SCENE_ILLEGAL" ||
+		metadata.RequestID != "A1B2C3...I9J0" ||
+		metadata.RateLimited {
+		t.Fatalf("safe provider metadata = %+v", metadata)
+	}
 	for _, secret := range []string{
 		"test-access-key-id",
 		"test-access-key-secret",
 		"provider-secret",
 		"654321",
 		"13800138000",
+		"A1B2C3D4-E5F6-G7H8-I9J0",
 	} {
 		if strings.Contains(err.Error(), secret) {
 			t.Fatalf("SendVerification() error contains sensitive value %q: %v", secret, err)
@@ -113,6 +126,44 @@ func TestAliyunSMSSanitizesProviderFailures(t *testing.T) {
 		verification.PurposeLogin,
 	); err == nil || strings.Contains(err.Error(), "test-access-key-secret") {
 		t.Fatalf("transport failure was not sanitized: %v", err)
+	}
+}
+
+func TestAliyunSMSMarksProviderFrequencyControlWithoutLeakingDetails(t *testing.T) {
+	client := &recordingAliyunSMSClient{
+		response: &dysmsapi.SendSmsResponse{
+			Body: &dysmsapi.SendSmsResponseBody{
+				Code:      dara.String("isv.BUSINESS_LIMIT_CONTROL"),
+				Message:   dara.String("provider frequency detail"),
+				RequestId: dara.String("01234567-89AB-CDEF-0123-456789ABCDEF"),
+			},
+		},
+	}
+	provider, err := NewAliyunSMS(AliyunSMSConfig{
+		AccessKeyID:     "test-access-key-id",
+		AccessKeySecret: "test-access-key-secret",
+		SignName:        "郑州雾棠",
+		TemplateCode:    "SMS_511000030",
+		Client:          client,
+	})
+	if err != nil {
+		t.Fatalf("NewAliyunSMS() error = %v", err)
+	}
+	err = provider.SendVerification(
+		context.Background(),
+		"+8613800138000",
+		"123456",
+		verification.PurposeLogin,
+	)
+	var failure verification.DeliveryFailure
+	if !errors.As(err, &failure) {
+		t.Fatalf("SendVerification() error = %v", err)
+	}
+	metadata := failure.VerificationDeliveryFailure()
+	if !metadata.RateLimited ||
+		metadata.Code != "isv.BUSINESS_LIMIT_CONTROL" ||
+		metadata.RequestID != "012345...CDEF" {
+		t.Fatalf("frequency metadata = %+v", metadata)
 	}
 }
 

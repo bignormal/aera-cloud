@@ -186,6 +186,29 @@ test("signs in with a phone verification code through the login-purpose receipt"
   });
 });
 
+test("shows the unified one-minute prompt when login SMS is cooling down", async () => {
+  vi.spyOn(window, "fetch").mockImplementation(async (input) => {
+    if (String(input) === "/api/v1/public/config") {
+      return jsonResponse(verifiedConfig);
+    }
+    if (String(input) === "/api/v1/verification/challenges") {
+      return jsonResponse({ error: "resend_too_soon" }, 429);
+    }
+    throw new Error(`unexpected request: ${String(input)}`);
+  });
+  renderLogin();
+
+  fireEvent.click(await screen.findByLabelText("验证码登录"));
+  fireEvent.change(screen.getByLabelText("中国大陆手机号"), {
+    target: { value: "+8613800138000" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "发送验证码" }));
+
+  expect(
+    await screen.findByText("请求过于频繁，请下一分钟后重试"),
+  ).toBeVisible();
+});
+
 test("shows a verification-code error without referring to the password", async () => {
   vi.spyOn(window, "fetch").mockImplementation(async (input) => {
     if (String(input) === "/api/v1/public/config") {

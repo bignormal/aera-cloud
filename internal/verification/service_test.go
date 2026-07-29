@@ -115,6 +115,66 @@ func TestServiceEnforcesResendDelayAcrossDifferentIdempotencyKeys(t *testing.T) 
 	}
 }
 
+func TestServiceEnforcesOnePhoneCooldownAcrossRegistrationAndLogin(t *testing.T) {
+	fixture := newServiceFixture(t)
+	registration := fixture.phoneSendRequest("phone-registration", PurposeRegistration)
+	if err := fixture.service.Send(context.Background(), registration); err != nil {
+		t.Fatalf("registration Send() error = %v", err)
+	}
+
+	login := fixture.phoneSendRequest("phone-login", PurposeLogin)
+	err := fixture.service.Send(context.Background(), login)
+	if !errors.Is(err, ErrResendTooSoon) {
+		t.Fatalf("cross-purpose Send() error = %v, want ErrResendTooSoon", err)
+	}
+	if len(fixture.sender.deliveries) != 1 {
+		t.Fatalf("deliveries during cooldown = %d, want 1", len(fixture.sender.deliveries))
+	}
+
+	fixture.now = fixture.now.Add(time.Minute)
+	if err := fixture.service.Send(context.Background(), login); err != nil {
+		t.Fatalf("Send() at the 60-second boundary = %v", err)
+	}
+	if len(fixture.sender.deliveries) != 2 {
+		t.Fatalf("deliveries after cooldown = %d, want 2", len(fixture.sender.deliveries))
+	}
+
+	var cooldownKeys []string
+	for index, policy := range fixture.limiter.policies {
+		if policy == unifiedPhoneCooldownPolicy {
+			cooldownKeys = append(cooldownKeys, fixture.limiter.calls[index])
+		}
+	}
+	if len(cooldownKeys) != 2 || cooldownKeys[0] != cooldownKeys[1] {
+		t.Fatalf("cross-purpose cooldown keys = %#v, want one stable phone key", cooldownKeys)
+	}
+}
+
+func TestServicePhoneCooldownRemainsAtomicBeforeChallengePersistence(t *testing.T) {
+	fixture := newServiceFixture(t)
+	fixture.limiter.enforceUnifiedCooldown = true
+	if err := fixture.service.Send(
+		context.Background(),
+		fixture.phoneSendRequest("phone-registration", PurposeRegistration),
+	); err != nil {
+		t.Fatalf("registration Send() error = %v", err)
+	}
+
+	// Model a second process that checked persistence before the first process
+	// committed its delivered challenge. Redis must still close this race.
+	fixture.repository.challenges = nil
+	err := fixture.service.Send(
+		context.Background(),
+		fixture.phoneSendRequest("phone-login", PurposeLogin),
+	)
+	if !errors.Is(err, ErrResendTooSoon) {
+		t.Fatalf("racing login Send() error = %v, want ErrResendTooSoon", err)
+	}
+	if len(fixture.sender.deliveries) != 1 {
+		t.Fatalf("racing deliveries = %d, want 1", len(fixture.sender.deliveries))
+	}
+}
+
 func TestServiceFailsClosedOnLimiterFailureOrDenial(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -233,7 +293,14 @@ func TestServiceVerifiesChallengeAcrossCodeKeyRotation(t *testing.T) {
 func TestLogsNeverContainSecrets(t *testing.T) {
 	fixture := newServiceFixture(t)
 	var logs bytes.Buffer
-	fixture.sender.err = errors.New("provider secret=provider-password destination=alice@example.com code=123456")
+	fixture.sender.err = &fakeProviderFailure{
+		raw: "provider secret=provider-password destination=alice@example.com code=123456 request=ABCDEF0123456789",
+		metadata: DeliveryFailureMetadata{
+			Provider:  "aliyun",
+			Code:      "isv.SMS_SIGNATURE_SCENE_ILLEGAL",
+			RequestID: "ABCDEF...6789",
+		},
+	}
 	fixture.logger = slog.New(slog.NewJSONHandler(&logs, nil))
 	service, err := NewService(fixture.config("code-v1"))
 	if err != nil {
@@ -242,10 +309,33 @@ func TestLogsNeverContainSecrets(t *testing.T) {
 
 	_ = service.Send(context.Background(), fixture.sendRequest("request-1"))
 	output := logs.String()
-	for _, secret := range []string{"provider-password", "alice@example.com", "123456", "request-1"} {
+	for _, expected := range []string{"isv.SMS_SIGNATURE_SCENE_ILLEGAL", "ABCDEF...6789"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("logs omitted safe provider metadata %q: %s", expected, output)
+		}
+	}
+	for _, secret := range []string{"provider-password", "alice@example.com", "123456", "request-1", "ABCDEF0123456789"} {
 		if strings.Contains(output, secret) {
 			t.Fatalf("logs contain secret %q: %s", secret, output)
 		}
+	}
+}
+
+func TestServiceMapsAliyunFrequencyControlToRateLimit(t *testing.T) {
+	fixture := newServiceFixture(t)
+	fixture.sender.err = &fakeProviderFailure{
+		raw: "provider detail must not escape",
+		metadata: DeliveryFailureMetadata{
+			Provider:    "aliyun",
+			Code:        "isv.BUSINESS_LIMIT_CONTROL",
+			RequestID:   "012345...CDEF",
+			RateLimited: true,
+		},
+	}
+
+	err := fixture.service.Send(context.Background(), fixture.sendRequest("request-1"))
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("Send() error = %v, want ErrRateLimited", err)
 	}
 }
 
@@ -333,6 +423,17 @@ func (f *serviceFixture) sendRequest(idempotencyKey string) SendRequest {
 	}
 }
 
+func (f *serviceFixture) phoneSendRequest(idempotencyKey string, purpose Purpose) SendRequest {
+	return SendRequest{
+		Kind:           secure.IdentityPhone,
+		Destination:    "+8613800138000",
+		Purpose:        purpose,
+		IdempotencyKey: idempotencyKey,
+		IPAddress:      "203.0.113.10",
+		DeviceID:       "device-1",
+	}
+}
+
 type delivery struct {
 	destination string
 	code        string
@@ -343,6 +444,19 @@ type fakeSender struct {
 	deliveries []delivery
 	err        error
 	events     *[]string
+}
+
+type fakeProviderFailure struct {
+	raw      string
+	metadata DeliveryFailureMetadata
+}
+
+func (f *fakeProviderFailure) Error() string {
+	return f.raw
+}
+
+func (f *fakeProviderFailure) VerificationDeliveryFailure() DeliveryFailureMetadata {
+	return f.metadata
 }
 
 func (f *fakeSender) SendVerification(_ context.Context, destination, code string, purpose Purpose) error {
@@ -428,13 +542,24 @@ func (f *fakeRepository) Consume(_ context.Context, targetHMAC []byte, purpose P
 }
 
 type fakeLimiter struct {
-	decision Decision
-	err      error
-	calls    []string
+	decision               Decision
+	err                    error
+	calls                  []string
+	policies               []Policy
+	enforceUnifiedCooldown bool
+	cooldownCounts         map[string]int
 }
 
-func (f *fakeLimiter) Allow(_ context.Context, key string, _ Policy) (Decision, error) {
+func (f *fakeLimiter) Allow(_ context.Context, key string, policy Policy) (Decision, error) {
 	f.calls = append(f.calls, key)
+	f.policies = append(f.policies, policy)
+	if f.enforceUnifiedCooldown && policy == unifiedPhoneCooldownPolicy {
+		if f.cooldownCounts == nil {
+			f.cooldownCounts = map[string]int{}
+		}
+		f.cooldownCounts[key]++
+		return Decision{Allowed: f.cooldownCounts[key] <= 1}, f.err
+	}
 	return f.decision, f.err
 }
 

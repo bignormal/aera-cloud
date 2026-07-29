@@ -83,6 +83,11 @@ require_text "$caddy_file" 'X-Frame-Options "DENY"'
 require_text "$caddy_file" "Content-Security-Policy \"frame-ancestors 'none'\""
 require_text "$caddy_file" '@private_admin path /admin /admin/\*'
 require_text "$caddy_file" 'respond @private_admin 404'
+require_text "$caddy_file" '@desktop_update_metadata path /desktop-updates/internal-beta/manifest\.json /desktop-updates/internal-beta/manifest\.sig'
+require_text "$caddy_file" 'Cache-Control "no-store"'
+require_text "$caddy_file" 'root \* /var/lib/aera/desktop-updates/internal-beta/current'
+require_text "$caddy_file" '@desktop_update_release path /desktop-updates/internal-beta/releases/\*'
+require_text "$caddy_file" 'Cache-Control "public, max-age=31536000, immutable"'
 require_text "$caddy_file" 'reverse_proxy 127\.0\.0\.1:18086'
 forbid_text "$caddy_file" '^[[:space:]]*log[[:space:]]*\{'
 

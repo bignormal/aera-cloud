@@ -19,8 +19,12 @@ const (
 )
 
 var (
-	aliyunSMSRegionPattern   = regexp.MustCompile(`^[a-z0-9-]{3,64}$`)
-	aliyunSMSTemplatePattern = regexp.MustCompile(`^SMS_[0-9]{6,32}$`)
+	aliyunSMSRegionPattern    = regexp.MustCompile(`^[a-z0-9-]{3,64}$`)
+	aliyunSMSTemplatePattern  = regexp.MustCompile(`^SMS_[0-9]{6,32}$`)
+	aliyunSMSCodePattern      = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+	aliyunSMSRequestIDPattern = regexp.MustCompile(
+		`^[A-Za-z0-9._-]{8,128}$`,
+	)
 )
 
 type AliyunSMSConfig struct {
@@ -44,6 +48,25 @@ type AliyunSMS struct {
 	client       aliyunSMSClient
 	signName     string
 	templateCode string
+}
+
+type aliyunSMSDeliveryFailure struct {
+	code        string
+	requestID   string
+	rateLimited bool
+}
+
+func (e *aliyunSMSDeliveryFailure) Error() string {
+	return "Aliyun SMS provider is unavailable"
+}
+
+func (e *aliyunSMSDeliveryFailure) VerificationDeliveryFailure() verification.DeliveryFailureMetadata {
+	return verification.DeliveryFailureMetadata{
+		Provider:    "aliyun",
+		Code:        e.code,
+		RequestID:   e.requestID,
+		RateLimited: e.rateLimited,
+	}
 }
 
 func NewAliyunSMS(config AliyunSMSConfig) (*AliyunSMS, error) {
@@ -116,9 +139,45 @@ func (s *AliyunSMS) SendVerification(
 		ReadTimeout:    dara.Int(5000),
 		Autoretry:      dara.Bool(false),
 	})
-	if err != nil || response == nil || response.Body == nil ||
-		dara.StringValue(response.Body.Code) != "OK" {
-		return errors.New("Aliyun SMS provider is unavailable")
+	if err != nil {
+		return &aliyunSMSDeliveryFailure{code: "transport_error"}
+	}
+	if response == nil || response.Body == nil {
+		return &aliyunSMSDeliveryFailure{code: "invalid_response"}
+	}
+	if providerCode := dara.StringValue(response.Body.Code); providerCode != "OK" {
+		code := sanitizeAliyunSMSCode(providerCode)
+		return &aliyunSMSDeliveryFailure{
+			code:        code,
+			requestID:   maskAliyunSMSRequestID(dara.StringValue(response.Body.RequestId)),
+			rateLimited: isAliyunSMSRateLimitCode(code),
+		}
 	}
 	return nil
+}
+
+func sanitizeAliyunSMSCode(value string) string {
+	if !aliyunSMSCodePattern.MatchString(value) {
+		return "unknown_provider_error"
+	}
+	return value
+}
+
+func maskAliyunSMSRequestID(value string) string {
+	if !aliyunSMSRequestIDPattern.MatchString(value) {
+		return ""
+	}
+	if len(value) <= 12 {
+		return value[:2] + "..." + value[len(value)-2:]
+	}
+	return value[:6] + "..." + value[len(value)-4:]
+}
+
+func isAliyunSMSRateLimitCode(value string) bool {
+	switch value {
+	case "isv.BUSINESS_LIMIT_CONTROL", "isv.DAY_LIMIT_CONTROL", "isv.SMS_LIMIT_CONTROL":
+		return true
+	default:
+		return false
+	}
 }

@@ -19,6 +19,7 @@ export const zhCN = {
   loginError: "登录失败，请检查账户和密码。",
   codeLoginError: "验证码无效或已过期，请重新获取。",
   serviceError: "服务暂时不可用，请稍后重试。",
+  verificationRateLimit: "请求过于频繁，请下一分钟后重试",
   networkError: "无法连接服务，请检查网络后重试。",
   registerTitle: "创建 AgentEra 账户",
   internalBetaLoginEmail: "内测登录邮箱（未验证）",
