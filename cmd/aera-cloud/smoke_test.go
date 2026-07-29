@@ -102,12 +102,14 @@ func runSmokeAuthLifecycle(t *testing.T) {
 		t.Fatalf("build identity codecs: %v", err)
 	}
 	sender := &smokeVerificationSender{}
+	smokeNow := time.Now().UTC()
 	verificationService, err := verification.NewService(verification.ServiceConfig{
 		Sender: sender, Repository: verification.NewPostgresRepository(postgres),
 		Limiter: verification.NewRedisLimiter(redisStore.Client()), Captcha: smokeCaptchaVerifier{},
 		DeliveryGuard: verification.NewRedisDeliveryGuard(redisStore.Client()), TargetIndexer: identityCodec,
 		Receipts: receiptCodec, ActiveCodeKeyID: cfg.VerificationCodeKeyRing.ActiveKeyID,
 		CodeKeys: cfg.VerificationCodeKeyRing.Keys, RequestHMACKey: cfg.VerificationRequestHMACKey,
+		Clock: func() time.Time { return smokeNow },
 	})
 	if err != nil {
 		t.Fatalf("build smoke verification service: %v", err)
@@ -196,6 +198,26 @@ func runSmokeAuthLifecycle(t *testing.T) {
 	var browserLogin struct {
 		CSRFToken string `json:"csrf_token"`
 	}
+	cooldownHeaders := smokeRequest(
+		t,
+		client,
+		http.MethodPost,
+		server.URL+"/api/v1/verification/challenges",
+		map[string]any{
+			"kind": "phone", "destination": destination, "purpose": "login", "captcha_token": "",
+		},
+		map[string]string{
+			"Idempotency-Key": uuid.NewString(), "X-AgentEra-Installation-ID": uuid.NewString(),
+		},
+		http.StatusTooManyRequests,
+		nil,
+	)
+	if cooldownHeaders.Get("Retry-After") != "60" {
+		t.Fatalf("cross-purpose cooldown Retry-After = %q, want 60", cooldownHeaders.Get("Retry-After"))
+	}
+	smokeNow = smokeNow.Add(time.Minute)
+	clearSmokeRedis(t, ctx, redisStore)
+
 	smokeRequest(t, client, http.MethodPost, server.URL+"/api/v1/verification/challenges", map[string]any{
 		"kind": "phone", "destination": destination, "purpose": "login", "captcha_token": "",
 	}, map[string]string{
@@ -360,7 +382,7 @@ func smokeRequest(
 	headers map[string]string,
 	wantStatus int,
 	result any,
-) {
+) http.Header {
 	t.Helper()
 	var body io.Reader
 	if payload != nil {
@@ -395,4 +417,5 @@ func smokeRequest(
 	if result != nil && (len(responseBody) == 0 || json.Unmarshal(responseBody, result) != nil) {
 		t.Fatalf("smoke response %s %s did not match its JSON contract", method, request.URL.Path)
 	}
+	return response.Header.Clone()
 }
