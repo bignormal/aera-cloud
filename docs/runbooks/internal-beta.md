@@ -84,6 +84,12 @@ Install the reviewed Caddy configuration at `/etc/caddy/Caddyfile`. Supply
 `AERA_INTERNAL_BETA_IP` and `AERA_INTERNAL_BETA_CERTIFICATE_NAME` through the
 Caddy service environment.
 
+The configuration intentionally sets `admin off`, so Caddy's Admin-API-based
+`reload` command cannot apply a changed file. Keep a recoverable copy, validate
+the new configuration with the service environment loaded, then use a
+controlled `systemctl restart caddy` and immediately probe public HTTPS health.
+Restore the previous file and restart if either step fails.
+
 Port 80 serves only `/.well-known/acme-challenge/` from
 `/var/lib/aera-certbot`; all other requests redirect to HTTPS. Port 443 uses
 the Certbot-managed IP certificate, rejects `/admin` and every `/admin/*`
