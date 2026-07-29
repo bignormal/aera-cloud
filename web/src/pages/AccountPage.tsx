@@ -60,7 +60,7 @@ export function AccountPage() {
     void load();
   }, []);
 
-  const missingKind: IdentityKind | null =
+  const unboundKind: IdentityKind | null =
     !verificationAvailable || !profile
       ? null
       : profile.identity_kinds.includes("email")
@@ -68,6 +68,10 @@ export function AccountPage() {
           ? null
           : "phone"
         : "email";
+  const missingKind =
+    unboundKind && config?.registration_identity_kinds.includes(unboundKind)
+      ? unboundKind
+      : null;
 
   const requireFreshLogin = (): boolean => {
     if (getCSRFToken()) return true;

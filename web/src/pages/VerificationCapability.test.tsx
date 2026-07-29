@@ -13,6 +13,14 @@ const directConfig = {
   identity_verification_available: false,
 };
 
+const phoneOnlyVerifiedConfig = {
+  environment: "internal_beta",
+  public_registration_enabled: true,
+  registration_mode: "verified",
+  registration_identity_kinds: ["phone"],
+  identity_verification_available: true,
+};
+
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -76,4 +84,30 @@ test("direct internal beta labels the login identifier unverified and hides iden
   expect(
     screen.getByText(/暂不支持找回密码、身份绑定或注销恢复/),
   ).toBeVisible();
+});
+
+test("phone-only verified deployment does not offer an unavailable email identity", async () => {
+  vi.spyOn(window, "fetch").mockImplementation(async (input) => {
+    if (String(input) === "/api/v1/public/config") {
+      return jsonResponse(phoneOnlyVerifiedConfig);
+    }
+    if (String(input) === "/api/v1/accounts/me") {
+      return jsonResponse({
+        user_id: "10000000-0000-4000-8000-000000000001",
+        personal_space_id: "20000000-0000-4000-8000-000000000002",
+        nickname: "Alice",
+        status: "active",
+        identity_kinds: ["phone"],
+        owned_workspace_count: 0,
+      });
+    }
+    throw new Error(`unexpected request: ${String(input)}`);
+  });
+
+  renderPage(<AccountPage />);
+
+  expect(await screen.findByText("手机号")).toBeVisible();
+  expect(
+    screen.queryByRole("heading", { name: "绑定另一登录方式" }),
+  ).not.toBeInTheDocument();
 });

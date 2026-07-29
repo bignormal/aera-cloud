@@ -30,7 +30,7 @@ POST /api/v1/verification/challenges
 POST /api/v1/verification/challenges/verify
 ```
 
-Challenge creation requires `Idempotency-Key` and `X-AgentEra-Installation-ID` headers. The provider values in `.env.example` deliberately use the reserved `.invalid` domain, so local requests exercise failure handling without sending email or SMS. Configure real SMTP, SMS, and CAPTCHA providers through the deployment environment before delivery testing.
+Challenge creation requires `Idempotency-Key` and `X-AgentEra-Installation-ID` headers. The provider values in `.env.example` deliberately use the reserved `.invalid` domain, so local requests exercise failure handling without sending email or SMS. Verified deployments may explicitly enable `email`, `phone`, or both identity kinds. Phone delivery supports either the existing HTTPS gateway contract or direct Alibaba Cloud Dysmsapi; credentials are injected only through the deployment secret environment. An internal-beta deployment without CAPTCHA fails closed when a rate-limit decision requires CAPTCHA instead of bypassing the check.
 
 ## Internal Admin API
 
@@ -79,7 +79,7 @@ Run the destructive auth smoke flow only against its automatically created, isol
 ./scripts/smoke-auth.sh
 ```
 
-The script proves health, test-provider registration, browser login, desktop PKCE exchange, refresh rotation, revoke, post-revoke rejection, and recovery-key identity decryption, then destroys the isolated database and Redis volumes.
+The script proves health, verified phone registration with PostgreSQL account rows, one-time SMS-code browser login, password login, desktop PKCE exchange, refresh rotation, revoke, post-revoke rejection, and recovery-key identity decryption, then destroys the isolated database and Redis volumes.
 
 The browser account center lives in `web/`. Its production build is embedded into the Go binary by `Dockerfile`; credentials and verification codes never enter the desktop renderer.
 
@@ -94,4 +94,4 @@ Before any public launch, follow:
 - [key rotation](docs/runbooks/key-rotation.md)
 - [account and disaster recovery](docs/runbooks/account-recovery.md)
 
-Production remains gated on a filed domain, trusted HTTPS, real email/SMS/CAPTCHA providers, published legal documents, independent secrets, encrypted backup, and a verified disposable restore. The existence of deployment files does not authorize a push, deployment, DNS change, or public registration.
+Production remains gated on a filed domain, trusted HTTPS, a real provider for every enabled identity kind, real CAPTCHA, published legal documents, independent secrets, encrypted backup, and a verified disposable restore. The existence of deployment files does not authorize a push, deployment, DNS change, or public registration.

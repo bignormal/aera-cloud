@@ -18,8 +18,8 @@ type Router struct {
 }
 
 func NewRouter(email, sms Provider) (*Router, error) {
-	if email == nil || sms == nil {
-		return nil, errors.New("notification providers are incomplete")
+	if email == nil && sms == nil {
+		return nil, errors.New("notification providers are unavailable")
 	}
 	return &Router{email: email, sms: sms}, nil
 }
@@ -27,8 +27,14 @@ func NewRouter(email, sms Provider) (*Router, error) {
 func (r *Router) SendVerification(ctx context.Context, destination, code string, purpose verification.Purpose) error {
 	switch {
 	case strings.Contains(destination, "@"):
+		if r == nil || r.email == nil {
+			return errors.New("email verification delivery is unavailable")
+		}
 		return r.email.SendVerification(ctx, destination, code, purpose)
 	case strings.HasPrefix(destination, "+86"):
+		if r == nil || r.sms == nil {
+			return errors.New("SMS verification delivery is unavailable")
+		}
 		return r.sms.SendVerification(ctx, destination, code, purpose)
 	default:
 		return errors.New("notification destination is unsupported")

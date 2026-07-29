@@ -6,7 +6,7 @@ Do not enable public registration until every item is true:
 
 - the final domain has completed the required filing and resolves to the server;
 - Caddy or an equivalent reverse proxy serves a trusted HTTPS certificate;
-- real SMTP, SMS, and CAPTCHA providers are configured and delivery is tested;
+- a real provider for every enabled identity kind and real CAPTCHA are configured and delivery is tested;
 - the published Privacy Policy and Terms of Service versions match the configured versions;
 - PostgreSQL backups are encrypted to an offline `age` recipient;
 - a disposable restore has passed integrity and identity-decryption verification;

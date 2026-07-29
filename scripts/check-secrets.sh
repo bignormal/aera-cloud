@@ -83,7 +83,7 @@ while IFS= read -r -d '' relative; do
   fi
 
   if ! is_test_fixture "$relative"; then
-    if grep -Eq -- '(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16,})' "$absolute"; then
+    if grep -Eq -- '(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|LTAI[A-Za-z0-9]{12,}|eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16,})' "$absolute"; then
       report "$relative" "token-shaped value"
     fi
     if [[ $relative != go.sum && $relative != */package-lock.json && $relative != internal/webui/static/* ]] &&

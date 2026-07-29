@@ -182,6 +182,38 @@ func TestBuildVerificationHandlerIsUnavailableInDirectRegistrationMode(t *testin
 	}
 }
 
+func TestBuildVerificationHandlerWiresPhoneOnlyAliyunMode(t *testing.T) {
+	cfg, err := config.Load(phoneVerifiedInternalBetaLookup(testkit.Services{
+		DatabaseURL:   "postgres://aera_cloud:secret@127.0.0.1:55434/aera_cloud?sslmode=disable",
+		RedisAddr:     "127.0.0.1:56381",
+		RedisUsername: "aera_cloud",
+		RedisPassword: "secret",
+		RedisDB:       9,
+	}))
+	if err != nil {
+		t.Fatalf("config.Load() error = %v", err)
+	}
+	handler, err := buildVerificationHandler(cfg, nil, nil)
+	if err != nil {
+		t.Fatalf("buildVerificationHandler() error = %v", err)
+	}
+	request := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodPost,
+		"/api/v1/verification/challenges",
+		strings.NewReader(`{"kind":"phone","destination":"invalid","purpose":"login"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "request-123")
+	request.Header.Set("X-AgentEra-Installation-ID", "device-123")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest ||
+		strings.TrimSpace(response.Body.String()) != `{"error":"invalid_request"}` {
+		t.Fatalf("response = %d %q", response.Code, response.Body.String())
+	}
+}
+
 func TestBuildAccountHandlerEnablesDirectRegistrationMode(t *testing.T) {
 	cfg, err := config.Load(directInternalBetaLookup(testkit.Services{
 		DatabaseURL:   "postgres://aera_cloud:secret@127.0.0.1:55434/aera_cloud?sslmode=disable",
@@ -244,6 +276,23 @@ func TestBuildPublicConfigReportsDirectRegistrationWithoutVerification(t *testin
 		document.IdentityVerificationAvailable ||
 		len(document.RegistrationIdentityKinds) != 1 ||
 		document.RegistrationIdentityKinds[0] != "email" {
+		t.Fatalf("public config = %+v", document)
+	}
+}
+
+func TestBuildPublicConfigReportsPhoneOnlyVerification(t *testing.T) {
+	document := buildPublicConfig(config.Config{
+		Environment:               "internal_beta",
+		PublicRegistrationEnabled: true,
+		RegistrationMode:          config.RegistrationModeVerified,
+		RegistrationIdentityKinds: []string{"phone"},
+	})
+	if document.Environment != "internal_beta" ||
+		!document.PublicRegistrationEnabled ||
+		document.RegistrationMode != "verified" ||
+		!document.IdentityVerificationAvailable ||
+		len(document.RegistrationIdentityKinds) != 1 ||
+		document.RegistrationIdentityKinds[0] != "phone" {
 		t.Fatalf("public config = %+v", document)
 	}
 }
@@ -651,6 +700,45 @@ func directInternalBetaLookup(services testkit.Services) config.LookupEnv {
 		"AGENTERA_CLOUD_REGISTRATION_MODE":            "direct",
 		"AGENTERA_CLOUD_DIRECT_REGISTRATION_IP_LIMIT": "30",
 		"AGENTERA_CLOUD_DIRECT_REGISTRATION_WINDOW":   "1h",
+	}
+	disabledProviders := map[string]struct{}{
+		"AGENTERA_CLOUD_SMTP_HOST":         {},
+		"AGENTERA_CLOUD_SMTP_PORT":         {},
+		"AGENTERA_CLOUD_SMTP_USERNAME":     {},
+		"AGENTERA_CLOUD_SMTP_PASSWORD":     {},
+		"AGENTERA_CLOUD_SMTP_FROM_ADDRESS": {},
+		"AGENTERA_CLOUD_SMTP_FROM_NAME":    {},
+		"AGENTERA_CLOUD_SMS_ENDPOINT":      {},
+		"AGENTERA_CLOUD_SMS_API_KEY":       {},
+		"AGENTERA_CLOUD_SMS_SENDER_ID":     {},
+		"AGENTERA_CLOUD_CAPTCHA_ENDPOINT":  {},
+		"AGENTERA_CLOUD_CAPTCHA_SECRET":    {},
+	}
+	return func(key string) (string, bool) {
+		if value, ok := overrides[key]; ok {
+			return value, true
+		}
+		if _, disabled := disabledProviders[key]; disabled {
+			return "", false
+		}
+		return base(key)
+	}
+}
+
+func phoneVerifiedInternalBetaLookup(services testkit.Services) config.LookupEnv {
+	base := integrationLookup(services)
+	overrides := map[string]string{
+		"AGENTERA_CLOUD_ENVIRONMENT":                  "internal_beta",
+		"AGENTERA_CLOUD_PUBLIC_URL":                   "https://192.0.2.10",
+		"AGENTERA_CLOUD_PUBLIC_REGISTRATION_ENABLED":  "true",
+		"AGENTERA_CLOUD_REGISTRATION_MODE":            "verified",
+		"AGENTERA_CLOUD_REGISTRATION_IDENTITY_KINDS":  "phone",
+		"AGENTERA_CLOUD_SMS_PROVIDER":                 "aliyun",
+		"AGENTERA_CLOUD_ALIYUN_SMS_ACCESS_KEY_ID":     "test-access-key-id",
+		"AGENTERA_CLOUD_ALIYUN_SMS_ACCESS_KEY_SECRET": "test-access-key-secret",
+		"AGENTERA_CLOUD_ALIYUN_SMS_REGION_ID":         "cn-hangzhou",
+		"AGENTERA_CLOUD_ALIYUN_SMS_SIGN_NAME":         "郑州雾棠",
+		"AGENTERA_CLOUD_ALIYUN_SMS_TEMPLATE_CODE":     "SMS_511000030",
 	}
 	disabledProviders := map[string]struct{}{
 		"AGENTERA_CLOUD_SMTP_HOST":         {},
