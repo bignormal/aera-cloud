@@ -102,7 +102,11 @@ func runSmokeAuthLifecycle(t *testing.T) {
 		t.Fatalf("build identity codecs: %v", err)
 	}
 	sender := &smokeVerificationSender{}
-	smokeNow := time.Now().UTC()
+	// Start one cooldown window behind wall time so the test can advance the
+	// verification clock to the exact boundary without creating future-dated
+	// receipts that the account service would correctly refuse to consume.
+	wallNow := time.Now().UTC()
+	smokeNow := wallNow.Add(-time.Minute)
 	verificationService, err := verification.NewService(verification.ServiceConfig{
 		Sender: sender, Repository: verification.NewPostgresRepository(postgres),
 		Limiter: verification.NewRedisLimiter(redisStore.Client()), Captcha: smokeCaptchaVerifier{},
@@ -215,8 +219,8 @@ func runSmokeAuthLifecycle(t *testing.T) {
 	if cooldownHeaders.Get("Retry-After") != "60" {
 		t.Fatalf("cross-purpose cooldown Retry-After = %q, want 60", cooldownHeaders.Get("Retry-After"))
 	}
-	smokeNow = smokeNow.Add(time.Minute)
-	clearSmokeRedis(t, ctx, redisStore)
+	smokeNow = wallNow
+	clearSmokeRedisPattern(t, ctx, redisStore, "aera-cloud:verification:limit:*")
 
 	smokeRequest(t, client, http.MethodPost, server.URL+"/api/v1/verification/challenges", map[string]any{
 		"kind": "phone", "destination": destination, "purpose": "login", "captcha_token": "",
@@ -362,7 +366,17 @@ func configForSmoke(services testkit.Services) (config.Config, error) {
 
 func clearSmokeRedis(t *testing.T, ctx context.Context, redisStore *store.RedisStore) {
 	t.Helper()
-	iterator := redisStore.Client().Scan(ctx, 0, "aera-cloud:*", 100).Iterator()
+	clearSmokeRedisPattern(t, ctx, redisStore, "aera-cloud:*")
+}
+
+func clearSmokeRedisPattern(
+	t *testing.T,
+	ctx context.Context,
+	redisStore *store.RedisStore,
+	pattern string,
+) {
+	t.Helper()
+	iterator := redisStore.Client().Scan(ctx, 0, pattern, 100).Iterator()
 	for iterator.Next(ctx) {
 		if err := redisStore.Client().Del(ctx, iterator.Val()).Err(); err != nil {
 			t.Fatalf("clear isolated Redis key: %v", err)
