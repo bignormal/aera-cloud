@@ -139,6 +139,7 @@ type InitialPublicationCommand struct {
 type NextPublicationCommand struct {
 	DefinitionID  uuid.UUID
 	BaseVersionID uuid.UUID
+	DisplayName   *string
 	BuildVersion  func(versionNumber int64) (VersionMaterial, error)
 	Idempotency   IdempotencyEvidence
 	Audit         AuditEvidence
@@ -470,9 +471,10 @@ func (r *PostgresRepository) PublishNext(
 		return Publication{}, err
 	}
 	result, err := tx.Exec(ctx, `
-		UPDATE agent_definitions SET latest_version_id = $4, updated_at = $5
+		UPDATE agent_definitions
+		SET display_name = COALESCE($4::text, display_name), latest_version_id = $5, updated_at = $6
 		WHERE id = $3 AND tenant_id = $1 AND owner_scope = 'USER' AND owner_id = $2
-	`, owner.TenantID, owner.OwnerID, command.DefinitionID, material.ID, command.PublishedAt.UTC())
+	`, owner.TenantID, owner.OwnerID, command.DefinitionID, command.DisplayName, material.ID, command.PublishedAt.UTC())
 	if err != nil || result.RowsAffected() != 1 {
 		return Publication{}, ErrServiceUnavailable
 	}
@@ -658,9 +660,10 @@ func (r *PostgresRepository) PublishWorkspaceNext(
 		return Publication{}, err
 	}
 	result, err := tx.Exec(ctx, `
-		UPDATE agent_definitions SET latest_version_id = $3, updated_at = $4
+		UPDATE agent_definitions
+		SET display_name = COALESCE($3::text, display_name), latest_version_id = $4, updated_at = $5
 		WHERE id = $2 AND owner_scope = 'WORKSPACE' AND workspace_id = $1
-	`, workspaceID, command.DefinitionID, material.ID, command.PublishedAt.UTC())
+	`, workspaceID, command.DefinitionID, command.DisplayName, material.ID, command.PublishedAt.UTC())
 	if err != nil || result.RowsAffected() != 1 {
 		return Publication{}, ErrServiceUnavailable
 	}
@@ -2753,7 +2756,8 @@ func validInitialPublication(command InitialPublicationCommand) bool {
 }
 
 func validNextPublication(command NextPublicationCommand) bool {
-	return command.DefinitionID != uuid.Nil && command.BaseVersionID != uuid.Nil && command.BuildVersion != nil &&
+	return command.DefinitionID != uuid.Nil && command.BaseVersionID != uuid.Nil &&
+		validOptionalAgentDisplayName(command.DisplayName) && command.BuildVersion != nil &&
 		validIdempotency(command.Idempotency, command.PublishedAt) && validAuditEvidence(command.Audit) &&
 		!command.PublishedAt.IsZero()
 }

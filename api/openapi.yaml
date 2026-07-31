@@ -4999,11 +4999,18 @@ components:
     PublishNextAgentVersionRequest:
       type: object
       additionalProperties: false
-      required: [base_version_id, manifest, bundle]
+      required: [base_version_id, display_name, manifest, bundle]
       properties:
         base_version_id:
           type: string
           format: uuid
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: >-
+            Current mutable display metadata for the stable Agent definition;
+            publishing a new immutable version updates this name atomically.
         manifest:
           $ref: '#/components/schemas/AgentManifestV1'
         bundle:

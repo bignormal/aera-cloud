@@ -234,6 +234,7 @@ func (h *httpHandler) publishNext(response http.ResponseWriter, request *http.Re
 	}
 	var payload struct {
 		BaseVersionID uuid.UUID       `json:"base_version_id"`
+		DisplayName   *string         `json:"display_name"`
 		Manifest      AgentManifestV1 `json:"manifest"`
 		Bundle        VersionBundleV1 `json:"bundle"`
 	}
@@ -242,7 +243,8 @@ func (h *httpHandler) publishNext(response http.ResponseWriter, request *http.Re
 	}
 	publication, err := h.service.PublishNext(request.Context(), principal, PublishNextRequest{
 		DefinitionID: definitionID, BaseVersionID: payload.BaseVersionID,
-		Manifest: payload.Manifest, Bundle: payload.Bundle, IdempotencyKey: idempotencyKey,
+		DisplayName: payload.DisplayName,
+		Manifest:    payload.Manifest, Bundle: payload.Bundle, IdempotencyKey: idempotencyKey,
 		RequestID: newAgentRequestID(),
 	})
 	if err != nil {
@@ -388,6 +390,7 @@ func (h *httpHandler) publishWorkspaceNext(response http.ResponseWriter, request
 	}
 	var payload struct {
 		BaseVersionID uuid.UUID       `json:"base_version_id"`
+		DisplayName   *string         `json:"display_name"`
 		Manifest      AgentManifestV1 `json:"manifest"`
 		Bundle        VersionBundleV1 `json:"bundle"`
 	}
@@ -397,7 +400,8 @@ func (h *httpHandler) publishWorkspaceNext(response http.ResponseWriter, request
 	publication, err := h.service.PublishWorkspaceNext(
 		request.Context(), principal, workspaceID, PublishNextRequest{
 			DefinitionID: definitionID, BaseVersionID: payload.BaseVersionID,
-			Manifest: payload.Manifest, Bundle: payload.Bundle, IdempotencyKey: idempotencyKey,
+			DisplayName: payload.DisplayName,
+			Manifest:    payload.Manifest, Bundle: payload.Bundle, IdempotencyKey: idempotencyKey,
 			RequestID: newAgentRequestID(),
 		},
 	)

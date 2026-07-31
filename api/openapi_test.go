@@ -223,6 +223,24 @@ func TestOpenAPIContainsStrictUserAgentControlPlaneContract(t *testing.T) {
 	}
 }
 
+func TestOpenAPINextAgentVersionRequiresMutableDisplayName(t *testing.T) {
+	contents, err := os.ReadFile("openapi.yaml")
+	if err != nil {
+		t.Fatalf("read openapi.yaml: %v", err)
+	}
+	document := string(contents)
+	start := strings.Index(document, "    PublishNextAgentVersionRequest:\n")
+	end := strings.Index(document, "    AgentPublication:\n")
+	if start < 0 || end <= start {
+		t.Fatal("OpenAPI is missing the bounded next Agent version schema")
+	}
+	schema := document[start:end]
+	if !strings.Contains(schema, "required: [base_version_id, display_name, manifest, bundle]") ||
+		!strings.Contains(schema, "        display_name:\n") {
+		t.Fatalf("next Agent version schema does not carry mutable display_name:\n%s", schema)
+	}
+}
+
 func TestOpenAPIContainsOrganizationAgentApprovalContract(t *testing.T) {
 	contents, err := os.ReadFile("openapi.yaml")
 	if err != nil {
