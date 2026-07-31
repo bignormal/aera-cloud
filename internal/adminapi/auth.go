@@ -175,6 +175,10 @@ func (a *Authenticator) require(next http.Handler, scope string, requirement Off
 			writeAuthenticationError(response, request, http.StatusUnauthorized, "AUTHENTICATION_REQUIRED")
 			return
 		}
+		if requirement != 0 && !officialActorHasDuty(actor.Role, scope, requirement) {
+			writeAuthenticationError(response, request, http.StatusForbidden, "PERMISSION_DENIED")
+			return
+		}
 		ctx := admin.WithServiceSubject(request.Context(), claims.Subject)
 		if hasActor {
 			ctx = contextWithOfficialActor(ctx, actor)
@@ -319,6 +323,30 @@ func actorSatisfies(actor VerifiedOfficialActor, requirement OfficialActorRequir
 			actor.AdminID != actor.RequesterAdminID
 	default:
 		return false
+	}
+}
+
+func officialActorHasDuty(role, scope string, requirement OfficialActorRequirement) bool {
+	switch scope {
+	case ScopeOfficialAgentsRead:
+		return requirement == OfficialActorRead &&
+			(role == "developer" || role == "operator" || role == "super_admin" || role == "auditor")
+	case ScopeOfficialDraftsWrite:
+		return role == "developer" &&
+			(requirement == OfficialActorRead || requirement == OfficialActorMutation)
+	case ScopeOfficialReviewsWrite:
+		return requirement == OfficialActorMutation && role == "super_admin"
+	case ScopeOfficialReleaseWrite:
+		if requirement == OfficialActorRollback {
+			return role == "super_admin"
+		}
+		return requirement == OfficialActorMutation && role == "operator"
+	case ScopeOfficialAuditRead:
+		return requirement == OfficialActorRead && (role == "super_admin" || role == "auditor")
+	default:
+		// Official quality has its own domain-level role checks. Keep those scopes
+		// unchanged while this guard binds only the official Agent contract.
+		return true
 	}
 }
 
