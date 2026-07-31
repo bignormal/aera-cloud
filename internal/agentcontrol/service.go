@@ -222,6 +222,7 @@ type PublishInitialRequest struct {
 type PublishNextRequest struct {
 	DefinitionID   uuid.UUID
 	BaseVersionID  uuid.UUID
+	DisplayName    *string
 	Manifest       AgentManifestV1
 	Bundle         VersionBundleV1
 	IdempotencyKey string
@@ -444,7 +445,8 @@ func (s *Service) publishNext(
 	publish func(context.Context, Principal, NextPublicationCommand) (Publication, error),
 ) (Publication, error) {
 	if s == nil || !validPrincipal(principal) || request.DefinitionID == uuid.Nil || request.BaseVersionID == uuid.Nil ||
-		publish == nil || !validIdempotencyKey(request.IdempotencyKey) || !validRequestID(request.RequestID) {
+		publish == nil || !validOptionalAgentDisplayName(request.DisplayName) ||
+		!validIdempotencyKey(request.IdempotencyKey) || !validRequestID(request.RequestID) {
 		return Publication{}, ErrInvalidRequest
 	}
 	canonical, minimum, maximum, err := canonicalizePublication(request.Manifest, request.Bundle)
@@ -455,12 +457,14 @@ func (s *Service) publishNext(
 		Operation     string          `json:"operation"`
 		DefinitionID  string          `json:"definition_id"`
 		BaseVersionID string          `json:"base_version_id"`
+		DisplayName   *string         `json:"display_name,omitempty"`
 		Manifest      json.RawMessage `json:"manifest"`
 		Bundle        json.RawMessage `json:"bundle"`
 		WorkspaceID   *string         `json:"workspace_id,omitempty"`
 	}{
 		Operation: operationPublishNext, DefinitionID: request.DefinitionID.String(),
-		BaseVersionID: request.BaseVersionID.String(), Manifest: canonical.ManifestJSON, Bundle: canonical.BundleJSON,
+		BaseVersionID: request.BaseVersionID.String(), DisplayName: request.DisplayName,
+		Manifest: canonical.ManifestJSON, Bundle: canonical.BundleJSON,
 		WorkspaceID: uuidStringPointer(workspaceID),
 	})
 	if err != nil {
@@ -473,6 +477,7 @@ func (s *Service) publishNext(
 	}
 	publication, err := publish(ctx, principal, NextPublicationCommand{
 		DefinitionID: request.DefinitionID, BaseVersionID: request.BaseVersionID,
+		DisplayName: cloneStringPointer(request.DisplayName),
 		BuildVersion: func(versionNumber int64) (VersionMaterial, error) {
 			attestation, signErr := s.signer.SignVersion(VersionSignatureInput{
 				DefinitionID: request.DefinitionID, VersionID: versionID, VersionNumber: versionNumber,
@@ -1257,12 +1262,20 @@ func canonicalizePublication(
 }
 
 func validPublicationEnvelope(displayName string, key string, requestID string) bool {
-	trimmed := strings.TrimSpace(displayName)
-	if trimmed == "" || trimmed != displayName || !utf8.ValidString(displayName) || len([]rune(displayName)) > 100 ||
+	if !validAgentDisplayName(displayName) ||
 		!validIdempotencyKey(key) || !validRequestID(requestID) {
 		return false
 	}
 	return true
+}
+
+func validOptionalAgentDisplayName(displayName *string) bool {
+	return displayName == nil || validAgentDisplayName(*displayName)
+}
+
+func validAgentDisplayName(displayName string) bool {
+	trimmed := strings.TrimSpace(displayName)
+	return trimmed != "" && trimmed == displayName && utf8.ValidString(displayName) && len([]rune(displayName)) <= 100
 }
 
 func validIdempotencyKey(value string) bool {
@@ -1547,4 +1560,12 @@ func uuidStringPointer(value *uuid.UUID) *string {
 	}
 	text := value.String()
 	return &text
+}
+
+func cloneStringPointer(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
