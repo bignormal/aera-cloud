@@ -92,6 +92,67 @@ func TestInternalAdminOpenAPIRequiresDualAuthenticationAndOfficialAgentRoutes(t 
 	}
 }
 
+func TestInternalAdminOpenAPIFreezesOfficialAgentWireVocabulary(t *testing.T) {
+	raw, err := os.ReadFile("openapi/internal-admin.yaml")
+	if err != nil {
+		t.Fatalf("read Internal Admin OpenAPI: %v", err)
+	}
+	document := string(raw)
+
+	checks := []struct {
+		schema   string
+		required []string
+	}{
+		{
+			schema: "OfficialMutationEvidence",
+			required: []string{
+				"operation_id: { type: string, format: uuid }",
+			},
+		},
+		{
+			schema: "OfficialDraft",
+			required: []string{
+				"base_version_id: { type: string, format: uuid }",
+				"kind: { enum: [initial, next] }",
+			},
+		},
+		{
+			schema: "OfficialReview",
+			required: []string{
+				"decision: { enum: [approve, reject] }",
+			},
+		},
+		{
+			schema: "OfficialSubmission",
+			required: []string{
+				"base_version_id: { type: string, format: uuid }",
+				"kind: { enum: [initial, next] }",
+				"status: { enum: [pending, approved, rejected, withdrawn, superseded] }",
+			},
+		},
+		{
+			schema: "OfficialRelease",
+			required: []string{
+				"channel: { enum: [internal, stable] }",
+			},
+		},
+	}
+
+	for _, check := range checks {
+		block := internalAdminSchemaBlock(t, document, check.schema)
+		for _, required := range check.required {
+			if !strings.Contains(block, required) {
+				t.Fatalf("%s is missing canonical wire vocabulary %q:\n%s", check.schema, required, block)
+			}
+		}
+	}
+
+	reviewMutation := internalAdminSchemaBlock(t, document, "OfficialReviewMutation")
+	if !strings.Contains(reviewMutation, "items: { enum: [internal, stable] }") {
+		t.Fatalf("OfficialReviewMutation is missing canonical initial channels:\n%s", reviewMutation)
+	}
+}
+
 func TestInternalAdminOpenAPIContainsStrictOfficialQualityGovernanceContract(t *testing.T) {
 	raw, err := os.ReadFile("openapi/internal-admin.yaml")
 	if err != nil {
