@@ -251,8 +251,8 @@ func (s *Service) AuthenticateVerification(ctx context.Context, verificationRece
 		return Principal{}, ErrServiceUnavailable
 	}
 	if !found {
-		s.recordLoginAudit(ctx, nil, audit.OutcomeFailure, "invalid_credentials")
-		return Principal{}, ErrInvalidCredentials
+		s.recordLoginAudit(ctx, nil, audit.OutcomeFailure, "account_not_found")
+		return Principal{}, ErrAccountNotFound
 	}
 	switch credential.Status {
 	case "active":

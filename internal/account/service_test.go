@@ -306,11 +306,14 @@ func TestServiceAuthenticateVerificationRejectsWrongPurposeUnknownAccountAndInac
 	}
 
 	loginReceipt := fixture.receipt(t, secure.IdentityPhone, "+8613800138000", verification.PurposeLogin)
-	if _, err := fixture.service.AuthenticateVerification(context.Background(), loginReceipt); !errors.Is(err, ErrInvalidCredentials) {
+	if _, err := fixture.service.AuthenticateVerification(context.Background(), loginReceipt); !errors.Is(err, ErrAccountNotFound) {
 		t.Fatalf("unknown account error = %v", err)
 	}
 	if len(fixture.repository.receiptsUsed) != 0 {
 		t.Fatal("a failed code login consumed the receipt")
+	}
+	if len(fixture.auditor.events) != 2 || fixture.auditor.events[1].ReasonCode != "account_not_found" {
+		t.Fatalf("unknown account audit events = %+v", fixture.auditor.events)
 	}
 
 	fixture.repository.found = true
