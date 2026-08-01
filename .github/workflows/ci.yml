@@ -59,6 +59,11 @@ jobs:
           npm test -- --run
           npm run typecheck
           npm run build
+          if [[ -n $(git -C .. status --porcelain=v1) ]]; then
+            git -C .. status --short
+            echo 'browser build left the checked-out source dirty' >&2
+            exit 1
+          fi
           npx playwright install --with-deps chromium
           npx playwright test
 
