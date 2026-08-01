@@ -19,6 +19,8 @@ export const en = {
   loginError: "Sign-in failed. Check your account and password.",
   codeLoginError:
     "The verification code is invalid or expired. Request a new code.",
+  codeAccountNotFound:
+    "No account is registered for this phone number. Create an account first.",
   serviceError: "The service is temporarily unavailable. Try again later.",
   verificationRateLimit:
     "Too many requests. Please retry after the next minute.",

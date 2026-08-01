@@ -91,24 +91,52 @@ export function LoginPage() {
     setBusy(true);
     setError("");
     try {
-      const verified = await verifyIdentity("phone", phone, "login", code);
-      const result = await loginWithCode(verified.receipt);
-      finishLogin(result.csrf_token);
-    } catch (caught) {
-      if (
-        caught instanceof APIError &&
-        caught.code === "account_pending_deletion"
-      ) {
-        setError("account_pending_deletion");
-      } else if (
-        caught instanceof APIError &&
-        (caught.code === "invalid_or_expired_code" ||
-          caught.code === "verification_required" ||
-          caught.code === "invalid_credentials")
-      ) {
-        setError(t("codeLoginError"));
-      } else {
-        setError(t(errorKey(caught)));
+      let receipt: string;
+      try {
+        const verified = await verifyIdentity("phone", phone, "login", code);
+        receipt = verified.receipt;
+      } catch (caught) {
+        if (
+          caught instanceof APIError &&
+          (caught.code === "invalid_or_expired_code" ||
+            caught.code === "verification_required")
+        ) {
+          setError(t("codeLoginError"));
+        } else {
+          setError(t(errorKey(caught)));
+        }
+        return;
+      }
+
+      try {
+        const result = await loginWithCode(receipt);
+        finishLogin(result.csrf_token);
+      } catch (caught) {
+        if (
+          caught instanceof APIError &&
+          caught.code === "account_pending_deletion"
+        ) {
+          setError("account_pending_deletion");
+        } else if (
+          caught instanceof APIError &&
+          (caught.code === "account_not_found" ||
+            caught.code === "invalid_credentials")
+        ) {
+          // The one-time code was already verified and consumed before this
+          // account lookup. Clear it so the UI cannot blindly replay it.
+          setCode("");
+          setCodeStatus("");
+          setError(t("codeAccountNotFound"));
+        } else if (
+          caught instanceof APIError &&
+          caught.code === "verification_required"
+        ) {
+          setCode("");
+          setCodeStatus("");
+          setError(t("codeLoginError"));
+        } else {
+          setError(t(errorKey(caught)));
+        }
       }
     } finally {
       setBusy(false);

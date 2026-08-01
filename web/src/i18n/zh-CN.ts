@@ -18,6 +18,7 @@ export const zhCN = {
   registered: "注册完成，请继续登录",
   loginError: "登录失败，请检查账户和密码。",
   codeLoginError: "验证码无效或已过期，请重新获取。",
+  codeAccountNotFound: "该手机号尚未注册，请先创建账户。",
   serviceError: "服务暂时不可用，请稍后重试。",
   verificationRateLimit: "请求过于频繁，请下一分钟后重试",
   networkError: "无法连接服务，请检查网络后重试。",

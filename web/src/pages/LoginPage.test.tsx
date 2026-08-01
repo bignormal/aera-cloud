@@ -241,6 +241,67 @@ test("shows a verification-code error without referring to the password", async 
   expect(screen.queryByText(/账户和密码/)).not.toBeInTheDocument();
 });
 
+test.each(["account_not_found", "invalid_credentials"])(
+  "shows an unregistered-account error after successful code verification and prevents replay (%s)",
+  async (codeLoginError) => {
+    const fetchMock = vi
+      .spyOn(window, "fetch")
+      .mockImplementation(async (input) => {
+        if (String(input) === "/api/v1/public/config") {
+          return jsonResponse(verifiedConfig);
+        }
+        if (String(input) === "/api/v1/verification/challenges") {
+          return jsonResponse({ status: "accepted" }, 202);
+        }
+        if (String(input) === "/api/v1/verification/challenges/verify") {
+          return jsonResponse({
+            status: "verified",
+            receipt: "opaque-login-receipt",
+            expires_at: "2026-07-24T12:10:00Z",
+          });
+        }
+        if (String(input) === "/api/v1/browser/login/code") {
+          return jsonResponse(
+            {
+              error: {
+                code: codeLoginError,
+                request_id: "request-account-lookup",
+              },
+            },
+            codeLoginError === "account_not_found" ? 404 : 401,
+          );
+        }
+        throw new Error(`unexpected request: ${String(input)}`);
+      });
+    renderLogin();
+
+    fireEvent.click(await screen.findByLabelText("验证码登录"));
+    fireEvent.change(screen.getByLabelText("中国大陆手机号"), {
+      target: { value: "+8613800138000" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送验证码" }));
+    await screen.findByText("验证码已发送");
+    fireEvent.change(screen.getByLabelText("6 位验证码"), {
+      target: { value: "123456" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "验证码登录" }));
+
+    expect(
+      await screen.findByText("该手机号尚未注册，请先创建账户。"),
+    ).toBeVisible();
+    expect(screen.queryByLabelText("6 位验证码")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "验证码登录" }),
+    ).toBeDisabled();
+    expect(
+      fetchMock.mock.calls.filter(
+        ([input]) =>
+          String(input) === "/api/v1/verification/challenges/verify",
+      ),
+    ).toHaveLength(1);
+  },
+);
+
 test("direct internal beta hides all verification-dependent recovery entry points", async () => {
   vi.spyOn(window, "fetch").mockResolvedValue(jsonResponse(directConfig));
   renderLogin();
