@@ -12,7 +12,9 @@ http://{$AERA_INTERNAL_BETA_IP} {
 		file_server
 	}
 
-	redir https://{$AERA_INTERNAL_BETA_IP}{uri} permanent
+	handle {
+		redir https://{$AERA_INTERNAL_BETA_IP}{uri} permanent
+	}
 }
 
 https://{$AERA_INTERNAL_BETA_IP} {

@@ -78,6 +78,11 @@ require_text "$caddy_file" 'default_sni \{\$AERA_INTERNAL_BETA_IP\}'
 require_text "$caddy_file" '/\.well-known/acme-challenge/\*'
 require_text "$caddy_file" 'root \* /var/lib/aera-certbot'
 require_text "$caddy_file" 'redir https://\{\$AERA_INTERNAL_BETA_IP\}\{uri\}'
+# Caddy sorts a top-level `redir` ahead of `handle`, regardless of source order.
+# Keep the redirect in a fallback handle so the ACME handler remains reachable.
+require_text "$caddy_file" $'^\thandle \\{$'
+require_text "$caddy_file" $'^\t\tredir https://\\{\\$AERA_INTERNAL_BETA_IP\\}\\{uri\\} permanent$'
+forbid_text "$caddy_file" $'^\tredir https://\\{\\$AERA_INTERNAL_BETA_IP\\}\\{uri\\} permanent$'
 require_text "$caddy_file" 'tls /etc/letsencrypt/live/\{\$AERA_INTERNAL_BETA_CERTIFICATE_NAME\}/fullchain\.pem /etc/letsencrypt/live/\{\$AERA_INTERNAL_BETA_CERTIFICATE_NAME\}/privkey\.pem'
 require_text "$caddy_file" 'X-Frame-Options "DENY"'
 require_text "$caddy_file" "Content-Security-Policy \"frame-ancestors 'none'\""
