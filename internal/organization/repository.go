@@ -2601,9 +2601,22 @@ func (r *PostgresRepository) acceptInvitation(
 		return InvitationAcceptance{}, ErrInvitationUnavailable
 	}
 	invitation, err := loadOrganizationInvitationByDigest(ctx, tx, command.TokenDigest, command.ChangedAt, true)
-	if err != nil || invitation.Status != InvitationStatusPending ||
-		!command.ChangedAt.UTC().Before(invitation.ExpiresAt) {
-		return InvitationAcceptance{}, ErrInvitationUnavailable
+	if err != nil {
+		return InvitationAcceptance{}, err
+	}
+	switch invitation.Status {
+	case InvitationStatusAccepted:
+		return InvitationAcceptance{}, ErrInvitationUsed
+	case InvitationStatusRevoked:
+		return InvitationAcceptance{}, ErrInvitationRevoked
+	case InvitationStatusExpired:
+		return InvitationAcceptance{}, ErrInvitationExpired
+	case InvitationStatusPending:
+		if !command.ChangedAt.UTC().Before(invitation.ExpiresAt) {
+			return InvitationAcceptance{}, ErrInvitationExpired
+		}
+	default:
+		return InvitationAcceptance{}, ErrServiceUnavailable
 	}
 	existing, existingErr := loadOrganizationMember(ctx, tx, organizationID, actor.UserID, true)
 	if existingErr != nil && !errors.Is(existingErr, ErrOrganizationNotFound) {

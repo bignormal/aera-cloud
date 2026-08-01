@@ -1111,6 +1111,12 @@ func writeOrganizationServiceError(response http.ResponseWriter, err error, requ
 		writeOrganizationError(response, 404, "organization_not_found", requestID)
 	case errors.Is(err, ErrInvitationUnavailable):
 		writeOrganizationError(response, 404, "invitation_unavailable", requestID)
+	case errors.Is(err, ErrInvitationExpired):
+		writeOrganizationError(response, 410, "invitation_expired", requestID)
+	case errors.Is(err, ErrInvitationRevoked):
+		writeOrganizationError(response, 410, "invitation_revoked", requestID)
+	case errors.Is(err, ErrInvitationUsed):
+		writeOrganizationError(response, 409, "invitation_used", requestID)
 	case errors.Is(err, ErrOrganizationConflict):
 		writeOrganizationError(response, 409, "organization_conflict", requestID)
 	case errors.Is(err, ErrOrganizationArchived):

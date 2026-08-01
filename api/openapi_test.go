@@ -696,7 +696,8 @@ func TestOpenAPIContainsStrictOrganizationFoundationContract(t *testing.T) {
 		}
 	}
 	for _, code := range []string{
-		"authentication_required", "organization_forbidden", "organization_not_found", "organization_conflict",
+		"authentication_required", "organization_forbidden", "organization_not_found", "invitation_unavailable",
+		"invitation_expired", "invitation_revoked", "invitation_used", "organization_conflict",
 		"organization_archived", "organization_limit_reached", "organization_owner_transfer_required",
 		"owner_transfer_target_invalid", "membership_conflict", "member_limit_reached", "department_not_empty",
 		"department_limit_reached", "invitation_limit_reached", "policy_version_conflict", "dissolution_blocked",

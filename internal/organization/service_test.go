@@ -205,12 +205,12 @@ func TestServiceOrganizationInvitationIsSecretOnceFragmentOnlyAndActorBound(t *t
 	}
 	if _, err := service.AcceptInvitation(t.Context(), member, AcceptInvitationCommand{
 		Token: created.Token, IdempotencyKey: "invitation-accept-member-second-use", RequestID: "invitation-accept-second-use",
-	}); !errors.Is(err, ErrInvitationUnavailable) {
+	}); !errors.Is(err, ErrInvitationUsed) {
 		t.Fatalf("AcceptInvitation(same actor second use) error = %v", err)
 	}
 	if _, err := service.AcceptInvitation(t.Context(), other, AcceptInvitationCommand{
 		Token: created.Token, IdempotencyKey: "invitation-accept-member", RequestID: "invitation-accept-other",
-	}); !errors.Is(err, ErrInvitationUnavailable) {
+	}); !errors.Is(err, ErrInvitationUsed) {
 		t.Fatalf("AcceptInvitation(other actor replay) error = %v", err)
 	}
 }
@@ -236,7 +236,7 @@ func TestServiceOrganizationInvitationRevokeExpiryExistingMemberAndConcurrentWin
 	}
 	if _, err := service.AcceptInvitation(t.Context(), first, AcceptInvitationCommand{
 		Token: revoked.Token, IdempotencyKey: "accept-revoked", RequestID: "accept-revoked",
-	}); !errors.Is(err, ErrInvitationUnavailable) {
+	}); !errors.Is(err, ErrInvitationRevoked) {
 		t.Fatalf("AcceptInvitation(revoked) error = %v", err)
 	}
 
@@ -254,7 +254,7 @@ func TestServiceOrganizationInvitationRevokeExpiryExistingMemberAndConcurrentWin
 	}
 	if _, err := service.AcceptInvitation(t.Context(), first, AcceptInvitationCommand{
 		Token: expiredSecret.RawToken, IdempotencyKey: "accept-expired", RequestID: "accept-expired",
-	}); !errors.Is(err, ErrInvitationUnavailable) {
+	}); !errors.Is(err, ErrInvitationExpired) {
 		t.Fatalf("AcceptInvitation(expired) error = %v", err)
 	}
 
@@ -293,19 +293,19 @@ func TestServiceOrganizationInvitationRevokeExpiryExistingMemberAndConcurrentWin
 	}
 	close(start)
 	successes := 0
-	unavailable := 0
+	used := 0
 	for range candidates {
 		switch err := <-results; {
 		case err == nil:
 			successes++
-		case errors.Is(err, ErrInvitationUnavailable):
-			unavailable++
+		case errors.Is(err, ErrInvitationUsed):
+			used++
 		default:
 			t.Fatalf("concurrent AcceptInvitation error = %v", err)
 		}
 	}
-	if successes != 1 || unavailable != 1 {
-		t.Fatalf("concurrent invitation successes=%d unavailable=%d", successes, unavailable)
+	if successes != 1 || used != 1 {
+		t.Fatalf("concurrent invitation successes=%d used=%d", successes, used)
 	}
 }
 

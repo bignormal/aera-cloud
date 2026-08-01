@@ -1276,6 +1276,8 @@ paths:
           $ref: '#/components/responses/OrganizationNotFound'
         '409':
           $ref: '#/components/responses/OrganizationConflict'
+        '410':
+          $ref: '#/components/responses/OrganizationInvitationGone'
         '413':
           $ref: '#/components/responses/OrganizationInvalidRequest'
         '429':
@@ -6422,6 +6424,9 @@ components:
         - organization_forbidden
         - organization_not_found
         - invitation_unavailable
+        - invitation_expired
+        - invitation_revoked
+        - invitation_used
         - organization_conflict
         - organization_archived
         - organization_limit_reached
@@ -7089,6 +7094,9 @@ components:
         - workspace_forbidden
         - workspace_not_found
         - invitation_unavailable
+        - invitation_expired
+        - invitation_revoked
+        - invitation_used
         - workspace_conflict
         - workspace_archived
         - workspace_owner_unavailable
@@ -7362,7 +7370,13 @@ components:
           schema:
             $ref: '#/components/schemas/OrganizationErrorEnvelope'
     OrganizationConflict:
-      description: Organization lifecycle, revision, membership, quota, policy, or idempotency state conflicts with the request.
+      description: Organization lifecycle, revision, membership, quota, policy, invitation-use, or idempotency state conflicts with the request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OrganizationErrorEnvelope'
+    OrganizationInvitationGone:
+      description: The Organization invitation expired or was revoked.
       content:
         application/json:
           schema:
