@@ -227,6 +227,7 @@ func TestRequireOfficialScopeBindsSignedActorAndOperationClaims(t *testing.T) {
 		mode      OfficialActorRequirement
 		want      int
 		wantActor bool
+		wantRole  string
 	}{
 		{
 			name: "read actor", mode: OfficialActorRead, want: http.StatusNoContent, wantActor: true,
@@ -237,8 +238,12 @@ func TestRequireOfficialScopeBindsSignedActorAndOperationClaims(t *testing.T) {
 			claims: func() map[string]any { return validOfficialServiceClaims(now, ScopeOfficialDraftsWrite, true, false) },
 		},
 		{
-			name: "rollback actor", mode: OfficialActorRollback, want: http.StatusNoContent, wantActor: true,
-			claims: func() map[string]any { return validOfficialServiceClaims(now, ScopeOfficialReleaseWrite, true, true) },
+			name: "rollback actor", mode: OfficialActorRollback, want: http.StatusNoContent, wantActor: true, wantRole: "super_admin",
+			claims: func() map[string]any {
+				claims := validOfficialServiceClaims(now, ScopeOfficialReleaseWrite, true, true)
+				claims["admin_role"] = "super_admin"
+				return claims
+			},
 		},
 		{
 			name: "service only token", mode: OfficialActorRead, want: http.StatusUnauthorized,
@@ -280,6 +285,10 @@ func TestRequireOfficialScopeBindsSignedActorAndOperationClaims(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			wantRole := test.wantRole
+			if wantRole == "" {
+				wantRole = "developer"
+			}
 			called := false
 			scope := ScopeOfficialAgentsRead
 			if test.mode == OfficialActorMutation {
@@ -291,7 +300,7 @@ func TestRequireOfficialScopeBindsSignedActorAndOperationClaims(t *testing.T) {
 			handler := auth.RequireOfficialScope(scope, test.mode)(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 				called = true
 				actor, ok := OfficialActorFromContext(request.Context())
-				if !ok || actor.AdminID != authAdminID || actor.Role != "developer" {
+				if !ok || actor.AdminID != authAdminID || actor.Role != wantRole {
 					t.Fatalf("actor = %+v / %t", actor, ok)
 				}
 				if test.mode != OfficialActorRead && actor.OperationID != authOperationID {
@@ -309,6 +318,56 @@ func TestRequireOfficialScopeBindsSignedActorAndOperationClaims(t *testing.T) {
 			handler.ServeHTTP(response, request)
 			if response.Code != test.want || called != test.wantActor {
 				t.Fatalf("status/called = %d/%t, want %d/%t; body=%s", response.Code, called, test.want, test.wantActor, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestRequireOfficialScopeBindsCloudScopesToRealActorDuties(t *testing.T) {
+	auth, privateKey, now := newTestAuthenticator(t)
+	tests := []struct {
+		name        string
+		role        string
+		scope       string
+		requirement OfficialActorRequirement
+		want        int
+	}{
+		{name: "developer draft", role: "developer", scope: ScopeOfficialDraftsWrite, requirement: OfficialActorMutation, want: http.StatusNoContent},
+		{name: "super admin review", role: "super_admin", scope: ScopeOfficialReviewsWrite, requirement: OfficialActorMutation, want: http.StatusNoContent},
+		{name: "operator release", role: "operator", scope: ScopeOfficialReleaseWrite, requirement: OfficialActorMutation, want: http.StatusNoContent},
+		{name: "super admin rollback", role: "super_admin", scope: ScopeOfficialReleaseWrite, requirement: OfficialActorRollback, want: http.StatusNoContent},
+		{name: "auditor official read", role: "auditor", scope: ScopeOfficialAgentsRead, requirement: OfficialActorRead, want: http.StatusNoContent},
+		{name: "auditor audit read", role: "auditor", scope: ScopeOfficialAuditRead, requirement: OfficialActorRead, want: http.StatusNoContent},
+		{name: "developer cannot review", role: "developer", scope: ScopeOfficialReviewsWrite, requirement: OfficialActorMutation, want: http.StatusForbidden},
+		{name: "operator cannot draft", role: "operator", scope: ScopeOfficialDraftsWrite, requirement: OfficialActorMutation, want: http.StatusForbidden},
+		{name: "super admin cannot publish", role: "super_admin", scope: ScopeOfficialReleaseWrite, requirement: OfficialActorMutation, want: http.StatusForbidden},
+		{name: "operator cannot rollback", role: "operator", scope: ScopeOfficialReleaseWrite, requirement: OfficialActorRollback, want: http.StatusForbidden},
+		{name: "developer cannot attach rollback evidence to draft", role: "developer", scope: ScopeOfficialDraftsWrite, requirement: OfficialActorRollback, want: http.StatusForbidden},
+		{name: "auditor cannot mutate", role: "auditor", scope: ScopeOfficialDraftsWrite, requirement: OfficialActorMutation, want: http.StatusForbidden},
+		{name: "developer cannot read audit", role: "developer", scope: ScopeOfficialAuditRead, requirement: OfficialActorRead, want: http.StatusForbidden},
+		{name: "finance cannot read official agents", role: "finance", scope: ScopeOfficialAgentsRead, requirement: OfficialActorRead, want: http.StatusForbidden},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			called := false
+			handler := auth.RequireOfficialScope(test.scope, test.requirement)(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				called = true
+				actor, ok := OfficialActorFromContext(request.Context())
+				if !ok || actor.Role != test.role {
+					t.Fatalf("actor = %+v / %t", actor, ok)
+				}
+				response.WriteHeader(http.StatusNoContent)
+			}))
+			claims := validOfficialServiceClaims(now, test.scope, test.requirement != OfficialActorRead, test.requirement == OfficialActorRollback)
+			claims["admin_role"] = test.role
+			request := httptest.NewRequest(http.MethodPost, "https://cloud.test/internal/admin/v1/official-agent-duty-check", nil)
+			setVerifiedClientCertificate(request)
+			request.Header.Set("Authorization", "Bearer "+signServiceToken(t, privateKey, validServiceHeader(), claims))
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != test.want || called != (test.want == http.StatusNoContent) {
+				t.Fatalf("status/called = %d/%t, want %d/%t; body=%s", response.Code, called, test.want, test.want == http.StatusNoContent, response.Body.String())
 			}
 		})
 	}

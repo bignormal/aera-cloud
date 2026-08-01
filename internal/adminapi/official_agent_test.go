@@ -177,22 +177,35 @@ func TestOfficialAgentRoutesRequireActorAndBindMutationEvidence(t *testing.T) {
 
 func TestOfficialAgentMutationRejectsBodyActorMismatchBeforeService(t *testing.T) {
 	now := time.Date(2026, 7, 22, 15, 0, 0, 0, time.UTC)
-	service := &officialAgentServiceStub{}
-	handler, privateKey := newOfficialHandlerFixture(t, now, service)
-	body := mustJSON(t, map[string]any{
-		"operation_id": authOperationID, "actor_admin_id": uuid.New(),
-		"actor_admin_role": "developer", "expected_revision": 1,
-		"reason_code": "definition_create",
-		"payload":     map[string]any{"display_name": "Official Research"},
-	})
-	request := officialHandlerRequest(t, privateKey, now, http.MethodPost,
-		"/internal/admin/v1/official-agent-definitions", body,
-		validOfficialServiceClaims(now, ScopeOfficialDraftsWrite, true, false))
-	request.Header.Set("Idempotency-Key", authOperationID.String())
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusBadRequest || len(service.calls) != 0 {
-		t.Fatalf("mismatch = %d %v %s", response.Code, service.calls, response.Body.String())
+	tests := []struct {
+		name    string
+		actorID uuid.UUID
+		role    string
+	}{
+		{name: "actor id", actorID: uuid.New(), role: "developer"},
+		{name: "actor role", actorID: authAdminID, role: "operator"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service := &officialAgentServiceStub{}
+			handler, privateKey := newOfficialHandlerFixture(t, now, service)
+			body := mustJSON(t, map[string]any{
+				"operation_id": authOperationID, "actor_admin_id": test.actorID,
+				"actor_admin_role": test.role, "expected_revision": 1,
+				"reason_code": "definition_create",
+				"payload":     map[string]any{"display_name": "Official Research"},
+			})
+			request := officialHandlerRequest(t, privateKey, now, http.MethodPost,
+				"/internal/admin/v1/official-agent-definitions", body,
+				validOfficialServiceClaims(now, ScopeOfficialDraftsWrite, true, false))
+			request.Header.Set("Idempotency-Key", authOperationID.String())
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusBadRequest || len(service.calls) != 0 {
+				t.Fatalf("mismatch = %d %v %s", response.Code, service.calls, response.Body.String())
+			}
+		})
 	}
 }
 
