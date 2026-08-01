@@ -357,7 +357,19 @@ func TestOfficialAgentContractRoutesAreMountedWithActionSpecificClaims(t *testin
 	definitionID, draftID, submissionID, versionID, releaseID := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	draftPayload := map[string]any{
 		"kind": "initial", "display_name": "Official Research",
-		"manifest": map[string]any{}, "bundle": map[string]any{"assets": []any{}},
+		"manifest": map[string]any{
+			"schema_version": 1,
+			"identity":       map[string]any{"system_prompt": "Research safely."},
+			"assets":         []any{},
+			"model_constraints": map[string]any{
+				"allowed_providers": []any{"openai"},
+				"allowed_models":    []any{"gpt-5.6"},
+			},
+			"tools":                 map[string]any{"allowed": []any{}, "denied": []any{}},
+			"dependencies":          []any{},
+			"runtime_compatibility": map[string]any{"minimum_version": "v0.18.2-agentera.1"},
+		},
+		"bundle": map[string]any{"assets": []any{}},
 	}
 	emptyPayload := map[string]any{}
 	tests := []struct {

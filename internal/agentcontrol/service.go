@@ -20,6 +20,7 @@ var ErrInvalidRequest = errors.New("Agent control request is invalid")
 const idempotencyLifetime = 24 * time.Hour
 
 type AgentPolicyConstraints struct {
+	ModelMode        ModelSelectionMode
 	AllowedProviders []string
 	AllowedModels    []string
 	AllowedTools     []string
@@ -43,12 +44,16 @@ func IntersectOrganizationAgentPolicy(
 	if err != nil {
 		return EffectiveOrganizationAgentPolicy{}, ErrOrganizationPublicationPolicyBlocked
 	}
+	mode := versionConstraints.ModelMode
+	if mode == "" {
+		mode = ModelSelectionAllowlist
+	}
 	providers, err := canonicalStringSet(versionConstraints.AllowedProviders, true)
-	if err != nil || len(providers) == 0 {
+	if err != nil {
 		return EffectiveOrganizationAgentPolicy{}, ErrOrganizationPublicationPolicyBlocked
 	}
 	models, err := canonicalStringSet(versionConstraints.AllowedModels, true)
-	if err != nil || len(models) == 0 {
+	if err != nil || !validModelPolicyV2(mode, providers, models) {
 		return EffectiveOrganizationAgentPolicy{}, ErrOrganizationPublicationPolicyBlocked
 	}
 	tools, err := canonicalStringSet(versionConstraints.AllowedTools, true)
@@ -59,19 +64,33 @@ func IntersectOrganizationAgentPolicy(
 	pairs := make([]organization.ModelIdentifier, 0, len(providers)*len(models))
 	providerSet := make(map[string]struct{}, len(providers))
 	modelSet := make(map[string]struct{}, len(models))
-	for _, provider := range providers {
-		for _, model := range models {
-			pair := organization.ModelIdentifier{Provider: provider, Model: model}
-			if !modelPairAllowed(pair, platform.Document.Models.Allowlist) ||
-				!modelPairAllowed(pair, currentOrganization.Document.Models.Allowlist) {
-				continue
+	if mode == ModelSelectionUserSelect {
+		pairs = intersectOrganizationModelAllowlists(
+			platform.Document.Models.Allowlist,
+			currentOrganization.Document.Models.Allowlist,
+		)
+		for _, pair := range pairs {
+			providerSet[pair.Provider] = struct{}{}
+			modelSet[pair.Model] = struct{}{}
+		}
+		if pairs != nil {
+			mode = ModelSelectionAllowlist
+		}
+	} else {
+		for _, provider := range providers {
+			for _, model := range models {
+				pair := organization.ModelIdentifier{Provider: provider, Model: model}
+				if !modelPairAllowed(pair, platform.Document.Models.Allowlist) ||
+					!modelPairAllowed(pair, currentOrganization.Document.Models.Allowlist) {
+					continue
+				}
+				pairs = append(pairs, pair)
+				providerSet[provider] = struct{}{}
+				modelSet[model] = struct{}{}
 			}
-			pairs = append(pairs, pair)
-			providerSet[provider] = struct{}{}
-			modelSet[model] = struct{}{}
 		}
 	}
-	if len(pairs) == 0 {
+	if mode != ModelSelectionUserSelect && len(pairs) == 0 {
 		return EffectiveOrganizationAgentPolicy{}, ErrOrganizationPublicationPolicyBlocked
 	}
 
@@ -86,12 +105,46 @@ func IntersectOrganizationAgentPolicy(
 
 	return EffectiveOrganizationAgentPolicy{
 		AgentPolicyConstraints: AgentPolicyConstraints{
+			ModelMode:        mode,
 			AllowedProviders: sortedPolicyKeys(providerSet),
 			AllowedModels:    sortedPolicyKeys(modelSet),
 			AllowedTools:     cloneOrganizationSlice(effectiveTools),
 		},
 		AllowedModelPairs: append([]organization.ModelIdentifier(nil), pairs...),
 	}, nil
+}
+
+func intersectOrganizationModelAllowlists(
+	left []organization.ModelIdentifier,
+	right []organization.ModelIdentifier,
+) []organization.ModelIdentifier {
+	if left == nil && right == nil {
+		return nil
+	}
+	candidates := left
+	if candidates == nil {
+		candidates = right
+	}
+	result := make([]organization.ModelIdentifier, 0, len(candidates))
+	for _, pair := range candidates {
+		if modelPairAllowed(pair, left) && modelPairAllowed(pair, right) {
+			result = append(result, pair)
+		}
+	}
+	return result
+}
+
+func agentPolicyConstraintsForManifest(manifest AgentManifest) AgentPolicyConstraints {
+	constraints := AgentPolicyConstraints{AllowedTools: cloneOrganizationSlice(manifest.Tools.Allowed)}
+	if manifest.SchemaVersion == 2 {
+		constraints.ModelMode = manifest.ModelPolicy.Mode
+		constraints.AllowedProviders = cloneOrganizationSlice(manifest.ModelPolicy.AllowedProviders)
+		constraints.AllowedModels = cloneOrganizationSlice(manifest.ModelPolicy.AllowedModels)
+		return constraints
+	}
+	constraints.AllowedProviders = cloneOrganizationSlice(manifest.ModelConstraints.AllowedProviders)
+	constraints.AllowedModels = cloneOrganizationSlice(manifest.ModelConstraints.AllowedModels)
+	return constraints
 }
 
 func effectiveOrganizationAgentPolicyForVersion(
@@ -116,11 +169,7 @@ func effectiveOrganizationAgentPolicyForVersion(
 	effective, err := IntersectOrganizationAgentPolicy(
 		organization.DefaultPolicyDocument(),
 		organizationPolicy,
-		AgentPolicyConstraints{
-			AllowedProviders: manifest.ModelConstraints.AllowedProviders,
-			AllowedModels:    manifest.ModelConstraints.AllowedModels,
-			AllowedTools:     manifest.Tools.Allowed,
-		},
+		agentPolicyConstraintsForManifest(manifest),
 	)
 	if err != nil {
 		return EffectiveOrganizationAgentPolicy{}, err
@@ -1313,6 +1362,19 @@ type policyDocumentV1 struct {
 	OfficialContext      *officialPolicyContextV1      `json:"official_context,omitempty"`
 }
 
+type policyDocumentV2 struct {
+	SchemaVersion        int                           `json:"schema_version"`
+	AgentDefinitionID    string                        `json:"agent_definition_id"`
+	AgentVersionID       string                        `json:"agent_version_id"`
+	VersionDigest        string                        `json:"version_digest"`
+	ModelPolicy          canonicalModelPolicyV2        `json:"model_policy"`
+	Tools                canonicalTools                `json:"tools"`
+	RuntimeCompatibility canonicalRuntimeCompatibility `json:"runtime_compatibility"`
+	PublicationAllowed   bool                          `json:"publication_allowed"`
+	DenyRules            []string                      `json:"deny_rules"`
+	OfficialContext      *officialPolicyContextV1      `json:"official_context,omitempty"`
+}
+
 type officialPolicyContextV1 struct {
 	PlatformID           string     `json:"platform_id"`
 	ReleaseID            string     `json:"release_id"`
@@ -1332,7 +1394,12 @@ func policyDocumentForOrganizationVersion(
 	version Version,
 	effective EffectiveOrganizationAgentPolicy,
 ) ([]byte, error) {
-	if len(effective.AllowedProviders) == 0 || len(effective.AllowedModels) == 0 {
+	if effective.ModelMode != ModelSelectionUserSelect &&
+		(len(effective.AllowedProviders) == 0 || len(effective.AllowedModels) == 0) {
+		return nil, ErrOrganizationPublicationPolicyBlocked
+	}
+	if effective.ModelMode == ModelSelectionUserSelect &&
+		(len(effective.AllowedProviders) != 0 || len(effective.AllowedModels) != 0 || effective.AllowedModelPairs != nil) {
 		return nil, ErrOrganizationPublicationPolicyBlocked
 	}
 	allowedPairs := make(map[string]struct{}, len(effective.AllowedModelPairs))
@@ -1366,10 +1433,6 @@ func policyDocumentForOfficialVersion(
 	if err != nil {
 		return nil, err
 	}
-	var document policyDocumentV1
-	if err := decodeStrictJSON(base, &document); err != nil {
-		return nil, ErrInvalidAgentContent
-	}
 	contextID := eligibilityContext.Selector.PersonalSpaceID
 	switch eligibilityContext.Selector.Scope {
 	case OwnerScopeWorkspace:
@@ -1380,11 +1443,36 @@ func policyDocumentForOfficialVersion(
 	if contextID == uuid.Nil {
 		return nil, ErrInvalidAgentContent
 	}
-	document.OfficialContext = &officialPolicyContextV1{
+	officialContext := &officialPolicyContextV1{
 		PlatformID: target.PlatformID.String(), ReleaseID: target.ReleaseID.String(),
 		ReleaseRevisionID: target.ReleaseRevisionID.String(), UserID: principal.UserID.String(),
 		DeviceInstallationID: deviceInstallationID.String(), InstallationID: installationID.String(),
 		ProductScope: eligibilityContext.Selector.Scope, ProductContextID: contextID.String(),
+	}
+	var header struct {
+		SchemaVersion int `json:"schema_version"`
+	}
+	if err := json.Unmarshal(base, &header); err != nil {
+		return nil, ErrInvalidAgentContent
+	}
+	var document any
+	switch header.SchemaVersion {
+	case 2:
+		var value policyDocumentV2
+		if err := decodeStrictJSON(base, &value); err != nil {
+			return nil, ErrInvalidAgentContent
+		}
+		value.OfficialContext = officialContext
+		document = value
+	case 1:
+		var value policyDocumentV1
+		if err := decodeStrictJSON(base, &value); err != nil {
+			return nil, ErrInvalidAgentContent
+		}
+		value.OfficialContext = officialContext
+		document = value
+	default:
+		return nil, ErrInvalidAgentContent
 	}
 	encoded, err := marshalCanonical(document)
 	if err != nil || len(encoded) > MaxManifestBytes {
@@ -1414,21 +1502,53 @@ func policyDocumentForVersionWithConstraints(
 	if err != nil || canonical.ContentDigest != version.ContentDigest {
 		return nil, ErrInvalidAgentContent
 	}
-	var manifest canonicalManifest
-	if err := decodeStrictJSON(canonical.ManifestJSON, &manifest); err != nil || manifest.SchemaVersion != 1 {
+	var document []byte
+	switch manifestValue.SchemaVersion {
+	case 1:
+		var manifest canonicalManifest
+		if err := decodeStrictJSON(canonical.ManifestJSON, &manifest); err != nil || manifest.SchemaVersion != 1 {
+			return nil, ErrInvalidAgentContent
+		}
+		if effective != nil {
+			manifest.ModelConstraints.AllowedProviders = cloneOrganizationSlice(effective.AllowedProviders)
+			manifest.ModelConstraints.AllowedModels = cloneOrganizationSlice(effective.AllowedModels)
+			manifest.Tools.Allowed = cloneOrganizationSlice(effective.AllowedTools)
+		}
+		document, err = marshalCanonical(policyDocumentV1{
+			SchemaVersion: 1, AgentDefinitionID: version.DefinitionID.String(), AgentVersionID: version.ID.String(),
+			VersionDigest: hex.EncodeToString(version.ContentDigest[:]), ModelConstraints: manifest.ModelConstraints,
+			Tools: manifest.Tools, RuntimeCompatibility: manifest.RuntimeCompatibility,
+			PublicationAllowed: false, DenyRules: []string{},
+		})
+	case 2:
+		var manifest canonicalManifestV2
+		if err := decodeStrictJSON(canonical.ManifestJSON, &manifest); err != nil || manifest.SchemaVersion != 2 {
+			return nil, ErrInvalidAgentContent
+		}
+		if effective != nil {
+			manifest.ModelPolicy = canonicalModelPolicyV2{
+				Mode:             effective.ModelMode,
+				AllowedProviders: cloneOrganizationSlice(effective.AllowedProviders),
+				AllowedModels:    cloneOrganizationSlice(effective.AllowedModels),
+			}
+			manifest.Tools.Allowed = cloneOrganizationSlice(effective.AllowedTools)
+		}
+		if !validModelPolicyV2(
+			manifest.ModelPolicy.Mode,
+			manifest.ModelPolicy.AllowedProviders,
+			manifest.ModelPolicy.AllowedModels,
+		) {
+			return nil, ErrInvalidAgentContent
+		}
+		document, err = marshalCanonical(policyDocumentV2{
+			SchemaVersion: 2, AgentDefinitionID: version.DefinitionID.String(), AgentVersionID: version.ID.String(),
+			VersionDigest: hex.EncodeToString(version.ContentDigest[:]), ModelPolicy: manifest.ModelPolicy,
+			Tools: manifest.Tools, RuntimeCompatibility: manifest.RuntimeCompatibility,
+			PublicationAllowed: false, DenyRules: []string{},
+		})
+	default:
 		return nil, ErrInvalidAgentContent
 	}
-	if effective != nil {
-		manifest.ModelConstraints.AllowedProviders = cloneOrganizationSlice(effective.AllowedProviders)
-		manifest.ModelConstraints.AllowedModels = cloneOrganizationSlice(effective.AllowedModels)
-		manifest.Tools.Allowed = cloneOrganizationSlice(effective.AllowedTools)
-	}
-	document, err := marshalCanonical(policyDocumentV1{
-		SchemaVersion: 1, AgentDefinitionID: version.DefinitionID.String(), AgentVersionID: version.ID.String(),
-		VersionDigest: hex.EncodeToString(version.ContentDigest[:]), ModelConstraints: manifest.ModelConstraints,
-		Tools: manifest.Tools, RuntimeCompatibility: manifest.RuntimeCompatibility,
-		PublicationAllowed: false, DenyRules: []string{},
-	})
 	if err != nil || len(document) > MaxManifestBytes {
 		return nil, ErrInvalidAgentContent
 	}

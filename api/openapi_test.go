@@ -241,6 +241,35 @@ func TestOpenAPINextAgentVersionRequiresMutableDisplayName(t *testing.T) {
 	}
 }
 
+func TestOpenAPIExposesStrictAgentManifestV2ModelPolicy(t *testing.T) {
+	for _, path := range []string{"openapi.yaml", "openapi/internal-admin.yaml"} {
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		document := string(contents)
+		for _, fragment := range []string{
+			"oneOf:\n        - $ref: '#/components/schemas/AgentManifestV1'\n        - $ref: '#/components/schemas/AgentManifestV2'",
+			"required: [schema_version, identity, assets, model_policy, tools, dependencies, runtime_compatibility]",
+			"required: [mode, allowed_providers, allowed_models]",
+			"enum: [user_select, allowlist, fixed]",
+		} {
+			if !strings.Contains(document, fragment) {
+				t.Fatalf("%s is missing Agent Manifest V2 contract %q", path, fragment)
+			}
+		}
+		v2Start := strings.Index(document, "    AgentManifestV2:\n")
+		v2End := strings.Index(document[v2Start+1:], "    AgentModelConstraintsV1:\n")
+		if v2Start < 0 || v2End < 0 {
+			t.Fatalf("%s has no deterministic AgentManifestV2 boundary", path)
+		}
+		v2 := document[v2Start : v2Start+1+v2End]
+		if strings.Contains(v2, "model_constraints:") || !strings.Contains(v2, "model_policy:") {
+			t.Fatalf("%s mixes V1 and V2 model fields", path)
+		}
+	}
+}
+
 func TestOpenAPIContainsOrganizationAgentApprovalContract(t *testing.T) {
 	contents, err := os.ReadFile("openapi.yaml")
 	if err != nil {

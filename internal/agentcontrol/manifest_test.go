@@ -51,6 +51,70 @@ func TestCanonicalizeVersionSortsEverySetAndProducesStableDigests(t *testing.T) 
 	}
 }
 
+func TestCanonicalizeVersionV2SupportsRuntimeModelSelection(t *testing.T) {
+	manifest, bundle := emptyManifestV2Fixture(ModelSelectionUserSelect, nil, nil)
+	canonical, err := CanonicalizeVersion(manifest, bundle)
+	if err != nil {
+		t.Fatalf("CanonicalizeVersion(V2 user_select) error = %v", err)
+	}
+
+	want := `{"assets":[],"dependencies":[],"identity":{"system_prompt":"Agent identity"},"model_policy":{"allowed_models":[],"allowed_providers":[],"mode":"user_select"},"runtime_compatibility":{"maximum_version_exclusive":null,"minimum_version":"v0.18.2-agentera.1"},"schema_version":2,"tools":{"allowed":["files.read"],"denied":["shell.exec"]}}`
+	if string(canonical.ManifestJSON) != want {
+		t.Fatalf("canonical V2 manifest = %s, want %s", canonical.ManifestJSON, want)
+	}
+	decoded, err := DecodeManifest(canonical.ManifestJSON)
+	if err != nil {
+		t.Fatalf("DecodeManifest(canonical V2) error = %v", err)
+	}
+	if decoded.SchemaVersion != 2 || decoded.ModelPolicy.Mode != ModelSelectionUserSelect {
+		t.Fatalf("decoded V2 policy = %+v", decoded.ModelPolicy)
+	}
+}
+
+func TestCanonicalizeVersionV2EnforcesModelPolicyModes(t *testing.T) {
+	tests := []struct {
+		name      string
+		mode      ModelSelectionMode
+		providers []string
+		models    []string
+		valid     bool
+	}{
+		{name: "user selected", mode: ModelSelectionUserSelect, valid: true},
+		{name: "user selected rejects allowlist", mode: ModelSelectionUserSelect, providers: []string{"openai"}, models: []string{"gpt-5.6"}},
+		{name: "allowlist", mode: ModelSelectionAllowlist, providers: []string{"openai"}, models: []string{"gpt-5.6"}, valid: true},
+		{name: "allowlist requires providers", mode: ModelSelectionAllowlist, models: []string{"gpt-5.6"}},
+		{name: "allowlist requires models", mode: ModelSelectionAllowlist, providers: []string{"openai"}},
+		{name: "fixed", mode: ModelSelectionFixed, providers: []string{"openai"}, models: []string{"gpt-5.6"}, valid: true},
+		{name: "fixed rejects multiple providers", mode: ModelSelectionFixed, providers: []string{"openai", "anthropic"}, models: []string{"gpt-5.6"}},
+		{name: "fixed rejects multiple models", mode: ModelSelectionFixed, providers: []string{"openai"}, models: []string{"gpt-5.6", "gpt-5.5"}},
+		{name: "unknown mode", mode: ModelSelectionMode("automatic")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manifest, bundle := emptyManifestV2Fixture(tt.mode, tt.providers, tt.models)
+			_, err := CanonicalizeVersion(manifest, bundle)
+			if tt.valid && err != nil {
+				t.Fatalf("CanonicalizeVersion() error = %v", err)
+			}
+			if !tt.valid && err == nil {
+				t.Fatal("CanonicalizeVersion() accepted an invalid V2 model policy")
+			}
+		})
+	}
+}
+
+func TestManifestDecoderKeepsV1AndV2FieldsDisjoint(t *testing.T) {
+	v1WithPolicy := bytes.Replace(strictManifestJSON(), []byte(`"model_constraints":{"allowed_providers":["openai"],"allowed_models":["gpt-5.6"]}`), []byte(`"model_constraints":{"allowed_providers":["openai"],"allowed_models":["gpt-5.6"]},"model_policy":{"mode":"user_select","allowed_providers":[],"allowed_models":[]}`), 1)
+	if _, err := DecodeManifest(v1WithPolicy); err == nil {
+		t.Fatal("DecodeManifest() accepted a V2 policy in a V1 manifest")
+	}
+
+	v2WithConstraints := []byte(`{"schema_version":2,"identity":{"system_prompt":"Agent identity"},"assets":[],"model_policy":{"mode":"user_select","allowed_providers":[],"allowed_models":[]},"model_constraints":{"allowed_providers":["openai"],"allowed_models":["gpt-5.6"]},"tools":{"allowed":[],"denied":[]},"dependencies":[],"runtime_compatibility":{"minimum_version":"0.18.2-agentera.1","maximum_version_exclusive":null}}`)
+	if _, err := DecodeManifest(v2WithConstraints); err == nil {
+		t.Fatal("DecodeManifest() accepted V1 constraints in a V2 manifest")
+	}
+}
+
 func TestCanonicalizeVersionRejectsUnsafePathsAndDuplicateNormalizedPaths(t *testing.T) {
 	for _, unsafePath := range []string{
 		"../escape.md",
@@ -242,6 +306,22 @@ func emptyManifestFixture() (AgentManifestV1, VersionBundleV1) {
 		Identity:      AgentIdentityV1{SystemPrompt: "Agent identity"},
 		ModelConstraints: ModelConstraintsV1{
 			AllowedProviders: []string{"openai"}, AllowedModels: []string{"gpt-5.6"},
+		},
+		Tools:                ToolPolicyV1{Allowed: []string{"files.read"}, Denied: []string{"shell.exec"}},
+		RuntimeCompatibility: RuntimeCompatibilityV1{MinimumVersion: "0.18.2-agentera.1"},
+	}, VersionBundleV1{Assets: []BundleAssetV1{}}
+}
+
+func emptyManifestV2Fixture(
+	mode ModelSelectionMode,
+	providers []string,
+	models []string,
+) (AgentManifest, VersionBundleV1) {
+	return AgentManifest{
+		SchemaVersion: 2,
+		Identity:      AgentIdentityV1{SystemPrompt: "Agent identity"},
+		ModelPolicy: ModelPolicyV2{
+			Mode: mode, AllowedProviders: providers, AllowedModels: models,
 		},
 		Tools:                ToolPolicyV1{Allowed: []string{"files.read"}, Denied: []string{"shell.exec"}},
 		RuntimeCompatibility: RuntimeCompatibilityV1{MinimumVersion: "0.18.2-agentera.1"},

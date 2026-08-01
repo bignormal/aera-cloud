@@ -177,6 +177,8 @@ func cloneAgentManifest(value AgentManifestV1) AgentManifestV1 {
 	value.Assets = cloneOrganizationSlice(value.Assets)
 	value.ModelConstraints.AllowedProviders = cloneOrganizationSlice(value.ModelConstraints.AllowedProviders)
 	value.ModelConstraints.AllowedModels = cloneOrganizationSlice(value.ModelConstraints.AllowedModels)
+	value.ModelPolicy.AllowedProviders = cloneOrganizationSlice(value.ModelPolicy.AllowedProviders)
+	value.ModelPolicy.AllowedModels = cloneOrganizationSlice(value.ModelPolicy.AllowedModels)
 	value.Tools.Allowed = cloneOrganizationSlice(value.Tools.Allowed)
 	value.Tools.Denied = cloneOrganizationSlice(value.Tools.Denied)
 	value.Dependencies = cloneOrganizationSlice(value.Dependencies)

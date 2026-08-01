@@ -778,11 +778,8 @@ func validateAgainstCurrentOrganizationPolicy(
 	policy organization.PolicyDocument,
 ) error {
 	if _, err := IntersectOrganizationAgentPolicy(
-		organization.DefaultPolicyDocument(), policy, AgentPolicyConstraints{
-			AllowedProviders: canonical.Package.Manifest.ModelConstraints.AllowedProviders,
-			AllowedModels:    canonical.Package.Manifest.ModelConstraints.AllowedModels,
-			AllowedTools:     canonical.Package.Manifest.Tools.Allowed,
-		},
+		organization.DefaultPolicyDocument(), policy,
+		agentPolicyConstraintsForManifest(canonical.Package.Manifest),
 	); err != nil {
 		return ErrOrganizationPublicationPolicyBlocked
 	}
