@@ -270,6 +270,22 @@ func TestOpenAPIExposesStrictAgentManifestV2ModelPolicy(t *testing.T) {
 	}
 }
 
+func TestOpenAPIAgentRuntimeCompatibilityAllowsNullMaximum(t *testing.T) {
+	expectations := map[string]string{
+		"openapi.yaml":                "maximum_version_exclusive:\n          type: string\n          nullable: true",
+		"openapi/internal-admin.yaml": "maximum_version_exclusive: { type: string, nullable: true, minLength: 1, maxLength: 64 }",
+	}
+	for path, fragment := range expectations {
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if !strings.Contains(string(contents), fragment) {
+			t.Fatalf("%s does not allow a null Agent runtime maximum", path)
+		}
+	}
+}
+
 func TestOpenAPIContainsOrganizationAgentApprovalContract(t *testing.T) {
 	contents, err := os.ReadFile("openapi.yaml")
 	if err != nil {
