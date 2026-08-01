@@ -46,8 +46,8 @@ func DecodeBundle(raw []byte) (VersionBundleV1, error) {
 	return bundle, nil
 }
 
-func CanonicalizeVersion(manifest AgentManifestV1, bundle VersionBundleV1) (CanonicalVersion, error) {
-	if manifest.SchemaVersion != 1 || !validText(manifest.Identity.SystemPrompt, 1, MaxManifestBytes) ||
+func CanonicalizeVersion(manifest AgentManifest, bundle VersionBundleV1) (CanonicalVersion, error) {
+	if (manifest.SchemaVersion != 1 && manifest.SchemaVersion != 2) || !validText(manifest.Identity.SystemPrompt, 1, MaxManifestBytes) ||
 		len(manifest.Assets) > MaxAssetCount || len(bundle.Assets) > MaxAssetCount {
 		return CanonicalVersion{}, ErrInvalidAgentContent
 	}
@@ -99,13 +99,30 @@ func CanonicalizeVersion(manifest AgentManifestV1, bundle VersionBundleV1) (Cano
 		return CanonicalVersion{}, ErrInvalidAgentContent
 	}
 
-	providers, err := canonicalStringSet(manifest.ModelConstraints.AllowedProviders, true)
-	if err != nil || len(providers) == 0 {
-		return CanonicalVersion{}, ErrInvalidAgentContent
-	}
-	models, err := canonicalStringSet(manifest.ModelConstraints.AllowedModels, true)
-	if err != nil || len(models) == 0 {
-		return CanonicalVersion{}, ErrInvalidAgentContent
+	var providers []string
+	var models []string
+	var modelMode ModelSelectionMode
+	var err error
+	switch manifest.SchemaVersion {
+	case 1:
+		providers, err = canonicalStringSet(manifest.ModelConstraints.AllowedProviders, true)
+		if err != nil || len(providers) == 0 {
+			return CanonicalVersion{}, ErrInvalidAgentContent
+		}
+		models, err = canonicalStringSet(manifest.ModelConstraints.AllowedModels, true)
+		if err != nil || len(models) == 0 {
+			return CanonicalVersion{}, ErrInvalidAgentContent
+		}
+	case 2:
+		modelMode = manifest.ModelPolicy.Mode
+		providers, err = canonicalStringSet(manifest.ModelPolicy.AllowedProviders, true)
+		if err != nil {
+			return CanonicalVersion{}, ErrInvalidAgentContent
+		}
+		models, err = canonicalStringSet(manifest.ModelPolicy.AllowedModels, true)
+		if err != nil || !validModelPolicyV2(modelMode, providers, models) {
+			return CanonicalVersion{}, ErrInvalidAgentContent
+		}
 	}
 	allowedTools, err := canonicalStringSet(manifest.Tools.Allowed, true)
 	if err != nil {
@@ -166,18 +183,37 @@ func CanonicalizeVersion(manifest AgentManifestV1, bundle VersionBundleV1) (Cano
 		return dependencies[left].AgentDefinitionID < dependencies[right].AgentDefinitionID
 	})
 
-	canonicalManifestValue := canonicalManifest{
-		Assets:       canonicalAssets,
-		Dependencies: dependencies,
-		Identity: canonicalIdentity{
-			SystemPrompt: manifest.Identity.SystemPrompt,
-		},
-		ModelConstraints: canonicalModelConstraints{AllowedModels: models, AllowedProviders: providers},
-		RuntimeCompatibility: canonicalRuntimeCompatibility{
-			MaximumVersionExclusive: maximum, MinimumVersion: minimum,
-		},
-		SchemaVersion: manifest.SchemaVersion,
-		Tools:         canonicalTools{Allowed: allowedTools, Denied: deniedTools},
+	var canonicalManifestValue any
+	if manifest.SchemaVersion == 1 {
+		canonicalManifestValue = canonicalManifest{
+			Assets:       canonicalAssets,
+			Dependencies: dependencies,
+			Identity: canonicalIdentity{
+				SystemPrompt: manifest.Identity.SystemPrompt,
+			},
+			ModelConstraints: canonicalModelConstraints{AllowedModels: models, AllowedProviders: providers},
+			RuntimeCompatibility: canonicalRuntimeCompatibility{
+				MaximumVersionExclusive: maximum, MinimumVersion: minimum,
+			},
+			SchemaVersion: manifest.SchemaVersion,
+			Tools:         canonicalTools{Allowed: allowedTools, Denied: deniedTools},
+		}
+	} else {
+		canonicalManifestValue = canonicalManifestV2{
+			Assets:       canonicalAssets,
+			Dependencies: dependencies,
+			Identity: canonicalIdentity{
+				SystemPrompt: manifest.Identity.SystemPrompt,
+			},
+			ModelPolicy: canonicalModelPolicyV2{
+				Mode: modelMode, AllowedModels: models, AllowedProviders: providers,
+			},
+			RuntimeCompatibility: canonicalRuntimeCompatibility{
+				MaximumVersionExclusive: maximum, MinimumVersion: minimum,
+			},
+			SchemaVersion: manifest.SchemaVersion,
+			Tools:         canonicalTools{Allowed: allowedTools, Denied: deniedTools},
+		}
 	}
 	manifestJSON, err := marshalCanonical(canonicalManifestValue)
 	if err != nil || len(manifestJSON) > MaxManifestBytes {
@@ -230,6 +266,16 @@ type canonicalManifest struct {
 	Tools                canonicalTools                `json:"tools"`
 }
 
+type canonicalManifestV2 struct {
+	Assets               []canonicalManifestAsset      `json:"assets"`
+	Dependencies         []canonicalDependency         `json:"dependencies"`
+	Identity             canonicalIdentity             `json:"identity"`
+	ModelPolicy          canonicalModelPolicyV2        `json:"model_policy"`
+	RuntimeCompatibility canonicalRuntimeCompatibility `json:"runtime_compatibility"`
+	SchemaVersion        int                           `json:"schema_version"`
+	Tools                canonicalTools                `json:"tools"`
+}
+
 type canonicalManifestAsset struct {
 	Kind      AssetKind `json:"kind"`
 	MediaType MediaType `json:"media_type"`
@@ -249,6 +295,25 @@ type canonicalIdentity struct {
 type canonicalModelConstraints struct {
 	AllowedModels    []string `json:"allowed_models"`
 	AllowedProviders []string `json:"allowed_providers"`
+}
+
+type canonicalModelPolicyV2 struct {
+	AllowedModels    []string           `json:"allowed_models"`
+	AllowedProviders []string           `json:"allowed_providers"`
+	Mode             ModelSelectionMode `json:"mode"`
+}
+
+func validModelPolicyV2(mode ModelSelectionMode, providers []string, models []string) bool {
+	switch mode {
+	case ModelSelectionUserSelect:
+		return len(providers) == 0 && len(models) == 0
+	case ModelSelectionAllowlist:
+		return len(providers) > 0 && len(models) > 0
+	case ModelSelectionFixed:
+		return len(providers) == 1 && len(models) == 1
+	default:
+		return false
+	}
 }
 
 type canonicalRuntimeCompatibility struct {

@@ -4578,7 +4578,7 @@ components:
               maxLength: 699051
               pattern: '^[A-Za-z0-9_-]+$'
             manifest:
-              $ref: '#/components/schemas/AgentManifestV1'
+              $ref: '#/components/schemas/AgentManifest'
             bundle:
               $ref: '#/components/schemas/AgentVersionBundleV1'
             manifest_digest:
@@ -4624,7 +4624,7 @@ components:
           maxLength: 699051
           pattern: '^[A-Za-z0-9_-]+$'
         manifest:
-          $ref: '#/components/schemas/AgentManifestV1'
+          $ref: '#/components/schemas/AgentManifest'
         bundle:
           $ref: '#/components/schemas/AgentVersionBundleV1'
     SubmitNextOrganizationAgentRequest:
@@ -4644,7 +4644,7 @@ components:
           format: uuid
           pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
         manifest:
-          $ref: '#/components/schemas/AgentManifestV1'
+          $ref: '#/components/schemas/AgentManifest'
         bundle:
           $ref: '#/components/schemas/AgentVersionBundleV1'
     WithdrawOrganizationAgentRequest:
@@ -4814,7 +4814,7 @@ components:
           format: int64
           minimum: 1
         manifest:
-          $ref: '#/components/schemas/AgentManifestV1'
+          $ref: '#/components/schemas/AgentManifest'
         bundle:
           $ref: '#/components/schemas/AgentVersionBundleV1'
         content_digest:
@@ -4838,6 +4838,10 @@ components:
         published_at:
           type: string
           format: date-time
+    AgentManifest:
+      oneOf:
+        - $ref: '#/components/schemas/AgentManifestV1'
+        - $ref: '#/components/schemas/AgentManifestV2'
     AgentManifestV1:
       type: object
       additionalProperties: false
@@ -4855,6 +4859,32 @@ components:
             $ref: '#/components/schemas/AgentManifestAssetV1'
         model_constraints:
           $ref: '#/components/schemas/AgentModelConstraintsV1'
+        tools:
+          $ref: '#/components/schemas/AgentToolPolicyV1'
+        dependencies:
+          type: array
+          maxItems: 128
+          items:
+            $ref: '#/components/schemas/AgentDependencyV1'
+        runtime_compatibility:
+          $ref: '#/components/schemas/AgentRuntimeCompatibilityV1'
+    AgentManifestV2:
+      type: object
+      additionalProperties: false
+      required: [schema_version, identity, assets, model_policy, tools, dependencies, runtime_compatibility]
+      properties:
+        schema_version:
+          type: integer
+          enum: [2]
+        identity:
+          $ref: '#/components/schemas/AgentIdentityV1'
+        assets:
+          type: array
+          maxItems: 128
+          items:
+            $ref: '#/components/schemas/AgentManifestAssetV1'
+        model_policy:
+          $ref: '#/components/schemas/AgentModelPolicyV2'
         tools:
           $ref: '#/components/schemas/AgentToolPolicyV1'
         dependencies:
@@ -4906,6 +4936,31 @@ components:
         allowed_models:
           type: array
           minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+            maxLength: 256
+    AgentModelPolicyV2:
+      type: object
+      additionalProperties: false
+      description: Runtime model selection policy. user_select requires empty allowlists, allowlist requires both lists, and fixed requires exactly one provider and model; the server enforces those canonical rules.
+      required: [mode, allowed_providers, allowed_models]
+      properties:
+        mode:
+          type: string
+          enum: [user_select, allowlist, fixed]
+        allowed_providers:
+          type: array
+          maxItems: 128
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+            maxLength: 128
+        allowed_models:
+          type: array
+          maxItems: 128
           uniqueItems: true
           items:
             type: string
@@ -4995,7 +5050,7 @@ components:
           maxLength: 699051
           pattern: '^[A-Za-z0-9_-]+$'
         manifest:
-          $ref: '#/components/schemas/AgentManifestV1'
+          $ref: '#/components/schemas/AgentManifest'
         bundle:
           $ref: '#/components/schemas/AgentVersionBundleV1'
     PublishNextAgentVersionRequest:
@@ -5014,7 +5069,7 @@ components:
             Current mutable display metadata for the stable Agent definition;
             publishing a new immutable version updates this name atomically.
         manifest:
-          $ref: '#/components/schemas/AgentManifestV1'
+          $ref: '#/components/schemas/AgentManifest'
         bundle:
           $ref: '#/components/schemas/AgentVersionBundleV1'
     AgentPublication:
@@ -5504,7 +5559,7 @@ components:
           format: int64
           minimum: 1
         document:
-          $ref: '#/components/schemas/AgentPolicyDocumentV1'
+          $ref: '#/components/schemas/AgentPolicyDocument'
         content_digest:
           $ref: '#/components/schemas/SHA256Digest'
         issuer:
@@ -5521,6 +5576,10 @@ components:
         created_at:
           type: string
           format: date-time
+    AgentPolicyDocument:
+      oneOf:
+        - $ref: '#/components/schemas/AgentPolicyDocumentV1'
+        - $ref: '#/components/schemas/AgentPolicyDocumentV2'
     AgentPolicyDocumentV1:
       type: object
       additionalProperties: false
@@ -5548,6 +5607,47 @@ components:
           $ref: '#/components/schemas/SHA256Digest'
         model_constraints:
           $ref: '#/components/schemas/AgentModelConstraintsV1'
+        tools:
+          $ref: '#/components/schemas/AgentToolPolicyV1'
+        runtime_compatibility:
+          $ref: '#/components/schemas/AgentRuntimeCompatibilityV1'
+        publication_allowed:
+          type: boolean
+          enum: [false]
+        deny_rules:
+          type: array
+          items:
+            type: string
+            maxLength: 256
+        official_context:
+          $ref: '#/components/schemas/OfficialAgentPolicyContextV1'
+    AgentPolicyDocumentV2:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - agent_definition_id
+        - agent_version_id
+        - version_digest
+        - model_policy
+        - tools
+        - runtime_compatibility
+        - publication_allowed
+        - deny_rules
+      properties:
+        schema_version:
+          type: integer
+          enum: [2]
+        agent_definition_id:
+          type: string
+          format: uuid
+        agent_version_id:
+          type: string
+          format: uuid
+        version_digest:
+          $ref: '#/components/schemas/SHA256Digest'
+        model_policy:
+          $ref: '#/components/schemas/AgentModelPolicyV2'
         tools:
           $ref: '#/components/schemas/AgentToolPolicyV1'
         runtime_compatibility:

@@ -1,6 +1,7 @@
 package agentcontrol
 
 import (
+	"encoding/json"
 	"errors"
 
 	"github.com/google/uuid"
@@ -101,15 +102,21 @@ const (
 	MediaTypeTextPlain    MediaType = "text/plain"
 )
 
-type AgentManifestV1 struct {
+type AgentManifest struct {
 	SchemaVersion        int                    `json:"schema_version"`
 	Identity             AgentIdentityV1        `json:"identity"`
 	Assets               []ManifestAssetV1      `json:"assets"`
-	ModelConstraints     ModelConstraintsV1     `json:"model_constraints"`
+	ModelConstraints     ModelConstraintsV1     `json:"-"`
+	ModelPolicy          ModelPolicyV2          `json:"-"`
 	Tools                ToolPolicyV1           `json:"tools"`
 	Dependencies         []AgentDependencyV1    `json:"dependencies"`
 	RuntimeCompatibility RuntimeCompatibilityV1 `json:"runtime_compatibility"`
 }
+
+// AgentManifestV1 remains an alias so existing V1 call sites and fixtures keep
+// their source compatibility while the wire decoder accepts both immutable
+// manifest schema versions.
+type AgentManifestV1 = AgentManifest
 
 type AgentIdentityV1 struct {
 	SystemPrompt string `json:"system_prompt"`
@@ -125,6 +132,97 @@ type ManifestAssetV1 struct {
 type ModelConstraintsV1 struct {
 	AllowedProviders []string `json:"allowed_providers"`
 	AllowedModels    []string `json:"allowed_models"`
+}
+
+type ModelSelectionMode string
+
+const (
+	ModelSelectionUserSelect ModelSelectionMode = "user_select"
+	ModelSelectionAllowlist  ModelSelectionMode = "allowlist"
+	ModelSelectionFixed      ModelSelectionMode = "fixed"
+)
+
+type ModelPolicyV2 struct {
+	Mode             ModelSelectionMode `json:"mode"`
+	AllowedProviders []string           `json:"allowed_providers"`
+	AllowedModels    []string           `json:"allowed_models"`
+}
+
+type agentManifestV1Wire struct {
+	SchemaVersion        int                    `json:"schema_version"`
+	Identity             AgentIdentityV1        `json:"identity"`
+	Assets               []ManifestAssetV1      `json:"assets"`
+	ModelConstraints     ModelConstraintsV1     `json:"model_constraints"`
+	Tools                ToolPolicyV1           `json:"tools"`
+	Dependencies         []AgentDependencyV1    `json:"dependencies"`
+	RuntimeCompatibility RuntimeCompatibilityV1 `json:"runtime_compatibility"`
+}
+
+type agentManifestV2Wire struct {
+	SchemaVersion        int                    `json:"schema_version"`
+	Identity             AgentIdentityV1        `json:"identity"`
+	Assets               []ManifestAssetV1      `json:"assets"`
+	ModelPolicy          ModelPolicyV2          `json:"model_policy"`
+	Tools                ToolPolicyV1           `json:"tools"`
+	Dependencies         []AgentDependencyV1    `json:"dependencies"`
+	RuntimeCompatibility RuntimeCompatibilityV1 `json:"runtime_compatibility"`
+}
+
+func (manifest AgentManifest) MarshalJSON() ([]byte, error) {
+	switch manifest.SchemaVersion {
+	case 0, 1:
+		return json.Marshal(agentManifestV1Wire{
+			SchemaVersion: manifest.SchemaVersion, Identity: manifest.Identity, Assets: manifest.Assets,
+			ModelConstraints: manifest.ModelConstraints, Tools: manifest.Tools, Dependencies: manifest.Dependencies,
+			RuntimeCompatibility: manifest.RuntimeCompatibility,
+		})
+	case 2:
+		return json.Marshal(agentManifestV2Wire{
+			SchemaVersion: manifest.SchemaVersion, Identity: manifest.Identity, Assets: manifest.Assets,
+			ModelPolicy: manifest.ModelPolicy, Tools: manifest.Tools, Dependencies: manifest.Dependencies,
+			RuntimeCompatibility: manifest.RuntimeCompatibility,
+		})
+	default:
+		return nil, errors.New("unsupported Agent manifest schema version")
+	}
+}
+
+func (manifest *AgentManifest) UnmarshalJSON(raw []byte) error {
+	if manifest == nil || rejectDuplicateJSONKeys(raw) != nil {
+		return errors.New("invalid Agent manifest")
+	}
+	var header struct {
+		SchemaVersion int `json:"schema_version"`
+	}
+	if err := json.Unmarshal(raw, &header); err != nil {
+		return err
+	}
+	switch header.SchemaVersion {
+	case 1:
+		var value agentManifestV1Wire
+		if err := decodeStrictJSON(raw, &value); err != nil {
+			return err
+		}
+		*manifest = AgentManifest{
+			SchemaVersion: value.SchemaVersion, Identity: value.Identity, Assets: value.Assets,
+			ModelConstraints: value.ModelConstraints, Tools: value.Tools, Dependencies: value.Dependencies,
+			RuntimeCompatibility: value.RuntimeCompatibility,
+		}
+		return nil
+	case 2:
+		var value agentManifestV2Wire
+		if err := decodeStrictJSON(raw, &value); err != nil {
+			return err
+		}
+		*manifest = AgentManifest{
+			SchemaVersion: value.SchemaVersion, Identity: value.Identity, Assets: value.Assets,
+			ModelPolicy: value.ModelPolicy, Tools: value.Tools, Dependencies: value.Dependencies,
+			RuntimeCompatibility: value.RuntimeCompatibility,
+		}
+		return nil
+	default:
+		return errors.New("unsupported Agent manifest schema version")
+	}
 }
 
 type ToolPolicyV1 struct {

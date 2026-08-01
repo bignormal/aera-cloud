@@ -261,6 +261,49 @@ func TestIntersectOrganizationAgentPolicyRejectsEmptyRequiredSetAndPairMismatch(
 	}
 }
 
+func TestIntersectOrganizationAgentPolicyConstrainsRuntimeModelSelection(t *testing.T) {
+	platform := organization.DefaultPolicyDocument()
+	organizationPolicy := organization.DefaultPolicyDocument()
+
+	unrestricted, err := IntersectOrganizationAgentPolicy(platform, organizationPolicy, AgentPolicyConstraints{
+		ModelMode:    ModelSelectionUserSelect,
+		AllowedTools: []string{},
+	})
+	if err != nil {
+		t.Fatalf("unrestricted user_select error = %v", err)
+	}
+	if unrestricted.ModelMode != ModelSelectionUserSelect || unrestricted.AllowedModelPairs != nil ||
+		len(unrestricted.AllowedProviders) != 0 || len(unrestricted.AllowedModels) != 0 {
+		t.Fatalf("unrestricted user_select = %+v", unrestricted)
+	}
+
+	organizationPolicy.Models.Allowlist = []organization.ModelIdentifier{
+		{Provider: "openai", Model: "gpt-5.6"},
+		{Provider: "anthropic", Model: "claude-opus-5"},
+	}
+	constrained, err := IntersectOrganizationAgentPolicy(platform, organizationPolicy, AgentPolicyConstraints{
+		ModelMode:    ModelSelectionUserSelect,
+		AllowedTools: []string{},
+	})
+	if err != nil {
+		t.Fatalf("constrained user_select error = %v", err)
+	}
+	if constrained.ModelMode != ModelSelectionAllowlist ||
+		!slices.Equal(constrained.AllowedProviders, []string{"anthropic", "openai"}) ||
+		!slices.Equal(constrained.AllowedModels, []string{"claude-opus-5", "gpt-5.6"}) ||
+		len(constrained.AllowedModelPairs) != 2 {
+		t.Fatalf("constrained user_select = %+v", constrained)
+	}
+
+	platform.Models.Allowlist = []organization.ModelIdentifier{{Provider: "google", Model: "gemini-pro"}}
+	if _, err := IntersectOrganizationAgentPolicy(platform, organizationPolicy, AgentPolicyConstraints{
+		ModelMode:    ModelSelectionUserSelect,
+		AllowedTools: []string{},
+	}); !errors.Is(err, ErrOrganizationPublicationPolicyBlocked) {
+		t.Fatalf("empty user_select intersection error = %v", err)
+	}
+}
+
 func TestIntersectOrganizationAgentPolicyPreservesExplicitEmptyToolAllowlist(t *testing.T) {
 	effective, err := IntersectOrganizationAgentPolicy(
 		organization.DefaultPolicyDocument(),

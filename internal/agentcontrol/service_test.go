@@ -416,6 +416,26 @@ func TestPolicyDocumentRecanonicalizesEquivalentJSONStorageBytes(t *testing.T) {
 	}
 }
 
+func TestPolicyDocumentV2PreservesRuntimeModelSelection(t *testing.T) {
+	version := policyVersionV2Fixture(t, uuid.New(), uuid.New(), 1)
+	document, err := policyDocumentForVersion(version)
+	if err != nil {
+		t.Fatalf("policyDocumentForVersion(V2) error = %v", err)
+	}
+	for _, expected := range [][]byte{
+		[]byte(`"schema_version":2`),
+		[]byte(`"model_policy":{"allowed_models":[],"allowed_providers":[],"mode":"user_select"}`),
+		[]byte(hex.EncodeToString(version.ContentDigest[:])),
+	} {
+		if !bytes.Contains(document, expected) {
+			t.Fatalf("V2 policy document = %s, want %s", document, expected)
+		}
+	}
+	if bytes.Contains(document, []byte("model_constraints")) {
+		t.Fatalf("V2 policy document retained V1 model constraints: %s", document)
+	}
+}
+
 func TestOfficialPolicyDocumentBindsDeviceInstallationIdentity(t *testing.T) {
 	fixture := newAgentControlServiceFixture(t)
 	definitionID, versionID := uuid.New(), uuid.New()
@@ -620,6 +640,20 @@ func policyVersionFixture(t *testing.T, definitionID uuid.UUID, versionID uuid.U
 	canonical, err := CanonicalizeVersion(manifest, bundle)
 	if err != nil {
 		t.Fatalf("CanonicalizeVersion() error = %v", err)
+	}
+	return Version{
+		ID: versionID, DefinitionID: definitionID, VersionNumber: number,
+		CanonicalManifest: canonical.ManifestJSON, Bundle: canonical.BundleJSON, ContentDigest: canonical.ContentDigest,
+		RuntimeMinimumVersion: "v0.18.2-agentera.1",
+	}
+}
+
+func policyVersionV2Fixture(t *testing.T, definitionID uuid.UUID, versionID uuid.UUID, number int64) Version {
+	t.Helper()
+	manifest, bundle := emptyManifestV2Fixture(ModelSelectionUserSelect, nil, nil)
+	canonical, err := CanonicalizeVersion(manifest, bundle)
+	if err != nil {
+		t.Fatalf("CanonicalizeVersion(V2) error = %v", err)
 	}
 	return Version{
 		ID: versionID, DefinitionID: definitionID, VersionNumber: number,
