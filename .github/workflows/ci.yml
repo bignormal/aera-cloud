@@ -35,6 +35,7 @@ jobs:
         run: |
           bash scripts/tests/check-secrets.test.sh
           bash scripts/tests/delivery-contract.test.sh
+          bash scripts/tests/runtime-update-mirror.test.sh
           ./scripts/check-secrets.sh
           bash -n deploy/backup.sh deploy/restore-verify.sh scripts/smoke-auth.sh
 
