@@ -21,8 +21,8 @@ func TestEmbeddedMigrationsIncludeInternalBetaDirectRegistration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadMigrations() error = %v", err)
 	}
-	if len(loaded) != 21 {
-		t.Fatalf("embedded migration count = %d, want 21", len(loaded))
+	if len(loaded) != 22 {
+		t.Fatalf("embedded migration count = %d, want 22", len(loaded))
 	}
 	directRegistration := loaded[18]
 	if directRegistration.version != 19 || directRegistration.name != "000019_internal_beta_direct_registration.sql" {
@@ -53,6 +53,28 @@ func TestEmbeddedMigrationsIncludeInternalBetaDirectRegistration(t *testing.T) {
 	} {
 		if !strings.Contains(string(singleApproval.contents), required) {
 			t.Fatalf("migration 21 is missing %q", required)
+		}
+	}
+
+	organizationExperience := loaded[21]
+	if organizationExperience.version != 22 || organizationExperience.name != "000022_organization_experience_candidates.sql" {
+		t.Fatalf("migration 22 = %d/%s", organizationExperience.version, organizationExperience.name)
+	}
+	for _, required := range []string{
+		"ADD CONSTRAINT agent_definitions_organization_id_id_key UNIQUE (organization_id, id)",
+		"ADD CONSTRAINT agent_versions_organization_id_id_key UNIQUE (organization_id, id)",
+		"CREATE TABLE organization_experience_candidates",
+		"FOREIGN KEY (organization_id, agent_definition_id)",
+		"REFERENCES agent_definitions(organization_id, id) ON DELETE RESTRICT",
+		"FOREIGN KEY (organization_id, source_agent_version_id)",
+		"REFERENCES agent_versions(organization_id, id) ON DELETE RESTRICT",
+		"CREATE TABLE organization_experience_candidate_reviews",
+		"UNIQUE (candidate_id)",
+		"organization_experience_candidates_immutable_trigger",
+		"organization_experience_candidate_reviews_immutable_trigger",
+	} {
+		if !strings.Contains(string(organizationExperience.contents), required) {
+			t.Fatalf("migration 22 is missing %q", required)
 		}
 	}
 }
@@ -485,8 +507,8 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	if err := postgres.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if applied != 21 {
-		t.Fatalf("applied migration count = %d, want 21", applied)
+	if applied != 22 {
+		t.Fatalf("applied migration count = %d, want 22", applied)
 	}
 	var receiptConsumedColumn bool
 	if err := postgres.QueryRow(ctx, `

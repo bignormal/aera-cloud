@@ -280,6 +280,7 @@ type agentControlHTTPFixture struct {
 	authenticator  *stubAgentControlAuthenticator
 	principal      Principal
 	workspaceID    uuid.UUID
+	organizationID uuid.UUID
 	definitionID   uuid.UUID
 	versionID      uuid.UUID
 	installationID uuid.UUID
@@ -336,13 +337,21 @@ func newAgentControlHTTPFixture(t *testing.T) *agentControlHTTPFixture {
 	if err != nil {
 		t.Fatalf("CanonicalizeOrganizationSubmission() error = %v", err)
 	}
+	organizationID := uuid.New()
 	organizationSubmission := OrganizationAgentSubmission{
-		ID: uuid.New(), OrganizationID: uuid.New(), Kind: OrganizationSubmissionInitial,
+		ID: uuid.New(), OrganizationID: organizationID, Kind: OrganizationSubmissionInitial,
 		DefinitionID: definitionID, DisplayName: "Research Agent",
 		Manifest: organizationCanonical.Package.Manifest, Bundle: organizationCanonical.Package.Bundle,
 		ManifestDigest: organizationCanonical.ManifestDigest, BundleDigest: organizationCanonical.BundleDigest,
 		ContentDigest: organizationCanonical.ContentDigest, SubmittedByUserID: principal.UserID,
 		Status: OrganizationSubmissionPending, Revision: 1, SubmittedAt: now, UpdatedAt: now,
+	}
+	organizationCandidate := OrganizationExperienceCandidate{
+		ID: candidateID, OrganizationID: organizationID, AgentDefinitionID: definitionID,
+		SourceAgentVersionID: versionID, SubmittedByUserID: &principal.UserID,
+		SubmittedFromDeviceID: &principal.DeviceID, SkillName: candidateBundle.SkillName,
+		DLPContractVersion: ExperienceCandidateDLPVersion, ContentDigest: candidateCanonical.ContentDigest,
+		Bundle: candidateCanonical.Bundle, CreatedAt: now,
 	}
 	service := &stubAgentControlHTTPService{
 		definitions: []Definition{definition}, definition: definition, versions: []Version{version}, version: version,
@@ -355,6 +364,8 @@ func newAgentControlHTTPFixture(t *testing.T) *agentControlHTTPFixture {
 			ToolPermissionDigest: sha256.Sum256([]byte("tools")), CreatedAt: now,
 		},
 		candidates: []ExperienceCandidate{candidate}, candidate: candidate,
+		organizationCandidates:  []OrganizationExperienceCandidate{organizationCandidate},
+		organizationCandidate:   organizationCandidate,
 		organizationSubmissions: []OrganizationAgentSubmission{organizationSubmission},
 		organizationSubmission:  organizationSubmission,
 	}
@@ -364,43 +375,54 @@ func newAgentControlHTTPFixture(t *testing.T) *agentControlHTTPFixture {
 	return &agentControlHTTPFixture{
 		handler: NewHandler(HTTPConfig{Service: service, AccessTokens: authenticator}),
 		service: service, authenticator: authenticator, principal: principal,
-		workspaceID: workspaceID, definitionID: definitionID, versionID: versionID, installationID: installationID,
+		workspaceID: workspaceID, organizationID: organizationID,
+		definitionID: definitionID, versionID: versionID, installationID: installationID,
 		policyID: policyID, profileID: profileID, candidateID: candidateID, digest: digest,
 	}
 }
 
 type stubAgentControlHTTPService struct {
-	lastPrincipal            Principal
-	lastWorkspaceID          uuid.UUID
-	lastOrganizationID       uuid.UUID
-	lastInstallationRequest  CreateInstallationRequest
-	err                      error
-	definitions              []Definition
-	definition               Definition
-	versions                 []Version
-	version                  Version
-	publication              Publication
-	creation                 InstallationCreation
-	policy                   PolicySnapshot
-	installation             Installation
-	revocation               VersionRevocation
-	binding                  RuntimeBindingRecord
-	candidates               []ExperienceCandidate
-	candidate                ExperienceCandidate
-	lastCandidateSubmit      SubmitExperienceCandidateRequest
-	lastCandidateReview      ReviewExperienceCandidateRequest
-	lastCandidateID          uuid.UUID
-	lastCandidateRequestID   string
-	candidateSubmitCalls     int
-	candidateReviewCalls     int
-	candidateOwnListCalls    int
-	candidateReviewListCalls int
-	organizationSubmissions  []OrganizationAgentSubmission
-	organizationSubmission   OrganizationAgentSubmission
-	managedUpdate            OfficialManagedUpdate
-	lastManagedUpdateRequest GetManagedOfficialUpdateRequest
-	lastManagedApplyRequest  ManagedUpdateRequest
-	lastBindingCommand       RuntimeBindingRecordCommand
+	lastPrincipal                        Principal
+	lastWorkspaceID                      uuid.UUID
+	lastOrganizationID                   uuid.UUID
+	lastInstallationRequest              CreateInstallationRequest
+	err                                  error
+	definitions                          []Definition
+	definition                           Definition
+	versions                             []Version
+	version                              Version
+	publication                          Publication
+	creation                             InstallationCreation
+	policy                               PolicySnapshot
+	installation                         Installation
+	revocation                           VersionRevocation
+	binding                              RuntimeBindingRecord
+	candidates                           []ExperienceCandidate
+	candidate                            ExperienceCandidate
+	organizationCandidates               []OrganizationExperienceCandidate
+	organizationCandidate                OrganizationExperienceCandidate
+	lastCandidateSubmit                  SubmitExperienceCandidateRequest
+	lastCandidateReview                  ReviewExperienceCandidateRequest
+	lastCandidateID                      uuid.UUID
+	lastCandidateRequestID               string
+	candidateSubmitCalls                 int
+	candidateReviewCalls                 int
+	candidateOwnListCalls                int
+	candidateReviewListCalls             int
+	lastOrganizationCandidateSubmit      SubmitOrganizationExperienceCandidateRequest
+	lastOrganizationCandidateReview      ReviewOrganizationExperienceCandidateRequest
+	lastOrganizationCandidateID          uuid.UUID
+	lastOrganizationCandidateRequestID   string
+	organizationCandidateSubmitCalls     int
+	organizationCandidateReviewCalls     int
+	organizationCandidateOwnListCalls    int
+	organizationCandidateReviewListCalls int
+	organizationSubmissions              []OrganizationAgentSubmission
+	organizationSubmission               OrganizationAgentSubmission
+	managedUpdate                        OfficialManagedUpdate
+	lastManagedUpdateRequest             GetManagedOfficialUpdateRequest
+	lastManagedApplyRequest              ManagedUpdateRequest
+	lastBindingCommand                   RuntimeBindingRecordCommand
 }
 
 func (s *stubAgentControlHTTPService) ListDefinitions(_ context.Context, principal Principal) ([]Definition, error) {
@@ -695,6 +717,69 @@ func (s *stubAgentControlHTTPService) ReviewExperienceCandidate(
 	s.lastCandidateReview = request
 	s.candidateReviewCalls++
 	return s.candidate, s.err
+}
+
+func (s *stubAgentControlHTTPService) SubmitOrganizationExperienceCandidate(
+	_ context.Context,
+	principal Principal,
+	organizationID uuid.UUID,
+	request SubmitOrganizationExperienceCandidateRequest,
+) (OrganizationExperienceCandidate, error) {
+	s.lastPrincipal = principal
+	s.lastOrganizationID = organizationID
+	s.lastOrganizationCandidateSubmit = request
+	s.organizationCandidateSubmitCalls++
+	return s.organizationCandidate, s.err
+}
+
+func (s *stubAgentControlHTTPService) ListOwnOrganizationExperienceCandidates(
+	_ context.Context,
+	principal Principal,
+	organizationID uuid.UUID,
+) ([]OrganizationExperienceCandidate, error) {
+	s.lastPrincipal = principal
+	s.lastOrganizationID = organizationID
+	s.organizationCandidateOwnListCalls++
+	return s.organizationCandidates, s.err
+}
+
+func (s *stubAgentControlHTTPService) ListOrganizationExperienceCandidates(
+	_ context.Context,
+	principal Principal,
+	organizationID uuid.UUID,
+) ([]OrganizationExperienceCandidate, error) {
+	s.lastPrincipal = principal
+	s.lastOrganizationID = organizationID
+	s.organizationCandidateReviewListCalls++
+	return s.organizationCandidates, s.err
+}
+
+func (s *stubAgentControlHTTPService) GetOrganizationExperienceCandidate(
+	_ context.Context,
+	principal Principal,
+	organizationID uuid.UUID,
+	candidateID uuid.UUID,
+	requestID string,
+) (OrganizationExperienceCandidate, error) {
+	s.lastPrincipal = principal
+	s.lastOrganizationID = organizationID
+	s.lastOrganizationCandidateID = candidateID
+	s.lastOrganizationCandidateRequestID = requestID
+	return s.organizationCandidate, s.err
+}
+
+func (s *stubAgentControlHTTPService) ReviewOrganizationExperienceCandidate(
+	_ context.Context,
+	principal Principal,
+	organizationID uuid.UUID,
+	request ReviewOrganizationExperienceCandidateRequest,
+) (OrganizationExperienceCandidate, error) {
+	s.lastPrincipal = principal
+	s.lastOrganizationID = organizationID
+	s.lastOrganizationCandidateID = request.CandidateID
+	s.lastOrganizationCandidateReview = request
+	s.organizationCandidateReviewCalls++
+	return s.organizationCandidate, s.err
 }
 
 type stubAgentControlAuthenticator struct {

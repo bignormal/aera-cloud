@@ -618,6 +618,52 @@ func TestOpenAPIContainsStrictExperienceCandidateContract(t *testing.T) {
 	}
 }
 
+func TestOpenAPIContainsStrictOrganizationExperienceCandidateContract(t *testing.T) {
+	contents, err := os.ReadFile("openapi.yaml")
+	if err != nil {
+		t.Fatalf("read openapi.yaml: %v", err)
+	}
+	document := string(contents)
+	for _, path := range []string{
+		"/api/v1/organizations/{organization_id}/agent-definitions/{definition_id}/experience-candidates:",
+		"/api/v1/organizations/{organization_id}/experience-candidates/mine:",
+		"/api/v1/organizations/{organization_id}/experience-candidates:",
+		"/api/v1/organizations/{organization_id}/experience-candidates/{candidate_id}:",
+		"/api/v1/organizations/{organization_id}/experience-candidates/{candidate_id}/review:",
+	} {
+		if !strings.Contains(document, path) {
+			t.Fatalf("OpenAPI is missing %s", path)
+		}
+	}
+	for _, schema := range []string{
+		"SubmitOrganizationExperienceCandidateRequest:",
+		"OrganizationExperienceCandidateSummary:",
+		"OrganizationExperienceCandidateDetail:",
+		"OrganizationExperienceCandidateListResponse:",
+	} {
+		if !strings.Contains(document, schema) {
+			t.Fatalf("OpenAPI is missing Organization candidate schema %q", schema)
+		}
+	}
+	submissionSchema := openAPISchemaBlock(t, document, "SubmitOrganizationExperienceCandidateRequest")
+	for _, required := range []string{
+		"source_version_id:", "skill_name:", "schema_version:", "dlp_contract_version:", "bundle:",
+	} {
+		if !strings.Contains(submissionSchema, required) {
+			t.Fatalf("Organization candidate submission schema is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"organization_id:", "definition_id:", "actor_user_id:", "role:", "device_id:",
+		"origin:", "token:", "profile_path:", "source_path:", "content_digest:",
+		"dlp_bypass:", "replacement_content:",
+	} {
+		if strings.Contains(submissionSchema, forbidden) {
+			t.Fatalf("Organization candidate submission schema exposed forbidden input %q", forbidden)
+		}
+	}
+}
+
 func TestOpenAPIContainsStrictWorkspaceControlPlaneContract(t *testing.T) {
 	contents, err := os.ReadFile("openapi.yaml")
 	if err != nil {
