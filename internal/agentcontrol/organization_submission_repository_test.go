@@ -243,6 +243,41 @@ func TestOrganizationApprovalPublishesOneLinkedSignedVersionAndReplays(t *testin
 	fixture.assertVersionCount(t, submission.DefinitionID, 1)
 }
 
+func TestOrganizationAgentSubmissionPublishedVersionIdentity(t *testing.T) {
+	fixture := newOrganizationSubmissionRepositoryFixture(t)
+	pending := fixture.submitInitial(t, fixture.owner, 0xb1)
+	if pending.PublishedVersionID != uuid.Nil {
+		t.Fatalf("pending submission leaked published version %s", pending.PublishedVersionID)
+	}
+
+	command := fixture.approvalCommand(t, pending, fixture.admin, 0xb2)
+	approved, err := fixture.repository.ReviewOrganizationAgentSubmission(fixture.ctx, command)
+	if err != nil {
+		t.Fatalf("ReviewOrganizationAgentSubmission(approve) error = %v", err)
+	}
+	publishedVersionID := fixture.latestVersionID(t, pending.DefinitionID)
+	if approved.PublishedVersionID != publishedVersionID {
+		t.Fatalf("approved PublishedVersionID = %s, want %s", approved.PublishedVersionID, publishedVersionID)
+	}
+
+	replayed, err := fixture.repository.ReviewOrganizationAgentSubmission(fixture.ctx, command)
+	if err != nil || !replayed.Replayed || replayed.PublishedVersionID != publishedVersionID {
+		t.Fatalf("replayed approval = %+v error=%v", replayed, err)
+	}
+	history, err := fixture.repository.ListOrganizationAgentSubmissions(
+		fixture.ctx, fixture.auditor, fixture.organizationID,
+	)
+	if err != nil || len(history) != 1 || history[0].PublishedVersionID != publishedVersionID {
+		t.Fatalf("submission history = %+v error=%v", history, err)
+	}
+	detail, found, err := fixture.repository.FindOrganizationAgentSubmission(
+		fixture.ctx, fixture.owner, fixture.organizationID, pending.ID,
+	)
+	if err != nil || !found || detail.PublishedVersionID != publishedVersionID {
+		t.Fatalf("submission detail = %+v found=%t error=%v", detail, found, err)
+	}
+}
+
 func TestOrganizationApprovalRaceCreatesAtMostOneVersionAndReview(t *testing.T) {
 	fixture := newOrganizationSubmissionRepositoryFixture(t)
 	submission := fixture.submitInitial(t, fixture.owner, 0xa5)

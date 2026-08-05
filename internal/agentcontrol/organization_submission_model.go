@@ -66,27 +66,28 @@ type OrganizationAgentReview struct {
 }
 
 type OrganizationAgentSubmission struct {
-	ID                uuid.UUID
-	OrganizationID    uuid.UUID
-	Kind              OrganizationSubmissionKind
-	DefinitionID      uuid.UUID
-	BaseVersionID     uuid.UUID
-	DisplayName       string
-	IconMediaType     string
-	IconData          []byte
-	Manifest          AgentManifestV1
-	Bundle            VersionBundleV1
-	ManifestDigest    [sha256.Size]byte
-	BundleDigest      [sha256.Size]byte
-	ContentDigest     [sha256.Size]byte
-	SubmittedByUserID uuid.UUID
-	Status            OrganizationSubmissionStatus
-	Revision          int64
-	SubmittedAt       time.Time
-	TerminalAt        *time.Time
-	UpdatedAt         time.Time
-	Review            *OrganizationAgentReview
-	Replayed          bool
+	ID                 uuid.UUID
+	OrganizationID     uuid.UUID
+	Kind               OrganizationSubmissionKind
+	DefinitionID       uuid.UUID
+	BaseVersionID      uuid.UUID
+	PublishedVersionID uuid.UUID
+	DisplayName        string
+	IconMediaType      string
+	IconData           []byte
+	Manifest           AgentManifestV1
+	Bundle             VersionBundleV1
+	ManifestDigest     [sha256.Size]byte
+	BundleDigest       [sha256.Size]byte
+	ContentDigest      [sha256.Size]byte
+	SubmittedByUserID  uuid.UUID
+	Status             OrganizationSubmissionStatus
+	Revision           int64
+	SubmittedAt        time.Time
+	TerminalAt         *time.Time
+	UpdatedAt          time.Time
+	Review             *OrganizationAgentReview
+	Replayed           bool
 }
 
 func CanonicalizeOrganizationSubmission(
