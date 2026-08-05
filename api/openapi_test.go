@@ -270,6 +270,56 @@ func TestOpenAPIExposesStrictAgentManifestV2ModelPolicy(t *testing.T) {
 	}
 }
 
+func TestOpenAPIExposesStrictAgentManifestV3MCPRequirements(t *testing.T) {
+	for _, path := range []string{"openapi.yaml", "openapi/internal-admin.yaml"} {
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		document := string(contents)
+		manifestUnion := openAPISchemaBlock(t, document, "AgentManifest")
+		for _, reference := range []string{"AgentManifestV1", "AgentManifestV2", "AgentManifestV3"} {
+			if !strings.Contains(manifestUnion, "#/components/schemas/"+reference) {
+				t.Fatalf("%s AgentManifest union is missing %s", path, reference)
+			}
+		}
+
+		v3 := openAPISchemaBlock(t, document, "AgentManifestV3")
+		for _, fragment := range []string{
+			"additionalProperties: false",
+			"required: [schema_version, identity, assets, model_policy, mcp_requirements, tools, dependencies, runtime_compatibility]",
+			"enum: [3]",
+			"maxItems: 32",
+			"$ref: '#/components/schemas/AgentMCPRequirementV3'",
+		} {
+			if !strings.Contains(v3, fragment) {
+				t.Fatalf("%s AgentManifestV3 is missing %q:\n%s", path, fragment, v3)
+			}
+		}
+		if strings.Contains(v3, "model_constraints:") {
+			t.Fatalf("%s AgentManifestV3 mixes V1 model constraints:\n%s", path, v3)
+		}
+
+		requirement := openAPISchemaBlock(t, document, "AgentMCPRequirementV3")
+		for _, fragment := range []string{
+			"additionalProperties: false", "required: [logical_name, tools, required, permission_reason]",
+			"maxItems: 128", "maxLength: 300",
+		} {
+			if !strings.Contains(requirement, fragment) {
+				t.Fatalf("%s AgentMCPRequirementV3 is missing %q:\n%s", path, fragment, requirement)
+			}
+		}
+		for _, forbidden := range []string{
+			"url:", "command:", "args:", "env:", "headers:", "token:", "auth:",
+			"credential_ref:", "profile_path:", "local_path:",
+		} {
+			if strings.Contains(requirement, forbidden) {
+				t.Fatalf("%s AgentMCPRequirementV3 exposes forbidden field %q:\n%s", path, forbidden, requirement)
+			}
+		}
+	}
+}
+
 func TestOpenAPIAgentRuntimeCompatibilityAllowsNullMaximum(t *testing.T) {
 	expectations := map[string]string{
 		"openapi.yaml":                "maximum_version_exclusive:\n          type: string\n          nullable: true",

@@ -436,6 +436,29 @@ func TestPolicyDocumentV2PreservesRuntimeModelSelection(t *testing.T) {
 	}
 }
 
+func TestPolicyDocumentManifestV3PreservesLogicalMCPRequirements(t *testing.T) {
+	version := policyVersionV3Fixture(t, uuid.New(), uuid.New(), 1)
+	document, err := policyDocumentForVersion(version)
+	if err != nil {
+		t.Fatalf("policyDocumentForVersion(V3) error = %v", err)
+	}
+	for _, expected := range [][]byte{
+		[]byte(`"schema_version":3`),
+		[]byte(`"model_policy":{"allowed_models":[],"allowed_providers":[],"mode":"user_select"}`),
+		[]byte(`"mcp_requirements":[{"logical_name":"calendar-write"`),
+		[]byte(hex.EncodeToString(version.ContentDigest[:])),
+	} {
+		if !bytes.Contains(document, expected) {
+			t.Fatalf("V3 policy document = %s, want %s", document, expected)
+		}
+	}
+	for _, forbidden := range [][]byte{[]byte("model_constraints"), []byte("credential_ref"), []byte("profile_path")} {
+		if bytes.Contains(document, forbidden) {
+			t.Fatalf("V3 policy document contains forbidden data %s: %s", forbidden, document)
+		}
+	}
+}
+
 func TestOfficialPolicyDocumentBindsDeviceInstallationIdentity(t *testing.T) {
 	fixture := newAgentControlServiceFixture(t)
 	definitionID, versionID := uuid.New(), uuid.New()
@@ -654,6 +677,20 @@ func policyVersionV2Fixture(t *testing.T, definitionID uuid.UUID, versionID uuid
 	canonical, err := CanonicalizeVersion(manifest, bundle)
 	if err != nil {
 		t.Fatalf("CanonicalizeVersion(V2) error = %v", err)
+	}
+	return Version{
+		ID: versionID, DefinitionID: definitionID, VersionNumber: number,
+		CanonicalManifest: canonical.ManifestJSON, Bundle: canonical.BundleJSON, ContentDigest: canonical.ContentDigest,
+		RuntimeMinimumVersion: "v0.18.2-agentera.1",
+	}
+}
+
+func policyVersionV3Fixture(t *testing.T, definitionID uuid.UUID, versionID uuid.UUID, number int64) Version {
+	t.Helper()
+	manifest, bundle := emptyManifestV3Fixture()
+	canonical, err := CanonicalizeVersion(manifest, bundle)
+	if err != nil {
+		t.Fatalf("CanonicalizeVersion(V3) error = %v", err)
 	}
 	return Version{
 		ID: versionID, DefinitionID: definitionID, VersionNumber: number,

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"hash/crc32"
 	"image"
 	"image/png"
@@ -68,6 +69,105 @@ func TestCanonicalizeVersionV2SupportsRuntimeModelSelection(t *testing.T) {
 	}
 	if decoded.SchemaVersion != 2 || decoded.ModelPolicy.Mode != ModelSelectionUserSelect {
 		t.Fatalf("decoded V2 policy = %+v", decoded.ModelPolicy)
+	}
+}
+
+func TestCanonicalizeVersionManifestV3LogicalMCPRequirements(t *testing.T) {
+	manifest, bundle := emptyManifestV3Fixture()
+	canonical, err := CanonicalizeVersion(manifest, bundle)
+	if err != nil {
+		t.Fatalf("CanonicalizeVersion(V3) error = %v", err)
+	}
+
+	want := `{"assets":[],"dependencies":[],"identity":{"system_prompt":"Agent identity"},"mcp_requirements":[{"logical_name":"calendar-write","permission_reason":"Create approved calendar events","required":true,"tools":["calendar.create","calendar.read"]},{"logical_name":"docs-read","permission_reason":"Read selected documents","required":false,"tools":["files.read"]}],"model_policy":{"allowed_models":[],"allowed_providers":[],"mode":"user_select"},"runtime_compatibility":{"maximum_version_exclusive":null,"minimum_version":"v0.18.2-agentera.1"},"schema_version":3,"tools":{"allowed":["calendar.create","calendar.read","files.read"],"denied":["shell.exec"]}}`
+	if string(canonical.ManifestJSON) != want {
+		t.Fatalf("canonical V3 manifest = %s, want %s", canonical.ManifestJSON, want)
+	}
+
+	decoded, err := DecodeManifest(canonical.ManifestJSON)
+	if err != nil {
+		t.Fatalf("DecodeManifest(canonical V3) error = %v", err)
+	}
+	if len(decoded.MCPRequirements) != 2 || decoded.MCPRequirements[0].LogicalName != "calendar-write" ||
+		strings.Join(decoded.MCPRequirements[0].Tools, ",") != "calendar.create,calendar.read" {
+		t.Fatalf("decoded canonical V3 requirements = %+v", decoded.MCPRequirements)
+	}
+}
+
+func TestCanonicalizeVersionManifestV3RejectsInvalidMCPRequirements(t *testing.T) {
+	tests := map[string]func(AgentManifest) AgentManifest{
+		"duplicate logical name": func(value AgentManifest) AgentManifest {
+			value.MCPRequirements[1].LogicalName = value.MCPRequirements[0].LogicalName
+			return value
+		},
+		"duplicate tool": func(value AgentManifest) AgentManifest {
+			value.MCPRequirements[0].Tools = []string{"calendar.read", "calendar.read"}
+			return value
+		},
+		"empty tool": func(value AgentManifest) AgentManifest {
+			value.MCPRequirements[0].Tools = []string{""}
+			return value
+		},
+		"tool missing from allowlist": func(value AgentManifest) AgentManifest {
+			value.MCPRequirements[0].Tools = []string{"calendar.delete"}
+			return value
+		},
+		"tool denied": func(value AgentManifest) AgentManifest {
+			value.Tools.Allowed = append(value.Tools.Allowed, "shell.exec")
+			value.MCPRequirements[0].Tools = []string{"shell.exec"}
+			return value
+		},
+		"empty permission reason": func(value AgentManifest) AgentManifest {
+			value.MCPRequirements[0].PermissionReason = ""
+			return value
+		},
+		"oversized permission reason": func(value AgentManifest) AgentManifest {
+			value.MCPRequirements[0].PermissionReason = strings.Repeat("界", 101)
+			return value
+		},
+		"too many requirements": func(value AgentManifest) AgentManifest {
+			value.MCPRequirements = make([]AgentMCPRequirementV3, 33)
+			for index := range value.MCPRequirements {
+				value.MCPRequirements[index] = AgentMCPRequirementV3{
+					LogicalName: "requirement-" + strconv.Itoa(index), Tools: []string{"files.read"},
+					Required: true, PermissionReason: "Read selected documents",
+				}
+			}
+			return value
+		},
+		"too many tools": func(value AgentManifest) AgentManifest {
+			value.MCPRequirements[0].Tools = make([]string, 129)
+			value.Tools.Allowed = make([]string, 129)
+			for index := range value.MCPRequirements[0].Tools {
+				tool := "tool." + strconv.Itoa(index)
+				value.MCPRequirements[0].Tools[index] = tool
+				value.Tools.Allowed[index] = tool
+			}
+			return value
+		},
+	}
+
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			manifest, bundle := emptyManifestV3Fixture()
+			if _, err := CanonicalizeVersion(mutate(manifest), bundle); !errors.Is(err, ErrInvalidAgentContent) {
+				t.Fatalf("CanonicalizeVersion(invalid V3) error = %v, want ErrInvalidAgentContent", err)
+			}
+		})
+	}
+}
+
+func TestDecodeManifestV3RejectsConnectionAndSecretFields(t *testing.T) {
+	base := `{"schema_version":3,"identity":{"system_prompt":"Agent identity"},"assets":[],"model_policy":{"mode":"user_select","allowed_providers":[],"allowed_models":[]},"mcp_requirements":[{"logical_name":"docs-read","tools":["files.read"],"required":true,"permission_reason":"Read selected documents"}],"tools":{"allowed":["files.read"],"denied":[]},"dependencies":[],"runtime_compatibility":{"minimum_version":"0.18.2-agentera.1","maximum_version_exclusive":null}}`
+	for _, field := range []string{"url", "command", "args", "env", "headers", "token", "auth", "credential_ref", "profile_path", "local_path"} {
+		raw := bytes.Replace([]byte(base), []byte(`"required":true`), []byte(`"required":true,"`+field+`":"forbidden"`), 1)
+		if _, err := DecodeManifest(raw); !errors.Is(err, ErrInvalidAgentContent) {
+			t.Fatalf("DecodeManifest(V3 %s) error = %v, want ErrInvalidAgentContent", field, err)
+		}
+	}
+	v3WithConstraints := bytes.Replace([]byte(base), []byte(`"model_policy":`), []byte(`"model_constraints":{"allowed_providers":[],"allowed_models":[]},"model_policy":`), 1)
+	if _, err := DecodeManifest(v3WithConstraints); !errors.Is(err, ErrInvalidAgentContent) {
+		t.Fatalf("DecodeManifest(V3 model_constraints) error = %v, want ErrInvalidAgentContent", err)
 	}
 }
 
@@ -325,6 +425,34 @@ func emptyManifestV2Fixture(
 		},
 		Tools:                ToolPolicyV1{Allowed: []string{"files.read"}, Denied: []string{"shell.exec"}},
 		RuntimeCompatibility: RuntimeCompatibilityV1{MinimumVersion: "0.18.2-agentera.1"},
+	}, VersionBundleV1{Assets: []BundleAssetV1{}}
+}
+
+func emptyManifestV3Fixture() (AgentManifest, VersionBundleV1) {
+	return AgentManifest{
+		SchemaVersion: 3,
+		Identity:      AgentIdentityV1{SystemPrompt: "Agent identity"},
+		Assets:        []ManifestAssetV1{},
+		ModelPolicy: ModelPolicyV2{
+			Mode: ModelSelectionUserSelect, AllowedProviders: []string{}, AllowedModels: []string{},
+		},
+		MCPRequirements: []AgentMCPRequirementV3{
+			{
+				LogicalName: "docs-read", Tools: []string{"files.read"}, Required: false,
+				PermissionReason: "Read selected documents",
+			},
+			{
+				LogicalName: "calendar-write", Tools: []string{"calendar.read", "calendar.create"}, Required: true,
+				PermissionReason: "Create approved calendar events",
+			},
+		},
+		Tools: ToolPolicyV1{
+			Allowed: []string{"files.read", "calendar.read", "calendar.create"}, Denied: []string{"shell.exec"},
+		},
+		Dependencies: []AgentDependencyV1{},
+		RuntimeCompatibility: RuntimeCompatibilityV1{
+			MinimumVersion: "0.18.2-agentera.1",
+		},
 	}, VersionBundleV1{Assets: []BundleAssetV1{}}
 }
 

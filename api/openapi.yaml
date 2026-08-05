@@ -5125,6 +5125,7 @@ components:
       oneOf:
         - $ref: '#/components/schemas/AgentManifestV1'
         - $ref: '#/components/schemas/AgentManifestV2'
+        - $ref: '#/components/schemas/AgentManifestV3'
     AgentManifestV1:
       type: object
       additionalProperties: false
@@ -5177,6 +5178,62 @@ components:
             $ref: '#/components/schemas/AgentDependencyV1'
         runtime_compatibility:
           $ref: '#/components/schemas/AgentRuntimeCompatibilityV1'
+    AgentManifestV3:
+      type: object
+      additionalProperties: false
+      required: [schema_version, identity, assets, model_policy, mcp_requirements, tools, dependencies, runtime_compatibility]
+      properties:
+        schema_version:
+          type: integer
+          enum: [3]
+        identity:
+          $ref: '#/components/schemas/AgentIdentityV1'
+        assets:
+          type: array
+          maxItems: 128
+          items:
+            $ref: '#/components/schemas/AgentManifestAssetV1'
+        model_policy:
+          $ref: '#/components/schemas/AgentModelPolicyV2'
+        mcp_requirements:
+          type: array
+          maxItems: 32
+          items:
+            $ref: '#/components/schemas/AgentMCPRequirementV3'
+        tools:
+          $ref: '#/components/schemas/AgentToolPolicyV1'
+        dependencies:
+          type: array
+          maxItems: 128
+          items:
+            $ref: '#/components/schemas/AgentDependencyV1'
+        runtime_compatibility:
+          $ref: '#/components/schemas/AgentRuntimeCompatibilityV1'
+    AgentMCPRequirementV3:
+      type: object
+      additionalProperties: false
+      required: [logical_name, tools, required, permission_reason]
+      properties:
+        logical_name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        tools:
+          type: array
+          minItems: 1
+          maxItems: 128
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+            maxLength: 128
+        required:
+          type: boolean
+        permission_reason:
+          type: string
+          description: Permission reason limited by the server to 300 UTF-8 bytes.
+          minLength: 1
+          maxLength: 300
     AgentIdentityV1:
       type: object
       additionalProperties: false
@@ -5863,6 +5920,7 @@ components:
       oneOf:
         - $ref: '#/components/schemas/AgentPolicyDocumentV1'
         - $ref: '#/components/schemas/AgentPolicyDocumentV2'
+        - $ref: '#/components/schemas/AgentPolicyDocumentV3'
     AgentPolicyDocumentV1:
       type: object
       additionalProperties: false
@@ -5929,6 +5987,53 @@ components:
           format: uuid
         version_digest:
           $ref: '#/components/schemas/SHA256Digest'
+        model_policy:
+          $ref: '#/components/schemas/AgentModelPolicyV2'
+        tools:
+          $ref: '#/components/schemas/AgentToolPolicyV1'
+        runtime_compatibility:
+          $ref: '#/components/schemas/AgentRuntimeCompatibilityV1'
+        publication_allowed:
+          type: boolean
+          enum: [false]
+        deny_rules:
+          type: array
+          items:
+            type: string
+            maxLength: 256
+        official_context:
+          $ref: '#/components/schemas/OfficialAgentPolicyContextV1'
+    AgentPolicyDocumentV3:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - agent_definition_id
+        - agent_version_id
+        - version_digest
+        - mcp_requirements
+        - model_policy
+        - tools
+        - runtime_compatibility
+        - publication_allowed
+        - deny_rules
+      properties:
+        schema_version:
+          type: integer
+          enum: [3]
+        agent_definition_id:
+          type: string
+          format: uuid
+        agent_version_id:
+          type: string
+          format: uuid
+        version_digest:
+          $ref: '#/components/schemas/SHA256Digest'
+        mcp_requirements:
+          type: array
+          maxItems: 32
+          items:
+            $ref: '#/components/schemas/AgentMCPRequirementV3'
         model_policy:
           $ref: '#/components/schemas/AgentModelPolicyV2'
         tools:
