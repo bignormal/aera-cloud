@@ -30,6 +30,18 @@ func TestCloneAgentManifestPreservesCanonicalEmptyArrays(t *testing.T) {
 	}
 }
 
+func TestCloneAgentManifestV3DetachesLogicalMCPRequirements(t *testing.T) {
+	manifest, _ := emptyManifestV3Fixture()
+	cloned := cloneAgentManifest(manifest)
+
+	manifest.MCPRequirements[0].LogicalName = "changed"
+	manifest.MCPRequirements[0].Tools[0] = "changed.tool"
+
+	if cloned.MCPRequirements[0].LogicalName != "docs-read" || cloned.MCPRequirements[0].Tools[0] != "files.read" {
+		t.Fatalf("cloned V3 requirements alias caller memory: %+v", cloned.MCPRequirements)
+	}
+}
+
 func TestCanonicalizeOrganizationSubmissionIsStableAndDetached(t *testing.T) {
 	input := lockedOrganizationInitialPackage(t)
 	first, err := CanonicalizeOrganizationSubmission(input)

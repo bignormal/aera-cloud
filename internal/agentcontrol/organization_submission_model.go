@@ -180,6 +180,10 @@ func cloneAgentManifest(value AgentManifestV1) AgentManifestV1 {
 	value.ModelConstraints.AllowedModels = cloneOrganizationSlice(value.ModelConstraints.AllowedModels)
 	value.ModelPolicy.AllowedProviders = cloneOrganizationSlice(value.ModelPolicy.AllowedProviders)
 	value.ModelPolicy.AllowedModels = cloneOrganizationSlice(value.ModelPolicy.AllowedModels)
+	value.MCPRequirements = cloneOrganizationSlice(value.MCPRequirements)
+	for index := range value.MCPRequirements {
+		value.MCPRequirements[index].Tools = cloneOrganizationSlice(value.MCPRequirements[index].Tools)
+	}
 	value.Tools.Allowed = cloneOrganizationSlice(value.Tools.Allowed)
 	value.Tools.Denied = cloneOrganizationSlice(value.Tools.Denied)
 	value.Dependencies = cloneOrganizationSlice(value.Dependencies)

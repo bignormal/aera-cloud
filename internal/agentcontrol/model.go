@@ -103,14 +103,15 @@ const (
 )
 
 type AgentManifest struct {
-	SchemaVersion        int                    `json:"schema_version"`
-	Identity             AgentIdentityV1        `json:"identity"`
-	Assets               []ManifestAssetV1      `json:"assets"`
-	ModelConstraints     ModelConstraintsV1     `json:"-"`
-	ModelPolicy          ModelPolicyV2          `json:"-"`
-	Tools                ToolPolicyV1           `json:"tools"`
-	Dependencies         []AgentDependencyV1    `json:"dependencies"`
-	RuntimeCompatibility RuntimeCompatibilityV1 `json:"runtime_compatibility"`
+	SchemaVersion        int                     `json:"schema_version"`
+	Identity             AgentIdentityV1         `json:"identity"`
+	Assets               []ManifestAssetV1       `json:"assets"`
+	ModelConstraints     ModelConstraintsV1      `json:"-"`
+	ModelPolicy          ModelPolicyV2           `json:"-"`
+	MCPRequirements      []AgentMCPRequirementV3 `json:"-"`
+	Tools                ToolPolicyV1            `json:"tools"`
+	Dependencies         []AgentDependencyV1     `json:"dependencies"`
+	RuntimeCompatibility RuntimeCompatibilityV1  `json:"runtime_compatibility"`
 }
 
 // AgentManifestV1 remains an alias so existing V1 call sites and fixtures keep
@@ -148,6 +149,13 @@ type ModelPolicyV2 struct {
 	AllowedModels    []string           `json:"allowed_models"`
 }
 
+type AgentMCPRequirementV3 struct {
+	LogicalName      string   `json:"logical_name"`
+	Tools            []string `json:"tools"`
+	Required         bool     `json:"required"`
+	PermissionReason string   `json:"permission_reason"`
+}
+
 type agentManifestV1Wire struct {
 	SchemaVersion        int                    `json:"schema_version"`
 	Identity             AgentIdentityV1        `json:"identity"`
@@ -168,6 +176,17 @@ type agentManifestV2Wire struct {
 	RuntimeCompatibility RuntimeCompatibilityV1 `json:"runtime_compatibility"`
 }
 
+type agentManifestV3Wire struct {
+	SchemaVersion        int                     `json:"schema_version"`
+	Identity             AgentIdentityV1         `json:"identity"`
+	Assets               []ManifestAssetV1       `json:"assets"`
+	ModelPolicy          ModelPolicyV2           `json:"model_policy"`
+	MCPRequirements      []AgentMCPRequirementV3 `json:"mcp_requirements"`
+	Tools                ToolPolicyV1            `json:"tools"`
+	Dependencies         []AgentDependencyV1     `json:"dependencies"`
+	RuntimeCompatibility RuntimeCompatibilityV1  `json:"runtime_compatibility"`
+}
+
 func (manifest AgentManifest) MarshalJSON() ([]byte, error) {
 	switch manifest.SchemaVersion {
 	case 0, 1:
@@ -180,6 +199,13 @@ func (manifest AgentManifest) MarshalJSON() ([]byte, error) {
 		return json.Marshal(agentManifestV2Wire{
 			SchemaVersion: manifest.SchemaVersion, Identity: manifest.Identity, Assets: manifest.Assets,
 			ModelPolicy: manifest.ModelPolicy, Tools: manifest.Tools, Dependencies: manifest.Dependencies,
+			RuntimeCompatibility: manifest.RuntimeCompatibility,
+		})
+	case 3:
+		return json.Marshal(agentManifestV3Wire{
+			SchemaVersion: manifest.SchemaVersion, Identity: manifest.Identity, Assets: manifest.Assets,
+			ModelPolicy: manifest.ModelPolicy, MCPRequirements: manifest.MCPRequirements,
+			Tools: manifest.Tools, Dependencies: manifest.Dependencies,
 			RuntimeCompatibility: manifest.RuntimeCompatibility,
 		})
 	default:
@@ -217,6 +243,18 @@ func (manifest *AgentManifest) UnmarshalJSON(raw []byte) error {
 		*manifest = AgentManifest{
 			SchemaVersion: value.SchemaVersion, Identity: value.Identity, Assets: value.Assets,
 			ModelPolicy: value.ModelPolicy, Tools: value.Tools, Dependencies: value.Dependencies,
+			RuntimeCompatibility: value.RuntimeCompatibility,
+		}
+		return nil
+	case 3:
+		var value agentManifestV3Wire
+		if err := decodeStrictJSON(raw, &value); err != nil || value.MCPRequirements == nil {
+			return errors.New("invalid Agent manifest V3")
+		}
+		*manifest = AgentManifest{
+			SchemaVersion: value.SchemaVersion, Identity: value.Identity, Assets: value.Assets,
+			ModelPolicy: value.ModelPolicy, MCPRequirements: value.MCPRequirements,
+			Tools: value.Tools, Dependencies: value.Dependencies,
 			RuntimeCompatibility: value.RuntimeCompatibility,
 		}
 		return nil
