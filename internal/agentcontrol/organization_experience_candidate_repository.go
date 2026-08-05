@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/bignormal/aera-cloud/internal/audit"
@@ -25,6 +26,18 @@ type SubmitOrganizationExperienceCandidateCommand struct {
 	Idempotency     IdempotencyEvidence
 	Audit           AuditEvidence
 	CreatedAt       time.Time
+}
+
+type ReviewOrganizationExperienceCandidateCommand struct {
+	OrganizationID uuid.UUID
+	CandidateID    uuid.UUID
+	ReviewID       uuid.UUID
+	Decision       ExperienceCandidateDecision
+	ReasonCode     string
+	SafeNote       string
+	Idempotency    IdempotencyEvidence
+	Audit          AuditEvidence
+	ReviewedAt     time.Time
 }
 
 type OrganizationExperienceCandidate struct {
@@ -105,6 +118,218 @@ func (r *PostgresRepository) SubmitOrganizationExperienceCandidate(
 		return OrganizationExperienceCandidate{}, false, err
 	}
 	candidate, err := loadOrganizationExperienceCandidate(
+		ctx, tx, command.OrganizationID, command.CandidateID,
+	)
+	if err != nil {
+		return OrganizationExperienceCandidate{}, false, err
+	}
+	return candidate, false, commitTransaction(ctx, tx)
+}
+
+func (r *PostgresRepository) ListOwnOrganizationExperienceCandidates(
+	ctx context.Context,
+	principal Principal,
+	organizationID uuid.UUID,
+) ([]OrganizationExperienceCandidate, error) {
+	if r == nil || r.postgres == nil || !validPrincipal(principal) || organizationID == uuid.Nil {
+		return nil, ErrInvalidRepositoryCommand
+	}
+	return r.listOrganizationExperienceCandidates(ctx, principal, organizationID, false)
+}
+
+func (r *PostgresRepository) ListOrganizationExperienceCandidates(
+	ctx context.Context,
+	principal Principal,
+	organizationID uuid.UUID,
+) ([]OrganizationExperienceCandidate, error) {
+	if r == nil || r.postgres == nil || !validPrincipal(principal) || organizationID == uuid.Nil {
+		return nil, ErrInvalidRepositoryCommand
+	}
+	return r.listOrganizationExperienceCandidates(ctx, principal, organizationID, true)
+}
+
+func (r *PostgresRepository) listOrganizationExperienceCandidates(
+	ctx context.Context,
+	principal Principal,
+	organizationID uuid.UUID,
+	reviewer bool,
+) ([]OrganizationExperienceCandidate, error) {
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, ErrServiceUnavailable
+	}
+	defer rollback(tx)
+	mode := organizationAgentRead
+	if reviewer {
+		mode = organizationAgentReview
+	}
+	if _, err := requireOrganizationAgentAccess(ctx, tx, principal, organizationID, mode, true); err != nil {
+		return nil, err
+	}
+	query := organizationExperienceCandidateSelect + ` WHERE candidate.organization_id = $1`
+	arguments := []any{organizationID}
+	if !reviewer {
+		query += ` AND candidate.submitted_by_user_id = $2`
+		arguments = append(arguments, principal.UserID)
+	}
+	query += ` ORDER BY candidate.created_at DESC, candidate.id`
+	rows, err := tx.Query(ctx, query, arguments...)
+	if err != nil {
+		return nil, ErrServiceUnavailable
+	}
+	candidates := make([]OrganizationExperienceCandidate, 0)
+	for rows.Next() {
+		candidate, scanErr := scanOrganizationExperienceCandidate(rows)
+		if scanErr != nil {
+			rows.Close()
+			return nil, ErrServiceUnavailable
+		}
+		candidates = append(candidates, candidate)
+	}
+	rowsErr := rows.Err()
+	rows.Close()
+	if rowsErr != nil {
+		return nil, ErrServiceUnavailable
+	}
+	if err := commitTransaction(ctx, tx); err != nil {
+		return nil, err
+	}
+	return candidates, nil
+}
+
+func (r *PostgresRepository) FindOrganizationExperienceCandidate(
+	ctx context.Context,
+	principal Principal,
+	organizationID uuid.UUID,
+	candidateID uuid.UUID,
+	auditEvidence AuditEvidence,
+	accessedAt time.Time,
+) (OrganizationExperienceCandidate, bool, error) {
+	if r == nil || r.postgres == nil || !validPrincipal(principal) || organizationID == uuid.Nil ||
+		candidateID == uuid.Nil || !validAuditEvidence(auditEvidence) || accessedAt.IsZero() {
+		return OrganizationExperienceCandidate{}, false, ErrInvalidRepositoryCommand
+	}
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return OrganizationExperienceCandidate{}, false, ErrServiceUnavailable
+	}
+	defer rollback(tx)
+	access, err := requireOrganizationAgentAccess(
+		ctx, tx, principal, organizationID, organizationAgentRead, true,
+	)
+	if err != nil {
+		return OrganizationExperienceCandidate{}, false, err
+	}
+	query := organizationExperienceCandidateSelect + ` WHERE candidate.organization_id = $1 AND candidate.id = $2`
+	arguments := []any{organizationID, candidateID}
+	if access.Role == "member" {
+		query += ` AND candidate.submitted_by_user_id = $3`
+		arguments = append(arguments, principal.UserID)
+	}
+	candidate, err := scanOrganizationExperienceCandidate(tx.QueryRow(ctx, query, arguments...))
+	if errors.Is(err, pgx.ErrNoRows) {
+		if commitErr := commitTransaction(ctx, tx); commitErr != nil {
+			return OrganizationExperienceCandidate{}, false, commitErr
+		}
+		return OrganizationExperienceCandidate{}, false, nil
+	}
+	if err != nil {
+		return OrganizationExperienceCandidate{}, false, ErrServiceUnavailable
+	}
+	if access.Role != "member" {
+		if err := recordOrganizationExperienceCandidateEvent(
+			ctx, tx, principal, auditEvidence, "organization_experience_candidate_detail_accessed",
+			audit.OutcomeSuccess, "", "", candidate.ID, candidate.OrganizationID,
+			candidate.ContentDigest, accessedAt,
+		); err != nil {
+			return OrganizationExperienceCandidate{}, false, err
+		}
+	}
+	return candidate, true, commitTransaction(ctx, tx)
+}
+
+func (r *PostgresRepository) ReviewOrganizationExperienceCandidate(
+	ctx context.Context,
+	principal Principal,
+	command ReviewOrganizationExperienceCandidateCommand,
+) (OrganizationExperienceCandidate, bool, error) {
+	if r == nil || r.postgres == nil || !validPrincipal(principal) ||
+		!validReviewOrganizationExperienceCandidate(command) {
+		return OrganizationExperienceCandidate{}, false, ErrInvalidRepositoryCommand
+	}
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return OrganizationExperienceCandidate{}, false, ErrServiceUnavailable
+	}
+	defer rollback(tx)
+	if _, err := requireOrganizationAgentAccess(
+		ctx, tx, principal, command.OrganizationID, organizationAgentReview, false,
+	); err != nil {
+		return OrganizationExperienceCandidate{}, false, err
+	}
+	response, found, err := lockAndReadIdempotency(
+		ctx, tx, principal, operationReviewOrganizationExperienceCandidate, command.Idempotency,
+	)
+	if err != nil {
+		return OrganizationExperienceCandidate{}, false, err
+	}
+	if found {
+		candidate, err := loadOrganizationExperienceCandidate(
+			ctx, tx, command.OrganizationID, response.CandidateID,
+		)
+		if err != nil {
+			return OrganizationExperienceCandidate{}, false, err
+		}
+		return candidate, true, commitTransaction(ctx, tx)
+	}
+	if err := lockOrganizationExperienceCandidate(ctx, tx, command.OrganizationID, command.CandidateID); err != nil {
+		return OrganizationExperienceCandidate{}, false, err
+	}
+	candidate, err := loadOrganizationExperienceCandidate(ctx, tx, command.OrganizationID, command.CandidateID)
+	if err != nil {
+		return OrganizationExperienceCandidate{}, false, err
+	}
+	if candidate.Review != nil {
+		if err := recordOrganizationExperienceCandidateEvent(
+			ctx, tx, principal, command.Audit, "organization_experience_candidate_review_conflicted",
+			audit.OutcomeDenied, "candidate_already_reviewed", strings.ToLower(string(candidate.Review.Decision)),
+			candidate.ID, candidate.OrganizationID, candidate.ContentDigest, command.ReviewedAt,
+		); err != nil {
+			return OrganizationExperienceCandidate{}, false, err
+		}
+		if err := commitTransaction(ctx, tx); err != nil {
+			return OrganizationExperienceCandidate{}, false, err
+		}
+		return OrganizationExperienceCandidate{}, false, ErrExperienceCandidateAlreadyReviewed
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO organization_experience_candidate_reviews (
+			id, candidate_id, organization_id, decision, reviewed_by_user_id,
+			reason_code, safe_note, reviewed_at
+		) VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), NULLIF($7, ''), $8)
+	`, command.ReviewID, command.CandidateID, command.OrganizationID, command.Decision,
+		principal.UserID, command.ReasonCode, command.SafeNote, command.ReviewedAt.UTC()); err != nil {
+		return OrganizationExperienceCandidate{}, false, ErrServiceUnavailable
+	}
+	response = idempotencyResponse{CandidateID: command.CandidateID, ReviewID: command.ReviewID}
+	if err := insertIdempotency(
+		ctx, tx, principal, operationReviewOrganizationExperienceCandidate, command.Idempotency,
+		"organization_experience_candidate_review", command.ReviewID, response, command.ReviewedAt,
+	); err != nil {
+		return OrganizationExperienceCandidate{}, false, err
+	}
+	eventType := "organization_experience_candidate_review_approved"
+	if command.Decision == ExperienceCandidateRejected {
+		eventType = "organization_experience_candidate_review_rejected"
+	}
+	if err := recordOrganizationExperienceCandidateEvent(
+		ctx, tx, principal, command.Audit, eventType, audit.OutcomeSuccess, command.ReasonCode,
+		strings.ToLower(string(command.Decision)), candidate.ID, candidate.OrganizationID,
+		candidate.ContentDigest, command.ReviewedAt,
+	); err != nil {
+		return OrganizationExperienceCandidate{}, false, err
+	}
+	candidate, err = loadOrganizationExperienceCandidate(
 		ctx, tx, command.OrganizationID, command.CandidateID,
 	)
 	if err != nil {
@@ -293,11 +518,69 @@ func validSubmitOrganizationExperienceCandidate(command SubmitOrganizationExperi
 		bytes.Equal(canonical.CanonicalJSON, command.Canonical.CanonicalJSON)
 }
 
+func validReviewOrganizationExperienceCandidate(command ReviewOrganizationExperienceCandidateCommand) bool {
+	if command.OrganizationID == uuid.Nil || command.CandidateID == uuid.Nil || command.ReviewID == uuid.Nil ||
+		command.ReviewedAt.IsZero() || !validIdempotency(command.Idempotency, command.ReviewedAt) ||
+		!validAuditEvidence(command.Audit) {
+		return false
+	}
+	switch command.Decision {
+	case ExperienceCandidateApproved:
+		return command.ReasonCode == "" && command.SafeNote == ""
+	case ExperienceCandidateRejected:
+		return experienceCandidateReasonPattern.MatchString(command.ReasonCode) &&
+			(command.SafeNote == "" || validExperienceCandidateReviewNote(command.SafeNote))
+	default:
+		return false
+	}
+}
+
+func lockOrganizationExperienceCandidate(
+	ctx context.Context,
+	tx pgx.Tx,
+	organizationID uuid.UUID,
+	candidateID uuid.UUID,
+) error {
+	var lockedID uuid.UUID
+	err := tx.QueryRow(ctx, `
+		SELECT id FROM organization_experience_candidates
+		WHERE organization_id = $1 AND id = $2
+		FOR UPDATE
+	`, organizationID, candidateID).Scan(&lockedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrOrganizationAgentNotFound
+	}
+	if err != nil || lockedID != candidateID {
+		return ErrServiceUnavailable
+	}
+	return nil
+}
+
 func recordOrganizationExperienceCandidateAudit(
 	ctx context.Context,
 	tx pgx.Tx,
 	principal Principal,
 	evidence AuditEvidence,
+	candidateID uuid.UUID,
+	organizationID uuid.UUID,
+	digest [sha256.Size]byte,
+	occurredAt time.Time,
+) error {
+	return recordOrganizationExperienceCandidateEvent(
+		ctx, tx, principal, evidence, "organization_experience_candidate_submitted",
+		audit.OutcomeSuccess, "", "", candidateID, organizationID, digest, occurredAt,
+	)
+}
+
+func recordOrganizationExperienceCandidateEvent(
+	ctx context.Context,
+	tx pgx.Tx,
+	principal Principal,
+	evidence AuditEvidence,
+	eventType string,
+	outcome audit.Outcome,
+	reasonCode string,
+	status string,
 	candidateID uuid.UUID,
 	organizationID uuid.UUID,
 	digest [sha256.Size]byte,
@@ -309,21 +592,26 @@ func recordOrganizationExperienceCandidateAudit(
 	}
 	actor := principal.UserID
 	device := principal.DeviceID
+	metadata := map[string]string{
+		"organization_id": organizationID.String(),
+		"content_digest":  hex.EncodeToString(digest[:]),
+	}
+	if status != "" {
+		metadata["status"] = status
+	}
 	if err := recorder.Record(ctx, audit.Event{
 		ID:             evidence.EventID,
-		EventType:      "organization_experience_candidate_submitted",
+		EventType:      eventType,
 		ActorUserID:    &actor,
 		DeviceID:       &device,
 		OrganizationID: &organizationID,
 		ObjectType:     "organization_experience_candidate",
 		ObjectID:       &candidateID,
-		Outcome:        audit.OutcomeSuccess,
+		Outcome:        outcome,
+		ReasonCode:     reasonCode,
 		RequestID:      evidence.RequestID,
-		Metadata: map[string]string{
-			"organization_id": organizationID.String(),
-			"content_digest":  hex.EncodeToString(digest[:]),
-		},
-		OccurredAt: occurredAt.UTC(),
+		Metadata:       metadata,
+		OccurredAt:     occurredAt.UTC(),
 	}); err != nil {
 		return ErrServiceUnavailable
 	}

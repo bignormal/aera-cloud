@@ -48,6 +48,7 @@ const (
 	operationSubmitExperienceCandidate             = "submit_experience_candidate"
 	operationReviewExperienceCandidate             = "review_experience_candidate"
 	operationSubmitOrganizationExperienceCandidate = "submit_organization_experience_candidate"
+	operationReviewOrganizationExperienceCandidate = "review_organization_experience_candidate"
 	definitionStatusActive                         = "active"
 	definitionStatusArchived                       = "archived"
 	InstallationStatusPending                      = "pending"

@@ -87,6 +87,8 @@ func New(dependencies Dependencies) http.Handler {
 		router.Handle("/api/v1/workspaces/{workspaceID}/experience-candidates/*", dependencies.AgentControl)
 		router.Handle("/api/v1/organizations/{organizationID}/agent-definitions", dependencies.AgentControl)
 		router.Handle("/api/v1/organizations/{organizationID}/agent-definitions/*", dependencies.AgentControl)
+		router.Handle("/api/v1/organizations/{organizationID}/experience-candidates", dependencies.AgentControl)
+		router.Handle("/api/v1/organizations/{organizationID}/experience-candidates/*", dependencies.AgentControl)
 		router.Handle("/api/v1/organizations/{organizationID}/agent-publication-submissions", dependencies.AgentControl)
 		router.Handle("/api/v1/organizations/{organizationID}/agent-publication-submissions/*", dependencies.AgentControl)
 	}
