@@ -35,19 +35,20 @@ type organizationAgentReviewResponse struct {
 }
 
 type organizationAgentSubmissionResponse struct {
-	ID                uuid.UUID                        `json:"id"`
-	OrganizationID    uuid.UUID                        `json:"organization_id"`
-	Kind              OrganizationSubmissionKind       `json:"kind"`
-	DefinitionID      uuid.UUID                        `json:"definition_id"`
-	BaseVersionID     *uuid.UUID                       `json:"base_version_id"`
-	SubmittedByUserID uuid.UUID                        `json:"submitted_by_user_id"`
-	ContentDigest     string                           `json:"content_digest"`
-	Status            OrganizationSubmissionStatus     `json:"status"`
-	Revision          int64                            `json:"revision"`
-	SubmittedAt       time.Time                        `json:"submitted_at"`
-	TerminalAt        *time.Time                       `json:"terminal_at"`
-	UpdatedAt         time.Time                        `json:"updated_at"`
-	Review            *organizationAgentReviewResponse `json:"review"`
+	ID                 uuid.UUID                        `json:"id"`
+	OrganizationID     uuid.UUID                        `json:"organization_id"`
+	Kind               OrganizationSubmissionKind       `json:"kind"`
+	DefinitionID       uuid.UUID                        `json:"definition_id"`
+	BaseVersionID      *uuid.UUID                       `json:"base_version_id"`
+	PublishedVersionID *uuid.UUID                       `json:"published_version_id"`
+	SubmittedByUserID  uuid.UUID                        `json:"submitted_by_user_id"`
+	ContentDigest      string                           `json:"content_digest"`
+	Status             OrganizationSubmissionStatus     `json:"status"`
+	Revision           int64                            `json:"revision"`
+	SubmittedAt        time.Time                        `json:"submitted_at"`
+	TerminalAt         *time.Time                       `json:"terminal_at"`
+	UpdatedAt          time.Time                        `json:"updated_at"`
+	Review             *organizationAgentReviewResponse `json:"review"`
 }
 
 type organizationAgentSubmissionDetailResponse struct {
@@ -378,7 +379,8 @@ func publicOrganizationAgentSubmission(
 	response := organizationAgentSubmissionResponse{
 		ID: value.ID, OrganizationID: value.OrganizationID, Kind: value.Kind,
 		DefinitionID: value.DefinitionID, BaseVersionID: optionalUUID(value.BaseVersionID),
-		SubmittedByUserID: value.SubmittedByUserID, ContentDigest: hex.EncodeToString(value.ContentDigest[:]),
+		PublishedVersionID: optionalUUID(value.PublishedVersionID),
+		SubmittedByUserID:  value.SubmittedByUserID, ContentDigest: hex.EncodeToString(value.ContentDigest[:]),
 		Status: value.Status, Revision: value.Revision, SubmittedAt: value.SubmittedAt,
 		TerminalAt: cloneTimePointer(value.TerminalAt), UpdatedAt: value.UpdatedAt,
 	}

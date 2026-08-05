@@ -314,6 +314,16 @@ func TestOpenAPIContainsOrganizationAgentApprovalContract(t *testing.T) {
 			t.Fatalf("OpenAPI is missing schema %q", schema)
 		}
 	}
+	submissionStart := strings.Index(document, "    OrganizationAgentSubmission:\n")
+	submissionEnd := strings.Index(document, "    OrganizationAgentSubmissionDetail:\n")
+	if submissionStart < 0 || submissionEnd <= submissionStart {
+		t.Fatal("OpenAPI is missing the bounded OrganizationAgentSubmission schema")
+	}
+	submission := document[submissionStart:submissionEnd]
+	if !strings.Contains(submission, "        - published_version_id\n") ||
+		!strings.Contains(submission, "        published_version_id:\n          type: string\n          format: uuid\n          nullable: true") {
+		t.Fatalf("OrganizationAgentSubmission does not require a nullable published_version_id:\n%s", submission)
+	}
 	installationStart := strings.Index(document, "    CreateAgentInstallationRequest:\n")
 	installationEnd := strings.Index(document, "    ActivateAgentInstallationRequest:\n")
 	if installationStart < 0 || installationEnd <= installationStart {

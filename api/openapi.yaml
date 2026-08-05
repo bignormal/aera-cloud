@@ -4509,6 +4509,7 @@ components:
         - kind
         - definition_id
         - base_version_id
+        - published_version_id
         - submitted_by_user_id
         - content_digest
         - status
@@ -4531,6 +4532,10 @@ components:
           type: string
           format: uuid
         base_version_id:
+          type: string
+          format: uuid
+          nullable: true
+        published_version_id:
           type: string
           format: uuid
           nullable: true
