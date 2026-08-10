@@ -478,6 +478,40 @@ func TestOrganizationAgentRoutesReachAgentControlBeforeOrganizationWildcard(t *t
 	}
 }
 
+func TestOrganizationExperienceCandidateRoutesReachAgentControlBeforeOrganizationWildcard(t *testing.T) {
+	agentCalls := 0
+	organizationCalls := 0
+	agentHandler := http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		agentCalls++
+		response.WriteHeader(http.StatusAccepted)
+	})
+	organizationHandler := http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		organizationCalls++
+		response.WriteHeader(http.StatusTeapot)
+	})
+	handler := New(Dependencies{
+		PostgreSQL: &stubHealthChecker{}, Redis: &stubHealthChecker{},
+		AgentControl: agentHandler, Organization: organizationHandler,
+	})
+
+	for _, path := range []string{
+		"/api/v1/organizations/organization-id/agent-definitions/definition-id/experience-candidates",
+		"/api/v1/organizations/organization-id/experience-candidates",
+		"/api/v1/organizations/organization-id/experience-candidates/mine",
+		"/api/v1/organizations/organization-id/experience-candidates/candidate-id",
+		"/api/v1/organizations/organization-id/experience-candidates/candidate-id/review",
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("Organization candidate path %s status = %d", path, response.Code)
+		}
+	}
+	if agentCalls != 5 || organizationCalls != 0 {
+		t.Fatalf("routing calls Agent=%d Organization=%d", agentCalls, organizationCalls)
+	}
+}
+
 func TestPublicServerMountsPublicConfigBeforeSPAFallback(t *testing.T) {
 	publicConfig := NewPublicConfigHandler(PublicConfig{
 		Environment:                   "internal_beta",

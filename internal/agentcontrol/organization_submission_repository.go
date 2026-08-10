@@ -863,10 +863,14 @@ const organizationSubmissionSelect = `
 	       submission.manifest_digest, submission.bundle_digest, submission.content_digest,
 	       submission.submitted_by_user_id, submission.status, submission.revision,
 	       submission.submitted_at, submission.terminal_at, submission.updated_at,
+	       published_version.id,
 	       review.id, review.reviewer_user_id, review.decision, review.reason_code,
 	       review.safe_note, review.organization_policy_snapshot_id,
 	       review.organization_policy_version, review.reviewed_content_digest, review.reviewed_at
 	FROM organization_agent_submissions submission
+	LEFT JOIN agent_versions published_version
+	       ON published_version.organization_id = submission.organization_id
+	      AND published_version.organization_submission_id = submission.id
 	LEFT JOIN organization_agent_reviews review ON review.submission_id = submission.id
 `
 
@@ -921,7 +925,7 @@ func scanOrganizationAgentSubmission(row rowScanner) (OrganizationAgentSubmissio
 	var iconData, manifestJSON, bundleJSON []byte
 	var manifestDigest, bundleDigest, contentDigest []byte
 	var terminalAt pgtype.Timestamptz
-	var reviewID, reviewerID, policyID pgtype.UUID
+	var publishedVersionID, reviewID, reviewerID, policyID pgtype.UUID
 	var decision, reasonCode, safeNote pgtype.Text
 	var policyVersion pgtype.Int8
 	var reviewedDigest []byte
@@ -931,6 +935,7 @@ func scanOrganizationAgentSubmission(row rowScanner) (OrganizationAgentSubmissio
 		&displayName, &iconMediaType, &iconData, &manifestJSON, &bundleJSON,
 		&manifestDigest, &bundleDigest, &contentDigest, &value.SubmittedByUserID,
 		&status, &value.Revision, &value.SubmittedAt, &terminalAt, &value.UpdatedAt,
+		&publishedVersionID,
 		&reviewID, &reviewerID, &decision, &reasonCode, &safeNote, &policyID,
 		&policyVersion, &reviewedDigest, &reviewedAt,
 	); err != nil {
@@ -945,6 +950,9 @@ func scanOrganizationAgentSubmission(row rowScanner) (OrganizationAgentSubmissio
 	value.Status = OrganizationSubmissionStatus(status)
 	if baseVersion.Valid {
 		value.BaseVersionID = uuid.UUID(baseVersion.Bytes)
+	}
+	if publishedVersionID.Valid {
+		value.PublishedVersionID = uuid.UUID(publishedVersionID.Bytes)
 	}
 	if displayName.Valid {
 		value.DisplayName = displayName.String
@@ -1030,10 +1038,11 @@ func validOrganizationSubmissionState(value OrganizationAgentSubmission) bool {
 	}
 	switch value.Status {
 	case OrganizationSubmissionPending:
-		return value.TerminalAt == nil && value.Revision == 1
-	case OrganizationSubmissionApproved, OrganizationSubmissionRejected,
-		OrganizationSubmissionWithdrawn, OrganizationSubmissionSuperseded:
-		return value.TerminalAt != nil && value.Revision >= 2
+		return value.PublishedVersionID == uuid.Nil && value.TerminalAt == nil && value.Revision == 1
+	case OrganizationSubmissionApproved:
+		return value.PublishedVersionID != uuid.Nil && value.TerminalAt != nil && value.Revision >= 2
+	case OrganizationSubmissionRejected, OrganizationSubmissionWithdrawn, OrganizationSubmissionSuperseded:
+		return value.PublishedVersionID == uuid.Nil && value.TerminalAt != nil && value.Revision >= 2
 	default:
 		return false
 	}

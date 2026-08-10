@@ -66,27 +66,28 @@ type OrganizationAgentReview struct {
 }
 
 type OrganizationAgentSubmission struct {
-	ID                uuid.UUID
-	OrganizationID    uuid.UUID
-	Kind              OrganizationSubmissionKind
-	DefinitionID      uuid.UUID
-	BaseVersionID     uuid.UUID
-	DisplayName       string
-	IconMediaType     string
-	IconData          []byte
-	Manifest          AgentManifestV1
-	Bundle            VersionBundleV1
-	ManifestDigest    [sha256.Size]byte
-	BundleDigest      [sha256.Size]byte
-	ContentDigest     [sha256.Size]byte
-	SubmittedByUserID uuid.UUID
-	Status            OrganizationSubmissionStatus
-	Revision          int64
-	SubmittedAt       time.Time
-	TerminalAt        *time.Time
-	UpdatedAt         time.Time
-	Review            *OrganizationAgentReview
-	Replayed          bool
+	ID                 uuid.UUID
+	OrganizationID     uuid.UUID
+	Kind               OrganizationSubmissionKind
+	DefinitionID       uuid.UUID
+	BaseVersionID      uuid.UUID
+	PublishedVersionID uuid.UUID
+	DisplayName        string
+	IconMediaType      string
+	IconData           []byte
+	Manifest           AgentManifestV1
+	Bundle             VersionBundleV1
+	ManifestDigest     [sha256.Size]byte
+	BundleDigest       [sha256.Size]byte
+	ContentDigest      [sha256.Size]byte
+	SubmittedByUserID  uuid.UUID
+	Status             OrganizationSubmissionStatus
+	Revision           int64
+	SubmittedAt        time.Time
+	TerminalAt         *time.Time
+	UpdatedAt          time.Time
+	Review             *OrganizationAgentReview
+	Replayed           bool
 }
 
 func CanonicalizeOrganizationSubmission(
@@ -179,6 +180,10 @@ func cloneAgentManifest(value AgentManifestV1) AgentManifestV1 {
 	value.ModelConstraints.AllowedModels = cloneOrganizationSlice(value.ModelConstraints.AllowedModels)
 	value.ModelPolicy.AllowedProviders = cloneOrganizationSlice(value.ModelPolicy.AllowedProviders)
 	value.ModelPolicy.AllowedModels = cloneOrganizationSlice(value.ModelPolicy.AllowedModels)
+	value.MCPRequirements = cloneOrganizationSlice(value.MCPRequirements)
+	for index := range value.MCPRequirements {
+		value.MCPRequirements[index].Tools = cloneOrganizationSlice(value.MCPRequirements[index].Tools)
+	}
 	value.Tools.Allowed = cloneOrganizationSlice(value.Tools.Allowed)
 	value.Tools.Denied = cloneOrganizationSlice(value.Tools.Denied)
 	value.Dependencies = cloneOrganizationSlice(value.Dependencies)

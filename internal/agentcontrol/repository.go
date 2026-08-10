@@ -41,19 +41,21 @@ var (
 )
 
 const (
-	operationPublishInitial            = "publish_initial"
-	operationPublishNext               = "publish_next"
-	operationCreateInstallation        = "create_installation"
-	operationRevokeVersion             = "revoke_version"
-	operationSubmitExperienceCandidate = "submit_experience_candidate"
-	operationReviewExperienceCandidate = "review_experience_candidate"
-	definitionStatusActive             = "active"
-	definitionStatusArchived           = "archived"
-	InstallationStatusPending          = "pending"
-	InstallationStatusActive           = "active"
-	InstallationStatusArchived         = "archived"
-	installationUpdatePolicy           = "manual"
-	installationUpdatePolicyManaged    = "managed"
+	operationPublishInitial                        = "publish_initial"
+	operationPublishNext                           = "publish_next"
+	operationCreateInstallation                    = "create_installation"
+	operationRevokeVersion                         = "revoke_version"
+	operationSubmitExperienceCandidate             = "submit_experience_candidate"
+	operationReviewExperienceCandidate             = "review_experience_candidate"
+	operationSubmitOrganizationExperienceCandidate = "submit_organization_experience_candidate"
+	operationReviewOrganizationExperienceCandidate = "review_organization_experience_candidate"
+	definitionStatusActive                         = "active"
+	definitionStatusArchived                       = "archived"
+	InstallationStatusPending                      = "pending"
+	InstallationStatusActive                       = "active"
+	InstallationStatusArchived                     = "archived"
+	installationUpdatePolicy                       = "manual"
+	installationUpdatePolicyManaged                = "managed"
 )
 
 type workspaceAgentAccessMode uint8

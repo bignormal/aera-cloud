@@ -59,6 +59,11 @@ type HTTPService interface {
 	ListWorkspaceExperienceCandidates(context.Context, Principal, uuid.UUID) ([]ExperienceCandidate, error)
 	GetExperienceCandidate(context.Context, Principal, uuid.UUID, uuid.UUID, string) (ExperienceCandidate, error)
 	ReviewExperienceCandidate(context.Context, Principal, uuid.UUID, ReviewExperienceCandidateRequest) (ExperienceCandidate, error)
+	SubmitOrganizationExperienceCandidate(context.Context, Principal, uuid.UUID, SubmitOrganizationExperienceCandidateRequest) (OrganizationExperienceCandidate, error)
+	ListOwnOrganizationExperienceCandidates(context.Context, Principal, uuid.UUID) ([]OrganizationExperienceCandidate, error)
+	ListOrganizationExperienceCandidates(context.Context, Principal, uuid.UUID) ([]OrganizationExperienceCandidate, error)
+	GetOrganizationExperienceCandidate(context.Context, Principal, uuid.UUID, uuid.UUID, string) (OrganizationExperienceCandidate, error)
+	ReviewOrganizationExperienceCandidate(context.Context, Principal, uuid.UUID, ReviewOrganizationExperienceCandidateRequest) (OrganizationExperienceCandidate, error)
 }
 
 type OfficialCatalogHTTPService interface {
@@ -111,6 +116,11 @@ func NewHandler(config HTTPConfig) http.Handler {
 	router.Get("/api/v1/workspaces/{workspaceID}/experience-candidates", handler.listWorkspaceExperienceCandidates)
 	router.Get("/api/v1/workspaces/{workspaceID}/experience-candidates/{candidateID}", handler.getExperienceCandidate)
 	router.Post("/api/v1/workspaces/{workspaceID}/experience-candidates/{candidateID}/review", handler.reviewExperienceCandidate)
+	router.Post("/api/v1/organizations/{organizationID}/agent-definitions/{definitionID}/experience-candidates", handler.submitOrganizationExperienceCandidate)
+	router.Get("/api/v1/organizations/{organizationID}/experience-candidates/mine", handler.listOwnOrganizationExperienceCandidates)
+	router.Get("/api/v1/organizations/{organizationID}/experience-candidates", handler.listOrganizationExperienceCandidates)
+	router.Get("/api/v1/organizations/{organizationID}/experience-candidates/{candidateID}", handler.getOrganizationExperienceCandidate)
+	router.Post("/api/v1/organizations/{organizationID}/experience-candidates/{candidateID}/review", handler.reviewOrganizationExperienceCandidate)
 	router.Get("/api/v1/agent-versions/{versionID}", handler.getVersion)
 	router.Get("/api/v1/policy-snapshots/{policySnapshotID}", handler.getPolicySnapshot)
 	router.Post("/api/v1/agent-versions/{versionID}/revocations", handler.revokeVersion)

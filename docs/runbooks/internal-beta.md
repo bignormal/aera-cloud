@@ -103,6 +103,61 @@ that is expired or has less than the required validity window is not healthy.
 Moving from the IP to a filed domain is a new issuer ceremony and requires a
 new Desktop trust map plus tester reauthentication.
 
+## Runtime stable mirror
+
+The Runtime mirror is a public byte relay, not part of the Cloud account API.
+It serves the exact signed stable-channel bytes already published by
+`bignormal/aera-runtime`; it never signs, rebuilds, edits, or extracts a Runtime
+and it never receives a GitHub credential. The Desktop package continues to
+carry its locked `.1` Seed. A later `.3` Runtime is delivered only through this
+independent stable update channel.
+
+Before copying anything to the host, download one immutable stable release into
+an isolated local directory and cryptographically verify the stable index plus
+both target manifests with the reviewed Runtime public trust file. Cross-check
+the release tag, full source commit, macOS ARM64 and Windows x64 archive names,
+sizes, and SHA-256 values against that signed index. The verified directory must
+contain exactly these eight public files:
+
+- `agentera-runtime-stable.index.json` and
+  `agentera-runtime-stable.index.sig`
+- the macOS ARM64 archive, manifest, and manifest signature
+- the Windows x64 archive, manifest, and manifest signature
+
+Copy that already verified directory to an owner-controlled staging path on the
+host. Publish it without credentials or private signing material:
+
+```sh
+AERA_RUNTIME_UPDATE_ROOT=/var/lib/aera/runtime-updates/stable \
+  /opt/aera/internal-beta/cloud/deploy/internal-beta/publish-runtime-update.sh \
+  /opt/aera/internal-beta/candidates/runtime/runtime-vVERSION
+```
+
+The publisher rechecks the signed metadata shape and every archive size and
+digest, creates a read-only `releases/runtime-vVERSION` directory, rejects
+different bytes at an existing tag, and only then atomically changes the
+`current` symlink. An interrupted publication may leave an unreferenced release
+directory, but it cannot expose partial metadata through `current`; rerunning
+the exact same verified bytes is idempotent.
+
+Install and validate the reviewed Caddy configuration using the controlled
+restart procedure above. Stable index metadata is served with `no-store`, while
+tagged release assets are immutable. Confirm the public index is JSON rather
+than the account-center HTML fallback, then compare every online byte to the
+verified local bundle before enabling a Desktop candidate:
+
+```sh
+curl --fail --silent --show-error --dump-header /tmp/runtime-index.headers \
+  --output /tmp/runtime-index.json \
+  "$AERA_INTERNAL_BETA_PUBLIC_ORIGIN/runtime-updates/stable/agentera-runtime-stable.index.json"
+jq -e '.channel == "stable" and .source_repository == "bignormal/aera-runtime"' \
+  /tmp/runtime-index.json >/dev/null
+```
+
+Retain only public hashes and version/source identities as evidence. Do not
+record host credentials, SSH configuration, private keys, tokens, or response
+headers containing unrelated session data.
+
 ## First deployment
 
 Create the private Admin network once:

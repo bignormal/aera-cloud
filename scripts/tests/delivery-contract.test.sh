@@ -34,6 +34,7 @@ for file in \
   deploy/Caddyfile.example \
   deploy/internal-beta/Caddyfile \
   deploy/internal-beta/deploy.sh \
+  deploy/internal-beta/publish-runtime-update.sh \
   deploy/internal-beta/health-smoke.sh \
   deploy/internal-beta/exposure-check.sh \
   deploy/backup.sh \
@@ -50,6 +51,7 @@ for file in \
   scripts/release/verify-manifest.sh \
   scripts/release/deploy-by-digest.sh \
   scripts/release/rollback-by-digest.sh \
+  scripts/tests/runtime-update-mirror.test.sh \
   .github/workflows/candidate.yml \
   .github/workflows/deploy-staging.yml \
   .github/workflows/promote-production.yml \
@@ -89,16 +91,24 @@ require_text deploy/internal-beta/Caddyfile '@desktop_update_metadata path /desk
 require_text deploy/internal-beta/Caddyfile 'root \* /var/lib/aera/desktop-updates/internal-beta/current'
 require_text deploy/internal-beta/Caddyfile '@desktop_update_release path /desktop-updates/internal-beta/releases/\*'
 require_text deploy/internal-beta/Caddyfile 'Cache-Control "public, max-age=31536000, immutable"'
+require_text deploy/internal-beta/Caddyfile '@runtime_update_metadata path /runtime-updates/stable/agentera-runtime-stable\.index\.json /runtime-updates/stable/agentera-runtime-stable\.index\.sig'
+require_text deploy/internal-beta/Caddyfile 'root \* /var/lib/aera/runtime-updates/stable/current'
+require_text deploy/internal-beta/Caddyfile '@runtime_update_release path /runtime-updates/stable/releases/\*'
+require_text deploy/internal-beta/Caddyfile 'root \* /var/lib/aera/runtime-updates/stable'
 require_text deploy/internal-beta/Caddyfile 'reverse_proxy 127\.0\.0\.1:18086'
 require_text deploy/internal-beta/deploy.sh 'verify-manifest\.sh'
 require_text deploy/internal-beta/deploy.sh 'candidate digest is already current'
 require_text deploy/internal-beta/deploy.sh 'recorded previous'
+require_text deploy/internal-beta/publish-runtime-update.sh 'bignormal/aera-runtime'
+require_text deploy/internal-beta/publish-runtime-update.sh 'immutable release already exists with different bytes'
+require_text deploy/internal-beta/publish-runtime-update.sh 'AERA_RUNTIME_UPDATE_ROOT'
 require_text deploy/internal-beta/health-smoke.sh 'AERA_INTERNAL_BETA_EXPECT_REGISTRATION_MODE'
 require_text deploy/internal-beta/deploy.sh 'AGENTERA_CLOUD_REGISTRATION_IDENTITY_KINDS=phone'
 require_text deploy/internal-beta/exposure-check.sh 'unexpected public host listener'
 require_text docs/runbooks/internal-beta.md 'default rollout still omits SMTP and SMS'
 require_text docs/runbooks/internal-beta.md 'AGENTERA_CLOUD_SMS_PROVIDER=aliyun'
 require_text docs/runbooks/internal-beta.md 'takes no image, tag, digest, or'
+require_text docs/runbooks/internal-beta.md 'Runtime stable mirror'
 
 require_text deploy/backup.sh 'pg_dump'
 require_text deploy/backup.sh 'age'

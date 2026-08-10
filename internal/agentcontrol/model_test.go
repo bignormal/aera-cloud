@@ -1,10 +1,39 @@
 package agentcontrol
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 )
+
+func TestManifestV3WireUsesModelPolicyAndLogicalMCPRequirements(t *testing.T) {
+	manifest, _ := emptyManifestV3Fixture()
+	encoded, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("json.Marshal(V3) error = %v", err)
+	}
+	for _, expected := range []string{`"schema_version":3`, `"model_policy":`, `"mcp_requirements":`} {
+		if !strings.Contains(string(encoded), expected) {
+			t.Fatalf("V3 wire manifest = %s, want %s", encoded, expected)
+		}
+	}
+	for _, forbidden := range []string{`"model_constraints":`, `"url":`, `"command":`, `"env":`, `"token":`} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("V3 wire manifest contains forbidden field %s: %s", forbidden, encoded)
+		}
+	}
+
+	decoded, err := DecodeManifest(encoded)
+	if err != nil {
+		t.Fatalf("DecodeManifest(V3) error = %v", err)
+	}
+	if decoded.SchemaVersion != 3 || decoded.ModelPolicy.Mode != ModelSelectionUserSelect ||
+		len(decoded.MCPRequirements) != 2 || decoded.MCPRequirements[0].LogicalName != "docs-read" {
+		t.Fatalf("decoded V3 manifest = %+v", decoded)
+	}
+}
 
 func TestAssetOwnerValidate(t *testing.T) {
 	personalSpaceID := uuid.New()

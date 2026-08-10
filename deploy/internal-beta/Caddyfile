@@ -52,6 +52,22 @@ https://{$AERA_INTERNAL_BETA_IP} {
 		file_server
 	}
 
+	@runtime_update_metadata path /runtime-updates/stable/agentera-runtime-stable.index.json /runtime-updates/stable/agentera-runtime-stable.index.sig
+	handle @runtime_update_metadata {
+		header Cache-Control "no-store"
+		uri strip_prefix /runtime-updates/stable
+		root * /var/lib/aera/runtime-updates/stable/current
+		file_server
+	}
+
+	@runtime_update_release path /runtime-updates/stable/releases/*
+	handle @runtime_update_release {
+		header Cache-Control "public, max-age=31536000, immutable"
+		uri strip_prefix /runtime-updates/stable
+		root * /var/lib/aera/runtime-updates/stable
+		file_server
+	}
+
 	reverse_proxy 127.0.0.1:18086 {
 		health_uri /health/ready
 		health_interval 30s

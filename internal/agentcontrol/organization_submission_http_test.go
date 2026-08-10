@@ -39,6 +39,28 @@ func TestPublicOrganizationSubmissionDetailKeepsCanonicalManifestShape(t *testin
 	}
 }
 
+func TestOrganizationAgentSubmissionResponsePublishedVersionIdentity(t *testing.T) {
+	pending := publicOrganizationAgentSubmission(OrganizationAgentSubmission{
+		Status: OrganizationSubmissionPending,
+	})
+	if pending.PublishedVersionID != nil {
+		t.Fatalf("pending response leaked published version %s", pending.PublishedVersionID.String())
+	}
+	pendingJSON, err := json.Marshal(pending)
+	if err != nil || !strings.Contains(string(pendingJSON), `"published_version_id":null`) {
+		t.Fatalf("pending response JSON = %s error=%v", pendingJSON, err)
+	}
+
+	publishedVersionID := uuid.New()
+	approved := publicOrganizationAgentSubmission(OrganizationAgentSubmission{
+		Status:             OrganizationSubmissionApproved,
+		PublishedVersionID: publishedVersionID,
+	})
+	if approved.PublishedVersionID == nil || *approved.PublishedVersionID != publishedVersionID {
+		t.Fatalf("approved PublishedVersionID = %v, want %s", approved.PublishedVersionID, publishedVersionID)
+	}
+}
+
 func TestPublicVersionNormalizesPublishedAtToUTC(t *testing.T) {
 	publishedAt := time.Date(2026, 7, 21, 18, 3, 16, 0, time.FixedZone("CST", 8*60*60))
 	response := publicVersion(Version{PublishedAt: publishedAt})

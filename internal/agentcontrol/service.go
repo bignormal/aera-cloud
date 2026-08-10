@@ -136,7 +136,7 @@ func intersectOrganizationModelAllowlists(
 
 func agentPolicyConstraintsForManifest(manifest AgentManifest) AgentPolicyConstraints {
 	constraints := AgentPolicyConstraints{AllowedTools: cloneOrganizationSlice(manifest.Tools.Allowed)}
-	if manifest.SchemaVersion == 2 {
+	if manifest.SchemaVersion == 2 || manifest.SchemaVersion == 3 {
 		constraints.ModelMode = manifest.ModelPolicy.Mode
 		constraints.AllowedProviders = cloneOrganizationSlice(manifest.ModelPolicy.AllowedProviders)
 		constraints.AllowedModels = cloneOrganizationSlice(manifest.ModelPolicy.AllowedModels)
@@ -229,6 +229,11 @@ type ServiceRepository interface {
 	ListWorkspaceExperienceCandidates(context.Context, Principal, uuid.UUID) ([]ExperienceCandidate, error)
 	FindExperienceCandidate(context.Context, Principal, uuid.UUID, uuid.UUID, AuditEvidence, time.Time) (ExperienceCandidate, bool, error)
 	ReviewExperienceCandidate(context.Context, Principal, ReviewExperienceCandidateCommand) (ExperienceCandidate, bool, error)
+	SubmitOrganizationExperienceCandidate(context.Context, Principal, SubmitOrganizationExperienceCandidateCommand) (OrganizationExperienceCandidate, bool, error)
+	ListOwnOrganizationExperienceCandidates(context.Context, Principal, uuid.UUID) ([]OrganizationExperienceCandidate, error)
+	ListOrganizationExperienceCandidates(context.Context, Principal, uuid.UUID) ([]OrganizationExperienceCandidate, error)
+	FindOrganizationExperienceCandidate(context.Context, Principal, uuid.UUID, uuid.UUID, AuditEvidence, time.Time) (OrganizationExperienceCandidate, bool, error)
+	ReviewOrganizationExperienceCandidate(context.Context, Principal, ReviewOrganizationExperienceCandidateCommand) (OrganizationExperienceCandidate, bool, error)
 	SubmitOrganizationAgent(context.Context, SubmitOrganizationAgentCommand) (OrganizationAgentSubmission, error)
 	ListOrganizationAgentSubmissions(context.Context, Principal, uuid.UUID) ([]OrganizationAgentSubmission, error)
 	FindOrganizationAgentSubmission(context.Context, Principal, uuid.UUID, uuid.UUID) (OrganizationAgentSubmission, bool, error)
@@ -1375,6 +1380,20 @@ type policyDocumentV2 struct {
 	OfficialContext      *officialPolicyContextV1      `json:"official_context,omitempty"`
 }
 
+type policyDocumentV3 struct {
+	SchemaVersion        int                           `json:"schema_version"`
+	AgentDefinitionID    string                        `json:"agent_definition_id"`
+	AgentVersionID       string                        `json:"agent_version_id"`
+	VersionDigest        string                        `json:"version_digest"`
+	MCPRequirements      []canonicalMCPRequirementV3   `json:"mcp_requirements"`
+	ModelPolicy          canonicalModelPolicyV2        `json:"model_policy"`
+	Tools                canonicalTools                `json:"tools"`
+	RuntimeCompatibility canonicalRuntimeCompatibility `json:"runtime_compatibility"`
+	PublicationAllowed   bool                          `json:"publication_allowed"`
+	DenyRules            []string                      `json:"deny_rules"`
+	OfficialContext      *officialPolicyContextV1      `json:"official_context,omitempty"`
+}
+
 type officialPolicyContextV1 struct {
 	PlatformID           string     `json:"platform_id"`
 	ReleaseID            string     `json:"release_id"`
@@ -1457,6 +1476,13 @@ func policyDocumentForOfficialVersion(
 	}
 	var document any
 	switch header.SchemaVersion {
+	case 3:
+		var value policyDocumentV3
+		if err := decodeStrictJSON(base, &value); err != nil {
+			return nil, ErrInvalidAgentContent
+		}
+		value.OfficialContext = officialContext
+		document = value
 	case 2:
 		var value policyDocumentV2
 		if err := decodeStrictJSON(base, &value); err != nil {
@@ -1545,6 +1571,33 @@ func policyDocumentForVersionWithConstraints(
 			VersionDigest: hex.EncodeToString(version.ContentDigest[:]), ModelPolicy: manifest.ModelPolicy,
 			Tools: manifest.Tools, RuntimeCompatibility: manifest.RuntimeCompatibility,
 			PublicationAllowed: false, DenyRules: []string{},
+		})
+	case 3:
+		var manifest canonicalManifestV3
+		if err := decodeStrictJSON(canonical.ManifestJSON, &manifest); err != nil || manifest.SchemaVersion != 3 {
+			return nil, ErrInvalidAgentContent
+		}
+		if effective != nil {
+			manifest.ModelPolicy = canonicalModelPolicyV2{
+				Mode:             effective.ModelMode,
+				AllowedProviders: cloneOrganizationSlice(effective.AllowedProviders),
+				AllowedModels:    cloneOrganizationSlice(effective.AllowedModels),
+			}
+			manifest.Tools.Allowed = cloneOrganizationSlice(effective.AllowedTools)
+		}
+		if !validModelPolicyV2(
+			manifest.ModelPolicy.Mode,
+			manifest.ModelPolicy.AllowedProviders,
+			manifest.ModelPolicy.AllowedModels,
+		) {
+			return nil, ErrInvalidAgentContent
+		}
+		document, err = marshalCanonical(policyDocumentV3{
+			SchemaVersion: 3, AgentDefinitionID: version.DefinitionID.String(), AgentVersionID: version.ID.String(),
+			VersionDigest: hex.EncodeToString(version.ContentDigest[:]), MCPRequirements: manifest.MCPRequirements,
+			ModelPolicy: manifest.ModelPolicy, Tools: manifest.Tools,
+			RuntimeCompatibility: manifest.RuntimeCompatibility,
+			PublicationAllowed:   false, DenyRules: []string{},
 		})
 	default:
 		return nil, ErrInvalidAgentContent

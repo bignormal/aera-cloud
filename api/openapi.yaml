@@ -1494,6 +1494,160 @@ paths:
           $ref: '#/components/responses/OrganizationAgentError'
         '503':
           $ref: '#/components/responses/OrganizationAgentError'
+  /api/v1/organizations/{organization_id}/agent-definitions/{definition_id}/experience-candidates:
+    post:
+      operationId: submitOrganizationExperienceCandidate
+      description: Explicitly contributes one canonical Skill from the authenticated actor's exact active USER Installation of this Organization Agent. The maximum ExperienceCandidate request body is 1310720 bytes.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+        - $ref: '#/components/parameters/AgentDefinitionID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitOrganizationExperienceCandidateRequest'
+      responses:
+        '201':
+          description: Immutable Organization candidate accepted after trusted scope resolution, canonicalization, and Cloud DLP.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationExperienceCandidateDetail'
+        '400':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '403':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '404':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '409':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '413':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '503':
+          $ref: '#/components/responses/ExperienceCandidateError'
+  /api/v1/organizations/{organization_id}/experience-candidates/mine:
+    get:
+      operationId: listOwnOrganizationExperienceCandidates
+      description: Lists only Organization candidates submitted by the authenticated active member; bundle content is omitted.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+      responses:
+        '200':
+          description: Organization candidate summaries owned by the authenticated submitter.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationExperienceCandidateListResponse'
+        '400':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '404':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '409':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '503':
+          $ref: '#/components/responses/ExperienceCandidateError'
+  /api/v1/organizations/{organization_id}/experience-candidates:
+    get:
+      operationId: listOrganizationExperienceCandidates
+      description: Owner or Admin lists Organization candidate summaries and terminal history without bundle content.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+      responses:
+        '200':
+          description: Organization review queue and terminal candidate summaries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationExperienceCandidateListResponse'
+        '400':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '403':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '404':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '409':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '503':
+          $ref: '#/components/responses/ExperienceCandidateError'
+  /api/v1/organizations/{organization_id}/experience-candidates/{candidate_id}:
+    get:
+      operationId: getOrganizationExperienceCandidate
+      description: Returns canonical content only to its active submitter or an authorized Organization reader.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+        - $ref: '#/components/parameters/ExperienceCandidateID'
+      responses:
+        '200':
+          description: Authorized Organization candidate detail with the canonical bundle.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationExperienceCandidateDetail'
+        '400':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '403':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '404':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '409':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '503':
+          $ref: '#/components/responses/ExperienceCandidateError'
+  /api/v1/organizations/{organization_id}/experience-candidates/{candidate_id}/review:
+    post:
+      operationId: reviewOrganizationExperienceCandidate
+      description: Owner or Admin records the single terminal Organization approval or rejection. The maximum Agent metadata request body is 65536 bytes.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationID'
+        - $ref: '#/components/parameters/ExperienceCandidateID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewExperienceCandidateRequest'
+      responses:
+        '200':
+          description: Organization candidate detail with its terminal review; approval does not publish an Agent Version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationExperienceCandidateDetail'
+        '400':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '403':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '404':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '409':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '413':
+          $ref: '#/components/responses/ExperienceCandidateError'
+        '503':
+          $ref: '#/components/responses/ExperienceCandidateError'
   /api/v1/organizations/{organization_id}/agent-publication-submissions:
     get:
       operationId: listOrganizationAgentPublicationSubmissions
@@ -4252,6 +4406,27 @@ components:
           $ref: '#/components/schemas/ExperienceCandidateBundle'
         content_digest:
           $ref: '#/components/schemas/SHA256Digest'
+    SubmitOrganizationExperienceCandidateRequest:
+      type: object
+      additionalProperties: false
+      required: [source_version_id, skill_name, schema_version, dlp_contract_version, bundle]
+      properties:
+        source_version_id:
+          type: string
+          format: uuid
+        skill_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          pattern: '^[a-z0-9](?:[a-z0-9_-]{0,98}[a-z0-9])?$'
+        schema_version:
+          type: integer
+          enum: [1]
+        dlp_contract_version:
+          type: string
+          enum: [experience-candidate-dlp-v1]
+        bundle:
+          $ref: '#/components/schemas/ExperienceCandidateBundle'
     ReviewExperienceCandidateRequest:
       type: object
       additionalProperties: false
@@ -4396,6 +4571,106 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ExperienceCandidateSummary'
+    OrganizationExperienceCandidateSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - organization_id
+        - agent_definition_id
+        - source_agent_version_id
+        - submitted_by_user_id
+        - skill_name
+        - dlp_contract_version
+        - content_digest
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        organization_id:
+          type: string
+          format: uuid
+        agent_definition_id:
+          type: string
+          format: uuid
+        source_agent_version_id:
+          type: string
+          format: uuid
+        submitted_by_user_id:
+          type: string
+          format: uuid
+          nullable: true
+        skill_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        dlp_contract_version:
+          type: string
+          enum: [experience-candidate-dlp-v1]
+        content_digest:
+          $ref: '#/components/schemas/SHA256Digest'
+        created_at:
+          type: string
+          format: date-time
+        review:
+          $ref: '#/components/schemas/ExperienceCandidateReview'
+    OrganizationExperienceCandidateDetail:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - organization_id
+        - agent_definition_id
+        - source_agent_version_id
+        - submitted_by_user_id
+        - skill_name
+        - dlp_contract_version
+        - content_digest
+        - created_at
+        - bundle
+      properties:
+        id:
+          type: string
+          format: uuid
+        organization_id:
+          type: string
+          format: uuid
+        agent_definition_id:
+          type: string
+          format: uuid
+        source_agent_version_id:
+          type: string
+          format: uuid
+        submitted_by_user_id:
+          type: string
+          format: uuid
+          nullable: true
+        skill_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        dlp_contract_version:
+          type: string
+          enum: [experience-candidate-dlp-v1]
+        content_digest:
+          $ref: '#/components/schemas/SHA256Digest'
+        created_at:
+          type: string
+          format: date-time
+        review:
+          $ref: '#/components/schemas/ExperienceCandidateReview'
+        bundle:
+          $ref: '#/components/schemas/ExperienceCandidateBundle'
+    OrganizationExperienceCandidateListResponse:
+      type: object
+      additionalProperties: false
+      required: [candidates]
+      properties:
+        candidates:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrganizationExperienceCandidateSummary'
     ExperienceCandidateFinding:
       type: object
       additionalProperties: false
@@ -4426,6 +4701,9 @@ components:
         - not_found
         - workspace_archived
         - workspace_owner_unavailable
+        - organization_agent_not_found
+        - organization_agent_forbidden
+        - organization_archived
         - service_unavailable
     ExperienceCandidateErrorEnvelope:
       type: object
@@ -4509,6 +4787,7 @@ components:
         - kind
         - definition_id
         - base_version_id
+        - published_version_id
         - submitted_by_user_id
         - content_digest
         - status
@@ -4531,6 +4810,10 @@ components:
           type: string
           format: uuid
         base_version_id:
+          type: string
+          format: uuid
+          nullable: true
+        published_version_id:
           type: string
           format: uuid
           nullable: true
@@ -4842,6 +5125,7 @@ components:
       oneOf:
         - $ref: '#/components/schemas/AgentManifestV1'
         - $ref: '#/components/schemas/AgentManifestV2'
+        - $ref: '#/components/schemas/AgentManifestV3'
     AgentManifestV1:
       type: object
       additionalProperties: false
@@ -4894,6 +5178,62 @@ components:
             $ref: '#/components/schemas/AgentDependencyV1'
         runtime_compatibility:
           $ref: '#/components/schemas/AgentRuntimeCompatibilityV1'
+    AgentManifestV3:
+      type: object
+      additionalProperties: false
+      required: [schema_version, identity, assets, model_policy, mcp_requirements, tools, dependencies, runtime_compatibility]
+      properties:
+        schema_version:
+          type: integer
+          enum: [3]
+        identity:
+          $ref: '#/components/schemas/AgentIdentityV1'
+        assets:
+          type: array
+          maxItems: 128
+          items:
+            $ref: '#/components/schemas/AgentManifestAssetV1'
+        model_policy:
+          $ref: '#/components/schemas/AgentModelPolicyV2'
+        mcp_requirements:
+          type: array
+          maxItems: 32
+          items:
+            $ref: '#/components/schemas/AgentMCPRequirementV3'
+        tools:
+          $ref: '#/components/schemas/AgentToolPolicyV1'
+        dependencies:
+          type: array
+          maxItems: 128
+          items:
+            $ref: '#/components/schemas/AgentDependencyV1'
+        runtime_compatibility:
+          $ref: '#/components/schemas/AgentRuntimeCompatibilityV1'
+    AgentMCPRequirementV3:
+      type: object
+      additionalProperties: false
+      required: [logical_name, tools, required, permission_reason]
+      properties:
+        logical_name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        tools:
+          type: array
+          minItems: 1
+          maxItems: 128
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+            maxLength: 128
+        required:
+          type: boolean
+        permission_reason:
+          type: string
+          description: Permission reason limited by the server to 300 UTF-8 bytes.
+          minLength: 1
+          maxLength: 300
     AgentIdentityV1:
       type: object
       additionalProperties: false
@@ -5580,6 +5920,7 @@ components:
       oneOf:
         - $ref: '#/components/schemas/AgentPolicyDocumentV1'
         - $ref: '#/components/schemas/AgentPolicyDocumentV2'
+        - $ref: '#/components/schemas/AgentPolicyDocumentV3'
     AgentPolicyDocumentV1:
       type: object
       additionalProperties: false
@@ -5646,6 +5987,53 @@ components:
           format: uuid
         version_digest:
           $ref: '#/components/schemas/SHA256Digest'
+        model_policy:
+          $ref: '#/components/schemas/AgentModelPolicyV2'
+        tools:
+          $ref: '#/components/schemas/AgentToolPolicyV1'
+        runtime_compatibility:
+          $ref: '#/components/schemas/AgentRuntimeCompatibilityV1'
+        publication_allowed:
+          type: boolean
+          enum: [false]
+        deny_rules:
+          type: array
+          items:
+            type: string
+            maxLength: 256
+        official_context:
+          $ref: '#/components/schemas/OfficialAgentPolicyContextV1'
+    AgentPolicyDocumentV3:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - agent_definition_id
+        - agent_version_id
+        - version_digest
+        - mcp_requirements
+        - model_policy
+        - tools
+        - runtime_compatibility
+        - publication_allowed
+        - deny_rules
+      properties:
+        schema_version:
+          type: integer
+          enum: [3]
+        agent_definition_id:
+          type: string
+          format: uuid
+        agent_version_id:
+          type: string
+          format: uuid
+        version_digest:
+          $ref: '#/components/schemas/SHA256Digest'
+        mcp_requirements:
+          type: array
+          maxItems: 32
+          items:
+            $ref: '#/components/schemas/AgentMCPRequirementV3'
         model_policy:
           $ref: '#/components/schemas/AgentModelPolicyV2'
         tools:
@@ -7391,7 +7779,7 @@ components:
           schema:
             $ref: '#/components/schemas/OfficialQualityErrorEnvelope'
     ExperienceCandidateError:
-      description: Candidate validation, DLP, visibility, Workspace lifecycle, terminal review, idempotency, or service failure without private evidence text.
+      description: Candidate validation, DLP, visibility, Workspace or Organization lifecycle, terminal review, idempotency, or service failure without private evidence text.
       content:
         application/json:
           schema:

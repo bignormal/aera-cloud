@@ -270,6 +270,56 @@ func TestOpenAPIExposesStrictAgentManifestV2ModelPolicy(t *testing.T) {
 	}
 }
 
+func TestOpenAPIExposesStrictAgentManifestV3MCPRequirements(t *testing.T) {
+	for _, path := range []string{"openapi.yaml", "openapi/internal-admin.yaml"} {
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		document := string(contents)
+		manifestUnion := openAPISchemaBlock(t, document, "AgentManifest")
+		for _, reference := range []string{"AgentManifestV1", "AgentManifestV2", "AgentManifestV3"} {
+			if !strings.Contains(manifestUnion, "#/components/schemas/"+reference) {
+				t.Fatalf("%s AgentManifest union is missing %s", path, reference)
+			}
+		}
+
+		v3 := openAPISchemaBlock(t, document, "AgentManifestV3")
+		for _, fragment := range []string{
+			"additionalProperties: false",
+			"required: [schema_version, identity, assets, model_policy, mcp_requirements, tools, dependencies, runtime_compatibility]",
+			"enum: [3]",
+			"maxItems: 32",
+			"$ref: '#/components/schemas/AgentMCPRequirementV3'",
+		} {
+			if !strings.Contains(v3, fragment) {
+				t.Fatalf("%s AgentManifestV3 is missing %q:\n%s", path, fragment, v3)
+			}
+		}
+		if strings.Contains(v3, "model_constraints:") {
+			t.Fatalf("%s AgentManifestV3 mixes V1 model constraints:\n%s", path, v3)
+		}
+
+		requirement := openAPISchemaBlock(t, document, "AgentMCPRequirementV3")
+		for _, fragment := range []string{
+			"additionalProperties: false", "required: [logical_name, tools, required, permission_reason]",
+			"maxItems: 128", "maxLength: 300",
+		} {
+			if !strings.Contains(requirement, fragment) {
+				t.Fatalf("%s AgentMCPRequirementV3 is missing %q:\n%s", path, fragment, requirement)
+			}
+		}
+		for _, forbidden := range []string{
+			"url:", "command:", "args:", "env:", "headers:", "token:", "auth:",
+			"credential_ref:", "profile_path:", "local_path:",
+		} {
+			if strings.Contains(requirement, forbidden) {
+				t.Fatalf("%s AgentMCPRequirementV3 exposes forbidden field %q:\n%s", path, forbidden, requirement)
+			}
+		}
+	}
+}
+
 func TestOpenAPIAgentRuntimeCompatibilityAllowsNullMaximum(t *testing.T) {
 	expectations := map[string]string{
 		"openapi.yaml":                "maximum_version_exclusive:\n          type: string\n          nullable: true",
@@ -313,6 +363,16 @@ func TestOpenAPIContainsOrganizationAgentApprovalContract(t *testing.T) {
 		if !strings.Contains(document, schema) {
 			t.Fatalf("OpenAPI is missing schema %q", schema)
 		}
+	}
+	submissionStart := strings.Index(document, "    OrganizationAgentSubmission:\n")
+	submissionEnd := strings.Index(document, "    OrganizationAgentSubmissionDetail:\n")
+	if submissionStart < 0 || submissionEnd <= submissionStart {
+		t.Fatal("OpenAPI is missing the bounded OrganizationAgentSubmission schema")
+	}
+	submission := document[submissionStart:submissionEnd]
+	if !strings.Contains(submission, "        - published_version_id\n") ||
+		!strings.Contains(submission, "        published_version_id:\n          type: string\n          format: uuid\n          nullable: true") {
+		t.Fatalf("OrganizationAgentSubmission does not require a nullable published_version_id:\n%s", submission)
 	}
 	installationStart := strings.Index(document, "    CreateAgentInstallationRequest:\n")
 	installationEnd := strings.Index(document, "    ActivateAgentInstallationRequest:\n")
@@ -604,6 +664,52 @@ func TestOpenAPIContainsStrictExperienceCandidateContract(t *testing.T) {
 	} {
 		if strings.Contains(submissionSchema, forbidden) {
 			t.Fatalf("candidate submission schema exposed forbidden input %q", forbidden)
+		}
+	}
+}
+
+func TestOpenAPIContainsStrictOrganizationExperienceCandidateContract(t *testing.T) {
+	contents, err := os.ReadFile("openapi.yaml")
+	if err != nil {
+		t.Fatalf("read openapi.yaml: %v", err)
+	}
+	document := string(contents)
+	for _, path := range []string{
+		"/api/v1/organizations/{organization_id}/agent-definitions/{definition_id}/experience-candidates:",
+		"/api/v1/organizations/{organization_id}/experience-candidates/mine:",
+		"/api/v1/organizations/{organization_id}/experience-candidates:",
+		"/api/v1/organizations/{organization_id}/experience-candidates/{candidate_id}:",
+		"/api/v1/organizations/{organization_id}/experience-candidates/{candidate_id}/review:",
+	} {
+		if !strings.Contains(document, path) {
+			t.Fatalf("OpenAPI is missing %s", path)
+		}
+	}
+	for _, schema := range []string{
+		"SubmitOrganizationExperienceCandidateRequest:",
+		"OrganizationExperienceCandidateSummary:",
+		"OrganizationExperienceCandidateDetail:",
+		"OrganizationExperienceCandidateListResponse:",
+	} {
+		if !strings.Contains(document, schema) {
+			t.Fatalf("OpenAPI is missing Organization candidate schema %q", schema)
+		}
+	}
+	submissionSchema := openAPISchemaBlock(t, document, "SubmitOrganizationExperienceCandidateRequest")
+	for _, required := range []string{
+		"source_version_id:", "skill_name:", "schema_version:", "dlp_contract_version:", "bundle:",
+	} {
+		if !strings.Contains(submissionSchema, required) {
+			t.Fatalf("Organization candidate submission schema is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"organization_id:", "definition_id:", "actor_user_id:", "role:", "device_id:",
+		"origin:", "token:", "profile_path:", "source_path:", "content_digest:",
+		"dlp_bypass:", "replacement_content:",
+	} {
+		if strings.Contains(submissionSchema, forbidden) {
+			t.Fatalf("Organization candidate submission schema exposed forbidden input %q", forbidden)
 		}
 	}
 }

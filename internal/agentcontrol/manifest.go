@@ -47,8 +47,13 @@ func DecodeBundle(raw []byte) (VersionBundleV1, error) {
 }
 
 func CanonicalizeVersion(manifest AgentManifest, bundle VersionBundleV1) (CanonicalVersion, error) {
-	if (manifest.SchemaVersion != 1 && manifest.SchemaVersion != 2) || !validText(manifest.Identity.SystemPrompt, 1, MaxManifestBytes) ||
+	if (manifest.SchemaVersion != 1 && manifest.SchemaVersion != 2 && manifest.SchemaVersion != 3) ||
+		!validText(manifest.Identity.SystemPrompt, 1, MaxManifestBytes) ||
 		len(manifest.Assets) > MaxAssetCount || len(bundle.Assets) > MaxAssetCount {
+		return CanonicalVersion{}, ErrInvalidAgentContent
+	}
+	if (manifest.SchemaVersion == 3 && manifest.MCPRequirements == nil) ||
+		(manifest.SchemaVersion != 3 && len(manifest.MCPRequirements) != 0) {
 		return CanonicalVersion{}, ErrInvalidAgentContent
 	}
 
@@ -113,7 +118,7 @@ func CanonicalizeVersion(manifest AgentManifest, bundle VersionBundleV1) (Canoni
 		if err != nil || len(models) == 0 {
 			return CanonicalVersion{}, ErrInvalidAgentContent
 		}
-	case 2:
+	case 2, 3:
 		modelMode = manifest.ModelPolicy.Mode
 		providers, err = canonicalStringSet(manifest.ModelPolicy.AllowedProviders, true)
 		if err != nil {
@@ -140,6 +145,14 @@ func CanonicalizeVersion(manifest AgentManifest, bundle VersionBundleV1) (Canoni
 		if _, conflict := allowedLookup[tool]; conflict {
 			return CanonicalVersion{}, ErrInvalidAgentContent
 		}
+	}
+	canonicalRequirements, err := canonicalizeMCPRequirements(
+		manifest.MCPRequirements,
+		allowedLookup,
+		deniedTools,
+	)
+	if err != nil {
+		return CanonicalVersion{}, err
 	}
 
 	dependencies := make([]canonicalDependency, 0, len(manifest.Dependencies))
@@ -184,7 +197,8 @@ func CanonicalizeVersion(manifest AgentManifest, bundle VersionBundleV1) (Canoni
 	})
 
 	var canonicalManifestValue any
-	if manifest.SchemaVersion == 1 {
+	switch manifest.SchemaVersion {
+	case 1:
 		canonicalManifestValue = canonicalManifest{
 			Assets:       canonicalAssets,
 			Dependencies: dependencies,
@@ -198,13 +212,28 @@ func CanonicalizeVersion(manifest AgentManifest, bundle VersionBundleV1) (Canoni
 			SchemaVersion: manifest.SchemaVersion,
 			Tools:         canonicalTools{Allowed: allowedTools, Denied: deniedTools},
 		}
-	} else {
+	case 2:
 		canonicalManifestValue = canonicalManifestV2{
 			Assets:       canonicalAssets,
 			Dependencies: dependencies,
 			Identity: canonicalIdentity{
 				SystemPrompt: manifest.Identity.SystemPrompt,
 			},
+			ModelPolicy: canonicalModelPolicyV2{
+				Mode: modelMode, AllowedModels: models, AllowedProviders: providers,
+			},
+			RuntimeCompatibility: canonicalRuntimeCompatibility{
+				MaximumVersionExclusive: maximum, MinimumVersion: minimum,
+			},
+			SchemaVersion: manifest.SchemaVersion,
+			Tools:         canonicalTools{Allowed: allowedTools, Denied: deniedTools},
+		}
+	case 3:
+		canonicalManifestValue = canonicalManifestV3{
+			Assets:          canonicalAssets,
+			Dependencies:    dependencies,
+			Identity:        canonicalIdentity{SystemPrompt: manifest.Identity.SystemPrompt},
+			MCPRequirements: canonicalRequirements,
 			ModelPolicy: canonicalModelPolicyV2{
 				Mode: modelMode, AllowedModels: models, AllowedProviders: providers,
 			},
@@ -276,6 +305,24 @@ type canonicalManifestV2 struct {
 	Tools                canonicalTools                `json:"tools"`
 }
 
+type canonicalManifestV3 struct {
+	Assets               []canonicalManifestAsset      `json:"assets"`
+	Dependencies         []canonicalDependency         `json:"dependencies"`
+	Identity             canonicalIdentity             `json:"identity"`
+	MCPRequirements      []canonicalMCPRequirementV3   `json:"mcp_requirements"`
+	ModelPolicy          canonicalModelPolicyV2        `json:"model_policy"`
+	RuntimeCompatibility canonicalRuntimeCompatibility `json:"runtime_compatibility"`
+	SchemaVersion        int                           `json:"schema_version"`
+	Tools                canonicalTools                `json:"tools"`
+}
+
+type canonicalMCPRequirementV3 struct {
+	LogicalName      string   `json:"logical_name"`
+	PermissionReason string   `json:"permission_reason"`
+	Required         bool     `json:"required"`
+	Tools            []string `json:"tools"`
+}
+
 type canonicalManifestAsset struct {
 	Kind      AssetKind `json:"kind"`
 	MediaType MediaType `json:"media_type"`
@@ -314,6 +361,57 @@ func validModelPolicyV2(mode ModelSelectionMode, providers []string, models []st
 	default:
 		return false
 	}
+}
+
+func canonicalizeMCPRequirements(
+	requirements []AgentMCPRequirementV3,
+	allowedTools map[string]struct{},
+	deniedTools []string,
+) ([]canonicalMCPRequirementV3, error) {
+	if len(requirements) > 32 {
+		return nil, ErrInvalidAgentContent
+	}
+	canonical := make([]canonicalMCPRequirementV3, 0, len(requirements))
+	seenNames := make(map[string]struct{}, len(requirements))
+	deniedLookup := make(map[string]struct{}, len(deniedTools))
+	for _, tool := range deniedTools {
+		deniedLookup[tool] = struct{}{}
+	}
+	for _, requirement := range requirements {
+		if !validText(requirement.LogicalName, 1, 128) ||
+			requirement.LogicalName != strings.TrimSpace(requirement.LogicalName) ||
+			strings.ContainsAny(requirement.LogicalName, "\r\n") ||
+			strings.Contains(requirement.LogicalName, "://") ||
+			!validText(requirement.PermissionReason, 1, 300) ||
+			requirement.PermissionReason != strings.TrimSpace(requirement.PermissionReason) ||
+			strings.ContainsAny(requirement.PermissionReason, "\r\n") {
+			return nil, ErrInvalidAgentContent
+		}
+		if _, duplicate := seenNames[requirement.LogicalName]; duplicate {
+			return nil, ErrInvalidAgentContent
+		}
+		seenNames[requirement.LogicalName] = struct{}{}
+		tools, err := canonicalStringSet(requirement.Tools, true)
+		if err != nil || len(tools) == 0 || len(tools) > 128 {
+			return nil, ErrInvalidAgentContent
+		}
+		for _, tool := range tools {
+			if _, allowed := allowedTools[tool]; !allowed {
+				return nil, ErrInvalidAgentContent
+			}
+			if _, denied := deniedLookup[tool]; denied {
+				return nil, ErrInvalidAgentContent
+			}
+		}
+		canonical = append(canonical, canonicalMCPRequirementV3{
+			LogicalName: requirement.LogicalName, PermissionReason: requirement.PermissionReason,
+			Required: requirement.Required, Tools: tools,
+		})
+	}
+	sort.Slice(canonical, func(left, right int) bool {
+		return canonical[left].LogicalName < canonical[right].LogicalName
+	})
+	return canonical, nil
 }
 
 type canonicalRuntimeCompatibility struct {
