@@ -82,10 +82,23 @@ jobs:
           AERA_INTEGRATION_TESTS=1 go test -count=1 -tags e2e ./cmd/aera-cloud-e2e
           AERA_SMOKE_USE_EXISTING_STACK=1 AERA_SMOKE_ALLOW_DATABASE_RESET=1 ./scripts/smoke-auth.sh
 
-      - name: Prove deployed application compatibility with schema 22
+      - name: Prove deployed bridge compatibility with schema 22
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash scripts/tests/schema-22-compatibility.test.sh
+          AERA_SCHEMA22_BRIDGE_SOURCE_SHA: e7206008316ccc5c5d20f67559b3e7a6c1f781d2
+        run: |
+          set -euo pipefail
+          bridge_root=$(mktemp -d "${RUNNER_TEMP}/aera-schema22-bridge.XXXXXX")
+          trap 'rm -rf "$bridge_root"' EXIT
+          gh repo clone bignormal/aera-cloud "$bridge_root" -- --filter=blob:none --no-checkout
+          git -C "$bridge_root" checkout --detach "$AERA_SCHEMA22_BRIDGE_SOURCE_SHA"
+          test "$(git -C "$bridge_root" rev-parse HEAD)" = "$AERA_SCHEMA22_BRIDGE_SOURCE_SHA"
+          test -z "$(git -C "$bridge_root" status --porcelain=v1)"
+          (
+            cd "$bridge_root"
+            AERA_SCHEMA22_MIGRATION_FILE="$GITHUB_WORKSPACE/migrations/000022_organization_experience_candidates.sql" \
+              bash scripts/tests/schema-22-compatibility.test.sh
+          )
 
       - name: Verify encrypted backup and disposable restore
         run: |
