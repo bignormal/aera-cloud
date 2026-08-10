@@ -63,7 +63,15 @@ var (
 	ErrNotFound          = errors.New("desktop control not found")
 	ErrConflict          = errors.New("desktop control conflict")
 	ErrInvalidTransition = errors.New("desktop control invalid transition")
+	ErrRateLimited       = errors.New("desktop control rate limited")
 	ErrUnavailable       = errors.New("desktop control unavailable")
+)
+
+type LimitAction string
+
+const (
+	LimitHeartbeat     LimitAction = "heartbeat"
+	LimitCommandResult LimitAction = "command_result"
 )
 
 type DevicePrincipal struct {

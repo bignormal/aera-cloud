@@ -20,6 +20,7 @@ import (
 	"github.com/bignormal/aera-cloud/internal/audit"
 	"github.com/bignormal/aera-cloud/internal/browser"
 	"github.com/bignormal/aera-cloud/internal/config"
+	"github.com/bignormal/aera-cloud/internal/desktopcontrol"
 	"github.com/bignormal/aera-cloud/internal/device"
 	"github.com/bignormal/aera-cloud/internal/encryptedbackup"
 	"github.com/bignormal/aera-cloud/internal/entitlement"
@@ -668,8 +669,14 @@ func buildDeviceHandler(
 	if err != nil {
 		return nil, err
 	}
+	desktopControl := desktopcontrol.NewService(desktopcontrol.NewPostgresRepository(postgres))
+	desktopControlLimiter, err := desktopcontrol.NewRedisLimiter(redisClient, desktopcontrol.DefaultLimitPolicies())
+	if err != nil {
+		return nil, err
+	}
 	return device.NewHandler(device.HTTPConfig{
-		Devices: devices, AccessTokens: accessAuthenticator, BrowserSessions: browserSessions,
+		Devices: devices, DesktopControl: desktopControl, DesktopControlLimiter: desktopControlLimiter,
+		AccessTokens: accessAuthenticator, BrowserSessions: browserSessions,
 	}), nil
 }
 
