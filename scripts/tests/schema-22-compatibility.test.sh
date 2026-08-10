@@ -15,7 +15,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for command_name in curl docker go shasum; do
+for command_name in docker go shasum; do
   command -v "$command_name" >/dev/null 2>&1 || {
     printf 'schema 22 compatibility test: %s is required\n' "$command_name" >&2
     exit 1
@@ -26,9 +26,14 @@ migration_file="$tmp_root/$migration_name"
 if [[ -n ${AERA_SCHEMA22_MIGRATION_FILE:-} ]]; then
   cp "$AERA_SCHEMA22_MIGRATION_FILE" "$migration_file"
 else
-  curl --fail --silent --show-error --location \
-    "https://raw.githubusercontent.com/bignormal/aera-cloud/$migration_source_sha/migrations/$migration_name" \
-    --output "$migration_file"
+  command -v gh >/dev/null 2>&1 || {
+    printf 'schema 22 compatibility test: gh is required to fetch the pinned private migration\n' >&2
+    exit 1
+  }
+  gh api \
+    -H 'Accept: application/vnd.github.raw+json' \
+    "repos/bignormal/aera-cloud/contents/migrations/$migration_name?ref=$migration_source_sha" \
+    >"$migration_file"
 fi
 [[ $(shasum -a 256 "$migration_file" | awk '{print $1}') == "$migration_sha256" ]]
 

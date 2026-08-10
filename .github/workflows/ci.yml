@@ -82,6 +82,8 @@ jobs:
           AERA_SMOKE_USE_EXISTING_STACK=1 AERA_SMOKE_ALLOW_DATABASE_RESET=1 ./scripts/smoke-auth.sh
 
       - name: Prove deployed application compatibility with schema 22
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: bash scripts/tests/schema-22-compatibility.test.sh
 
       - name: Verify encrypted backup and disposable restore
