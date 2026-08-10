@@ -90,7 +90,7 @@ jobs:
           set -euo pipefail
           bridge_root=$(mktemp -d "${RUNNER_TEMP}/aera-schema22-bridge.XXXXXX")
           trap 'rm -rf "$bridge_root"' EXIT
-          gh repo clone bignormal/aera-cloud "$bridge_root" -- --filter=blob:none --no-checkout
+          gh repo clone bignormal/aera-cloud "$bridge_root" -- --no-checkout
           git -C "$bridge_root" checkout --detach "$AERA_SCHEMA22_BRIDGE_SOURCE_SHA"
           test "$(git -C "$bridge_root" rev-parse HEAD)" = "$AERA_SCHEMA22_BRIDGE_SOURCE_SHA"
           test -z "$(git -C "$bridge_root" status --porcelain=v1)"
