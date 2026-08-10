@@ -3991,7 +3991,9 @@ components:
         effective_status: { type: string, enum: [pending, revoked, disabled, online, offline] }
         server_time: { type: string, format: date-time }
         command:
-          $ref: '#/components/schemas/DesktopControlCommand'
+          anyOf:
+            - $ref: '#/components/schemas/DesktopControlCommand'
+            - type: 'null'
     IdentityKind:
       type: string
       enum: [email, phone]
