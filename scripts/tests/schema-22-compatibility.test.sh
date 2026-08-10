@@ -5,7 +5,7 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 migration_source_sha=aba165d256cd447abcd43ce4c397041c2bf802d1
 migration_sha256=f02358bdacd540f92f5977a24a7ef5568de3354803e436ce966699a5433e6fd7
 migration_name=000022_organization_experience_candidates.sql
-tmp_root=$(mktemp -d -t aera-schema22-compat)
+tmp_root=$(mktemp -d "${TMPDIR:-/tmp}/aera-schema22-compat.XXXXXX")
 project="aera-schema22-compat-$$"
 compose=(docker compose -p "$project")
 
