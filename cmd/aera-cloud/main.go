@@ -104,7 +104,14 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 	if err != nil {
 		return err
 	}
-	deviceHandler, err := buildDeviceHandler(cfg, postgres, redisStore.Client())
+	desktopControl := desktopcontrol.NewService(desktopcontrol.NewPostgresRepository(postgres))
+	desktopControlLimiter, err := desktopcontrol.NewRedisLimiter(redisStore.Client(), desktopcontrol.DefaultLimitPolicies())
+	if err != nil {
+		return err
+	}
+	deviceHandler, err := buildDeviceHandlerWithDesktopControl(
+		cfg, postgres, redisStore.Client(), desktopControl, desktopControlLimiter,
+	)
 	if err != nil {
 		return err
 	}
@@ -165,7 +172,9 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 	var internalHandler http.Handler
 	var internalTLS *tls.Config
 	if cfg.InternalAdmin.Enabled {
-		internalHandler, internalTLS, err = buildInternalAdmin(cfg, postgres, redisStore, platformService)
+		internalHandler, internalTLS, err = buildInternalAdminWithDesktopControl(
+			cfg, postgres, redisStore, desktopControl, platformService,
+		)
 		if err != nil {
 			return err
 		}
@@ -655,6 +664,21 @@ func buildDeviceHandler(
 	postgres *pgxpool.Pool,
 	redisClient redis.UniversalClient,
 ) (http.Handler, error) {
+	desktopControl := desktopcontrol.NewService(desktopcontrol.NewPostgresRepository(postgres))
+	desktopControlLimiter, err := desktopcontrol.NewRedisLimiter(redisClient, desktopcontrol.DefaultLimitPolicies())
+	if err != nil {
+		return nil, err
+	}
+	return buildDeviceHandlerWithDesktopControl(cfg, postgres, redisClient, desktopControl, desktopControlLimiter)
+}
+
+func buildDeviceHandlerWithDesktopControl(
+	cfg config.Config,
+	postgres *pgxpool.Pool,
+	redisClient redis.UniversalClient,
+	desktopControl device.DesktopControlHTTPService,
+	desktopControlLimiter device.DesktopControlRequestLimiter,
+) (http.Handler, error) {
 	accessAuthenticator, err := buildAccessAuthenticator(cfg, postgres, redisClient)
 	if err != nil {
 		return nil, err
@@ -666,11 +690,6 @@ func buildDeviceHandler(
 		return nil, err
 	}
 	browserSessions, err := buildBrowserSessionManager(cfg, redisClient)
-	if err != nil {
-		return nil, err
-	}
-	desktopControl := desktopcontrol.NewService(desktopcontrol.NewPostgresRepository(postgres))
-	desktopControlLimiter, err := desktopcontrol.NewRedisLimiter(redisClient, desktopcontrol.DefaultLimitPolicies())
 	if err != nil {
 		return nil, err
 	}

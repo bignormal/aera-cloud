@@ -47,6 +47,7 @@ type HandlerConfig struct {
 	OfficialAgents     agentcontrol.PlatformService
 	OfficialAudit      admin.OfficialAuditService
 	OfficialQuality    officialquality.AdminService
+	DesktopControl     DesktopControlAdminService
 	OperationProtector *admin.Protector
 	Auth               *Authenticator
 	PostgreSQL         HealthChecker
@@ -59,9 +60,11 @@ type handler struct {
 	officialAgents     agentcontrol.PlatformService
 	officialAudit      admin.OfficialAuditService
 	officialQuality    officialquality.AdminService
+	desktopControl     DesktopControlAdminService
 	operationProtector *admin.Protector
 	postgresql         HealthChecker
 	redis              HealthChecker
+	clock              func() time.Time
 }
 
 func NewHandler(config HandlerConfig) (http.Handler, error) {
@@ -83,8 +86,10 @@ func NewHandler(config HandlerConfig) (http.Handler, error) {
 	h := &handler{
 		service: config.Service, officialAgents: config.OfficialAgents,
 		officialAudit: config.OfficialAudit, officialQuality: config.OfficialQuality,
+		desktopControl:     config.DesktopControl,
 		operationProtector: config.OperationProtector,
 		postgresql:         config.PostgreSQL, redis: config.Redis,
+		clock: config.Clock,
 	}
 	router := chi.NewRouter()
 	router.Use(requestIDMiddleware(config.Clock))
@@ -128,6 +133,9 @@ func NewHandler(config HandlerConfig) (http.Handler, error) {
 		}
 		if hasOfficialQuality {
 			registerOfficialQualityRoutes(router, config.Auth, h)
+		}
+		if !dependencyMissing(config.DesktopControl) {
+			registerDesktopControlRoutes(router, config.Auth, h)
 		}
 	})
 	router.NotFound(func(response http.ResponseWriter, request *http.Request) {
