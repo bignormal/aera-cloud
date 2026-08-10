@@ -104,7 +104,11 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 	if err != nil {
 		return err
 	}
-	desktopControl := desktopcontrol.NewService(desktopcontrol.NewPostgresRepository(postgres))
+	desktopControlClock, err := desktopControlClockFromEnvironment(cfg.Environment, lookup, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	desktopControl := desktopcontrol.NewService(desktopcontrol.NewPostgresRepository(postgres), desktopControlClock)
 	desktopControlLimiter, err := desktopcontrol.NewRedisLimiter(redisStore.Client(), desktopcontrol.DefaultLimitPolicies())
 	if err != nil {
 		return err
