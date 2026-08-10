@@ -144,6 +144,71 @@ func TestOpenAPIContainsAccountLifecycleAndDeviceContractWithoutAdminHTTP(t *tes
 	}
 }
 
+func TestOpenAPIContainsStrictDesktopControlPublicContract(t *testing.T) {
+	contents, err := os.ReadFile("openapi.yaml")
+	if err != nil {
+		t.Fatalf("read openapi.yaml: %v", err)
+	}
+	document := string(contents)
+	for _, contract := range []string{
+		"/api/v1/devices/current/desktop-control/heartbeat:",
+		"operationId: submitCurrentDesktopHeartbeat",
+		"/api/v1/devices/current/desktop-control/commands/{commandID}/result:",
+		"operationId: submitCurrentDesktopCommandResult",
+		"DesktopHeartbeatRequest:",
+		"DesktopHeartbeatReceipt:",
+		"DesktopCommandResultRequest:",
+		"DesktopControlCommand:",
+	} {
+		if !strings.Contains(document, contract) {
+			t.Fatalf("OpenAPI is missing Desktop control contract %q", contract)
+		}
+	}
+	for _, schema := range []string{"DesktopHeartbeatRequest", "DesktopCommandResultRequest"} {
+		block := openAPISchemaBlock(t, document, schema)
+		if !strings.Contains(block, "additionalProperties: false") {
+			t.Fatalf("%s is not closed", schema)
+		}
+		for _, forbidden := range []string{
+			"user_id", "device_id", "prompt", "conversation", "memory", "file", "path",
+			"log", "secret", "token", "credential",
+		} {
+			if strings.Contains(strings.ToLower(block), forbidden) {
+				t.Fatalf("%s exposes forbidden field %q:\n%s", schema, forbidden, block)
+			}
+		}
+	}
+	heartbeat := openAPISchemaBlock(t, document, "DesktopHeartbeatRequest")
+	for _, fixed := range []string{
+		"required: [display_name, client_version, platform, arch, capabilities, uptime_seconds]",
+		"enum: [diagnostics.health.read]",
+		"enum: [darwin, windows, linux]",
+		"enum: [arm64, x64]",
+	} {
+		if !strings.Contains(heartbeat, fixed) {
+			t.Fatalf("DesktopHeartbeatRequest is missing %q:\n%s", fixed, heartbeat)
+		}
+	}
+	result := openAPISchemaBlock(t, document, "DesktopCommandResultRequest")
+	if !strings.Contains(result, "enum: [running, succeeded, failed]") {
+		t.Fatalf("DesktopCommandResultRequest is missing the accepted result states:\n%s", result)
+	}
+	command := openAPISchemaBlock(t, document, "DesktopControlCommand")
+	for _, fixed := range []string{
+		"enum: [health_check]",
+		"enum: [queued, claimed, running, succeeded, failed, expired]",
+		"HEALTHY", "DESKTOP_UNHEALTHY", "RUNTIME_UNAVAILABLE", "GATEWAY_UNAVAILABLE",
+		"HEALTH_CHECK_TIMEOUT", "CLIENT_INTERRUPTED",
+	} {
+		if !strings.Contains(command, fixed) {
+			t.Fatalf("DesktopControlCommand is missing %q:\n%s", fixed, command)
+		}
+	}
+	if strings.Contains(document, "/internal/admin/") {
+		t.Fatal("public OpenAPI exposes an Internal Admin path")
+	}
+}
+
 func TestOpenAPIContainsStrictUserAgentControlPlaneContract(t *testing.T) {
 	contents, err := os.ReadFile("openapi.yaml")
 	if err != nil {

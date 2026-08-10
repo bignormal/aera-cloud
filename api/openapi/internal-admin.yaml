@@ -174,6 +174,104 @@ paths:
       operationId: getCloudAdminOperation
       parameters: [{ $ref: '#/components/parameters/OperationID' }]
       responses: { '200': { $ref: '#/components/responses/Operation' } }
+  /internal/admin/v1/desktop-control/instances:
+    get:
+      operationId: listDesktopControlInstances
+      x-required-service-scope: desktop_control:read
+      parameters:
+        - { name: device_id, in: query, schema: { type: string, format: uuid } }
+        - { name: user_id, in: query, schema: { type: string, format: uuid } }
+        - { name: organization_id, in: query, schema: { type: string, format: uuid } }
+        - { name: platform, in: query, schema: { type: string, enum: [darwin, windows, linux] } }
+        - { name: client_version, in: query, schema: { type: string, minLength: 1, maxLength: 64 } }
+        - { name: effective_status, in: query, schema: { type: string, enum: [pending, revoked, disabled, online, offline] } }
+        - { $ref: '#/components/parameters/DesktopLimit' }
+        - { $ref: '#/components/parameters/DesktopOffset' }
+      responses:
+        '200':
+          description: Cloud-authoritative Desktop instance page.
+          headers: { X-Request-ID: { $ref: '#/components/headers/RequestID' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/DesktopControlInstancePage' } } }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/users/{userID}/desktop-control/instances:
+    get:
+      operationId: listUserDesktopControlInstances
+      x-required-service-scope: desktop_control:read
+      parameters:
+        - { $ref: '#/components/parameters/UserID' }
+        - { $ref: '#/components/parameters/DesktopLimit' }
+        - { $ref: '#/components/parameters/DesktopOffset' }
+      responses:
+        '200':
+          description: Desktop instances owned by the selected Cloud user.
+          headers: { X-Request-ID: { $ref: '#/components/headers/RequestID' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/DesktopControlInstancePage' } } }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/desktop-control/instances/{deviceID}:
+    get:
+      operationId: getDesktopControlInstance
+      x-required-service-scope: desktop_control:read
+      parameters: [{ $ref: '#/components/parameters/DeviceID' }]
+      responses:
+        '200':
+          description: One Cloud-authoritative Desktop instance.
+          headers: { X-Request-ID: { $ref: '#/components/headers/RequestID' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/DesktopControlInstance' } } }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '404':
+          description: The selected Desktop instance does not exist.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/desktop-control/instances/{deviceID}/health-check:
+    post:
+      operationId: createDesktopHealthCheck
+      x-required-service-scope: desktop_control:command
+      parameters:
+        - { $ref: '#/components/parameters/DeviceID' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/DesktopHealthCheckRequest' } } }
+      responses:
+        '200':
+          description: The one allowlisted Desktop health check was queued or replayed.
+          headers: { X-Request-ID: { $ref: '#/components/headers/RequestID' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/DesktopControlCommand' } } }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '404':
+          description: The selected Desktop instance does not exist.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
+        '409':
+          description: The device is offline, revoked, disabled, or lacks the health capability.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/desktop-control/commands/{commandID}:
+    get:
+      operationId: getDesktopControlCommand
+      x-required-service-scope: desktop_control:read
+      parameters: [{ $ref: '#/components/parameters/CommandID' }]
+      responses:
+        '200':
+          description: Current bounded state of one Desktop health-check command.
+          headers: { X-Request-ID: { $ref: '#/components/headers/RequestID' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/DesktopControlCommand' } } }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '404':
+          description: The selected Desktop command does not exist.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /internal/admin/v1/official-agent-definitions:
     get:
       operationId: listOfficialAgentDefinitions
@@ -587,9 +685,16 @@ components:
     VersionID: { name: versionID, in: path, required: true, schema: { type: string, format: uuid } }
     ReleaseID: { name: releaseID, in: path, required: true, schema: { type: string, format: uuid } }
     ProposalID: { name: proposalID, in: path, required: true, schema: { type: string, format: uuid } }
+    CommandID: { name: commandID, in: path, required: true, schema: { type: string, format: uuid } }
+    DesktopLimit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+    DesktopOffset: { name: offset, in: query, schema: { type: integer, minimum: 0, maximum: 1000000, default: 0 } }
     QualityCursor: { name: cursor, in: query, schema: { type: string, minLength: 1, maxLength: 512, pattern: '^[A-Za-z0-9_-]+$' } }
     ProposalCursor: { name: cursor, in: query, schema: { type: string, format: uuid } }
     IdempotencyKey: { name: Idempotency-Key, in: header, required: true, schema: { type: string, format: uuid } }
+  headers:
+    RequestID:
+      description: Correlation identifier generated or accepted by Aera Cloud.
+      schema: { type: string, minLength: 1, maxLength: 128 }
   requestBodies:
     Command:
       required: true
@@ -714,6 +819,103 @@ components:
       description: Cloud could not prove a safe result; callers must remain unavailable or reconcile by operation ID
       content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
   schemas:
+    DesktopHealthSummary:
+      type: object
+      additionalProperties: false
+      required: [desktop_status, runtime_status, gateway_status, code, duration_ms]
+      properties:
+        desktop_status: { type: string, enum: [unknown, healthy, degraded, unhealthy] }
+        runtime_status: { type: string, enum: [unknown, healthy, degraded, unhealthy] }
+        gateway_status: { type: string, enum: [unknown, healthy, degraded, unhealthy] }
+        code:
+          type: string
+          enum: [HEALTHY, DESKTOP_UNHEALTHY, RUNTIME_UNAVAILABLE, GATEWAY_UNAVAILABLE, HEALTH_CHECK_TIMEOUT, CLIENT_INTERRUPTED]
+        duration_ms: { type: integer, format: int64, minimum: 0, maximum: 120000 }
+    DesktopHealthCheckRequest:
+      type: object
+      additionalProperties: false
+      maxProperties: 0
+    DesktopControlInstance:
+      type: object
+      additionalProperties: false
+      required:
+        - device_id
+        - user_id
+        - display_name
+        - client_version
+        - platform
+        - arch
+        - capabilities
+        - effective_status
+        - health_status
+        - created_at
+        - updated_at
+      properties:
+        device_id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        organization_id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        display_name: { type: string, minLength: 1, maxLength: 100 }
+        client_version: { type: string, minLength: 1, maxLength: 64 }
+        platform: { type: string, enum: [darwin, windows, linux] }
+        arch: { type: string, enum: [arm64, x64] }
+        capabilities:
+          type: array
+          maxItems: 8
+          uniqueItems: true
+          items: { type: string, enum: [diagnostics.health.read] }
+        last_heartbeat_at: { type: string, format: date-time }
+        effective_status: { type: string, enum: [pending, revoked, disabled, online, offline] }
+        health_status: { type: string, enum: [unknown, healthy, degraded, unhealthy] }
+        health_summary: { $ref: '#/components/schemas/DesktopHealthSummary' }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        server_time: { type: string, format: date-time }
+    DesktopControlInstancePage:
+      type: object
+      additionalProperties: false
+      required: [items, total, server_time]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/DesktopControlInstance' }
+        total: { type: integer, minimum: 0 }
+        server_time: { type: string, format: date-time }
+    DesktopControlCommand:
+      type: object
+      additionalProperties: false
+      required:
+        - command_id
+        - device_id
+        - type
+        - required_capability
+        - state
+        - expires_at
+        - created_by_admin_id
+        - request_id
+        - created_at
+        - updated_at
+        - server_time
+      properties:
+        command_id: { type: string, format: uuid }
+        device_id: { type: string, format: uuid }
+        type: { type: string, enum: [health_check] }
+        required_capability: { type: string, enum: [diagnostics.health.read] }
+        state: { type: string, enum: [queued, claimed, running, succeeded, failed, expired] }
+        expires_at: { type: string, format: date-time }
+        claimed_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time }
+        result_code:
+          type: string
+          enum: [HEALTHY, DESKTOP_UNHEALTHY, RUNTIME_UNAVAILABLE, GATEWAY_UNAVAILABLE, HEALTH_CHECK_TIMEOUT, CLIENT_INTERRUPTED]
+        result_summary: { $ref: '#/components/schemas/DesktopHealthSummary' }
+        created_by_admin_id: { type: string, format: uuid }
+        request_id: { type: string, minLength: 1, maxLength: 128 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        replayed: { type: boolean }
+        server_time: { type: string, format: date-time }
     Health:
       type: object
       additionalProperties: false
@@ -1721,6 +1923,9 @@ components:
                 - STATE_CONFLICT
                 - PUBLICATION_DLP_BLOCKED
                 - PRIVACY_REJECTED
+                - DESKTOP_INSTANCE_NOT_FOUND
+                - DESKTOP_COMMAND_NOT_FOUND
+                - DESKTOP_CONTROL_CONFLICT
                 - SERVICE_UNAVAILABLE
                 - NOT_FOUND
                 - METHOD_NOT_ALLOWED

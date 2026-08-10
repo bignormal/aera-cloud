@@ -385,6 +385,93 @@ paths:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/devices/current/desktop-control/heartbeat:
+    post:
+      operationId: submitCurrentDesktopHeartbeat
+      description: Registers or refreshes the authenticated current Desktop instance and may claim one allowlisted health check.
+      security:
+        - desktopAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DesktopHeartbeatRequest'
+      responses:
+        '200':
+          description: The authenticated device heartbeat was accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DesktopHeartbeatReceipt'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '429':
+          description: The current device exceeded the bounded heartbeat rate.
+          headers:
+            Retry-After:
+              description: Whole seconds before the next request may be attempted.
+              schema: { type: integer, minimum: 1 }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/devices/current/desktop-control/commands/{commandID}/result:
+    post:
+      operationId: submitCurrentDesktopCommandResult
+      description: Advances one command owned by the authenticated current device; terminal replay is idempotent.
+      security:
+        - desktopAccessToken: []
+      parameters:
+        - name: commandID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DesktopCommandResultRequest'
+      responses:
+        '200':
+          description: Current bounded state of the device-owned health-check command.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DesktopControlCommand'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '404':
+          description: The command is absent or is not owned by the authenticated current device.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '409':
+          description: The requested command transition conflicts with its durable state or expiry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '429':
+          description: The current device exceeded the bounded command-result rate.
+          headers:
+            Retry-After:
+              description: Whole seconds before the next request may be attempted.
+              schema: { type: integer, minimum: 1 }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /api/v1/legal/current:
     get:
       operationId: getCurrentLegalDocuments
@@ -3820,6 +3907,91 @@ components:
       schema:
         $ref: '#/components/schemas/EncryptedBackupDigest'
   schemas:
+    DesktopHealthSummary:
+      type: object
+      additionalProperties: false
+      required: [desktop_status, runtime_status, gateway_status, code, duration_ms]
+      properties:
+        desktop_status: { type: string, enum: [unknown, healthy, degraded, unhealthy] }
+        runtime_status: { type: string, enum: [unknown, healthy, degraded, unhealthy] }
+        gateway_status: { type: string, enum: [unknown, healthy, degraded, unhealthy] }
+        code:
+          type: string
+          enum: [HEALTHY, DESKTOP_UNHEALTHY, RUNTIME_UNAVAILABLE, GATEWAY_UNAVAILABLE, HEALTH_CHECK_TIMEOUT, CLIENT_INTERRUPTED]
+        duration_ms: { type: integer, format: int64, minimum: 0, maximum: 120000 }
+    DesktopHeartbeatRequest:
+      type: object
+      additionalProperties: false
+      required: [display_name, client_version, platform, arch, capabilities, uptime_seconds]
+      properties:
+        display_name: { type: string, minLength: 1, maxLength: 100 }
+        client_version: { type: string, minLength: 1, maxLength: 64 }
+        platform: { type: string, enum: [darwin, windows, linux] }
+        arch: { type: string, enum: [arm64, x64] }
+        capabilities:
+          type: array
+          maxItems: 8
+          uniqueItems: true
+          items: { type: string, enum: [diagnostics.health.read] }
+        uptime_seconds: { type: integer, format: int64, minimum: 0, maximum: 604800 }
+        health:
+          $ref: '#/components/schemas/DesktopHealthSummary'
+    DesktopCommandResultRequest:
+      type: object
+      additionalProperties: false
+      required: [state, code, summary]
+      properties:
+        state: { type: string, enum: [running, succeeded, failed] }
+        code:
+          type: string
+          nullable: true
+          enum: [HEALTHY, DESKTOP_UNHEALTHY, RUNTIME_UNAVAILABLE, GATEWAY_UNAVAILABLE, HEALTH_CHECK_TIMEOUT, CLIENT_INTERRUPTED]
+        summary:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/DesktopHealthSummary'
+      oneOf:
+        - properties:
+            state: { type: string, enum: [running] }
+            code: { nullable: true, enum: [null] }
+            summary: { nullable: true, enum: [null] }
+        - properties:
+            state: { type: string, enum: [succeeded, failed] }
+            code:
+              type: string
+              enum: [HEALTHY, DESKTOP_UNHEALTHY, RUNTIME_UNAVAILABLE, GATEWAY_UNAVAILABLE, HEALTH_CHECK_TIMEOUT, CLIENT_INTERRUPTED]
+            summary:
+              $ref: '#/components/schemas/DesktopHealthSummary'
+    DesktopControlCommand:
+      type: object
+      additionalProperties: false
+      required: [command_id, type, state, expires_at]
+      properties:
+        command_id: { type: string, format: uuid }
+        type: { type: string, enum: [health_check] }
+        state: { type: string, enum: [queued, claimed, running, succeeded, failed, expired] }
+        expires_at: { type: string, format: date-time }
+        claimed_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time }
+        code:
+          type: string
+          enum: [HEALTHY, DESKTOP_UNHEALTHY, RUNTIME_UNAVAILABLE, GATEWAY_UNAVAILABLE, HEALTH_CHECK_TIMEOUT, CLIENT_INTERRUPTED]
+        summary:
+          $ref: '#/components/schemas/DesktopHealthSummary'
+        replayed: { type: boolean }
+    DesktopHeartbeatReceipt:
+      type: object
+      additionalProperties: false
+      required: [instance_id, accepted_at, next_heartbeat_seconds, effective_status, server_time]
+      properties:
+        instance_id: { type: string, format: uuid }
+        accepted_at: { type: string, format: date-time }
+        next_heartbeat_seconds: { type: integer, minimum: 60, maximum: 60 }
+        effective_status: { type: string, enum: [pending, revoked, disabled, online, offline] }
+        server_time: { type: string, format: date-time }
+        command:
+          $ref: '#/components/schemas/DesktopControlCommand'
     IdentityKind:
       type: string
       enum: [email, phone]
@@ -7606,6 +7778,8 @@ components:
         - official_client_version_unsupported
         - official_installation_policy_blocked
         - official_managed_update_conflict
+        - desktop_command_not_found
+        - desktop_command_conflict
         - cloud_unavailable
         - rate_limited
         - service_unavailable

@@ -17,8 +17,8 @@ func TestInternalAdminOpenAPIRequiresDualAuthenticationAndOfficialAgentRoutes(t 
 		!strings.Contains(document, "serviceJWT: { type: http, scheme: bearer, bearerFormat: JWT }") {
 		t.Fatal("Internal Admin OpenAPI does not require the approved dual authentication")
 	}
-	if got := strings.Count(document, "  /internal/admin/v1/"); got != 42 {
-		t.Fatalf("Internal Admin route count = %d, want 42", got)
+	if got := strings.Count(document, "  /internal/admin/v1/"); got != 47 {
+		t.Fatalf("Internal Admin route count = %d, want 47", got)
 	}
 	if got := strings.Count(document, "'200': { $ref: '#/components/responses/Operation' }"); got != 22 {
 		t.Fatalf("operation response count = %d, want 22 including quality mutations", got)
@@ -89,6 +89,79 @@ func TestInternalAdminOpenAPIRequiresDualAuthenticationAndOfficialAgentRoutes(t 
 	}
 	if strings.Contains(string(publicRaw), "/internal/admin/") {
 		t.Fatal("public OpenAPI exposes an Internal Admin path")
+	}
+}
+
+func TestInternalAdminOpenAPIContainsStrictDesktopControlContract(t *testing.T) {
+	raw, err := os.ReadFile("openapi/internal-admin.yaml")
+	if err != nil {
+		t.Fatalf("read Internal Admin OpenAPI: %v", err)
+	}
+	document := string(raw)
+	readPaths := []struct {
+		path        string
+		operationID string
+	}{
+		{"/internal/admin/v1/desktop-control/instances:\n", "listDesktopControlInstances"},
+		{"/internal/admin/v1/users/{userID}/desktop-control/instances:\n", "listUserDesktopControlInstances"},
+		{"/internal/admin/v1/desktop-control/instances/{deviceID}:\n", "getDesktopControlInstance"},
+		{"/internal/admin/v1/desktop-control/commands/{commandID}:\n", "getDesktopControlCommand"},
+	}
+	for _, expected := range readPaths {
+		block := internalAdminPathBlock(t, document, expected.path)
+		for _, required := range []string{
+			"operationId: " + expected.operationID,
+			"x-required-service-scope: desktop_control:read",
+		} {
+			if !strings.Contains(block, required) {
+				t.Fatalf("%s is missing %q:\n%s", expected.path, required, block)
+			}
+		}
+	}
+	healthCheck := internalAdminPathBlock(t, document, "/internal/admin/v1/desktop-control/instances/{deviceID}/health-check:\n")
+	for _, required := range []string{
+		"operationId: createDesktopHealthCheck",
+		"x-required-service-scope: desktop_control:command",
+		"#/components/parameters/IdempotencyKey",
+		"#/components/schemas/DesktopHealthCheckRequest",
+	} {
+		if !strings.Contains(healthCheck, required) {
+			t.Fatalf("Desktop health-check operation is missing %q:\n%s", required, healthCheck)
+		}
+	}
+	for _, schema := range []string{
+		"DesktopControlInstance", "DesktopControlInstancePage", "DesktopControlCommand",
+		"DesktopHealthSummary", "DesktopHealthCheckRequest",
+	} {
+		block := internalAdminSchemaBlock(t, document, schema)
+		if !strings.Contains(block, "additionalProperties: false") {
+			t.Fatalf("%s schema is not closed", schema)
+		}
+	}
+	instance := internalAdminSchemaBlock(t, document, "DesktopControlInstance")
+	for _, fixed := range []string{
+		"enum: [pending, revoked, disabled, online, offline]",
+		"enum: [diagnostics.health.read]",
+	} {
+		if !strings.Contains(instance, fixed) {
+			t.Fatalf("DesktopControlInstance is missing %q:\n%s", fixed, instance)
+		}
+	}
+	command := internalAdminSchemaBlock(t, document, "DesktopControlCommand")
+	for _, fixed := range []string{
+		"enum: [health_check]",
+		"enum: [queued, claimed, running, succeeded, failed, expired]",
+		"HEALTHY", "DESKTOP_UNHEALTHY", "RUNTIME_UNAVAILABLE", "GATEWAY_UNAVAILABLE",
+		"HEALTH_CHECK_TIMEOUT", "CLIENT_INTERRUPTED",
+	} {
+		if !strings.Contains(command, fixed) {
+			t.Fatalf("DesktopControlCommand is missing %q:\n%s", fixed, command)
+		}
+	}
+	for _, publicPrefix := range []string{"\n  /api/v1/", "\n  /oauth/", "\n  /.well-known/"} {
+		if strings.Contains(document, publicPrefix) {
+			t.Fatalf("Internal Admin OpenAPI exposes public route prefix %q", publicPrefix)
+		}
 	}
 }
 
