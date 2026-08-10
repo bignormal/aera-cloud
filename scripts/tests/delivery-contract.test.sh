@@ -165,13 +165,17 @@ require_text .github/workflows/candidate.yml 'build-manifest\.sh'
 require_text .github/workflows/candidate.yml 'verify-manifest\.sh'
 require_text .github/workflows/candidate.yml 'encrypted-backup-minio'
 require_text .github/workflows/candidate.yml 'AERA_RELEASE_SCHEMA_MAX: "22"'
-require_text .github/workflows/candidate.yml 'AERA_RELEASE_HIGHEST_MIGRATION: "21"'
+require_text .github/workflows/candidate.yml 'AERA_RELEASE_HIGHEST_MIGRATION: "22"'
 require_text .github/workflows/ci.yml 'schema-22-compatibility\.test\.sh'
 require_text .github/workflows/ci.yml 'GH_TOKEN: \$\{\{ github\.token \}\}'
 require_text scripts/tests/schema-22-compatibility.test.sh 'aera-schema22-compat\.XXXXXX'
 require_text scripts/tests/schema-22-compatibility.test.sh 'gh api'
 forbid_text scripts/tests/schema-22-compatibility.test.sh 'mktemp -d -t'
 forbid_text scripts/tests/schema-22-compatibility.test.sh 'raw\.githubusercontent\.com'
+migration_highest=$(printf '%s\n' migrations/[0-9]*_*.sql | sed -E 's#^.*/0*([0-9]+)_.*#\1#' | sort -n | tail -n 1)
+workflow_highest=$(sed -nE 's/^[[:space:]]*AERA_RELEASE_HIGHEST_MIGRATION: "([0-9]+)"/\1/p' .github/workflows/candidate.yml)
+[[ $workflow_highest == "$migration_highest" ]] ||
+  fail "candidate highest migration $workflow_highest differs from embedded migration $migration_highest"
 require_text scripts/release/verify-manifest.sh 'cosign verify'
 require_text scripts/release/verify-manifest.sh 'verify-attestation'
 require_text scripts/release/verify-manifest.sh 'verify-blob'

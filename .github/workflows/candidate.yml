@@ -176,7 +176,7 @@ jobs:
           AERA_RELEASE_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           AERA_RELEASE_SCHEMA_MIN: "17"
           AERA_RELEASE_SCHEMA_MAX: "22"
-          AERA_RELEASE_HIGHEST_MIGRATION: "21"
+          AERA_RELEASE_HIGHEST_MIGRATION: "22"
           AERA_RELEASE_EXPECTED_SHA: ${{ inputs.source_sha }}
           AERA_RELEASE_CERTIFICATE_OIDC_ISSUER: https://token.actions.githubusercontent.com
         run: |
