@@ -1,7 +1,10 @@
 package desktopcontrol
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"io"
 	"regexp"
 	"strings"
 	"time"
@@ -79,31 +82,33 @@ type HealthSummary struct {
 }
 
 type Heartbeat struct {
-	DisplayName   string
-	ClientVersion string
-	Platform      string
-	Arch          string
-	Capabilities  []string
-	Health        *HealthSummary
+	DisplayName   string         `json:"display_name"`
+	ClientVersion string         `json:"client_version"`
+	Platform      string         `json:"platform"`
+	Arch          string         `json:"arch"`
+	Capabilities  []string       `json:"capabilities"`
+	UptimeSeconds int64          `json:"uptime_seconds"`
+	Health        *HealthSummary `json:"health,omitempty"`
 }
 
 type Instance struct {
-	DeviceID        uuid.UUID
-	UserID          uuid.UUID
-	OrganizationID  *uuid.UUID
-	WorkspaceID     *uuid.UUID
-	DisplayName     string
-	ClientVersion   string
-	Platform        string
-	Arch            string
-	Capabilities    []string
-	LastHeartbeatAt *time.Time
-	HealthStatus    HealthStatus
-	HealthSummary   *HealthSummary
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-	UserStatus      string
-	DeviceStatus    string
+	DeviceID             uuid.UUID
+	UserID               uuid.UUID
+	OrganizationID       *uuid.UUID
+	WorkspaceID          *uuid.UUID
+	DisplayName          string
+	ClientVersion        string
+	Platform             string
+	Arch                 string
+	Capabilities         []string
+	LastHeartbeatAt      *time.Time
+	HealthStatus         HealthStatus
+	HealthSummary        *HealthSummary
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+	UserStatus           string
+	DeviceStatus         string
+	EffectiveStatusValue EffectiveStatus `json:"effective_status,omitempty"`
 }
 
 func (instance Instance) EffectiveStatus(now time.Time) EffectiveStatus {
@@ -138,9 +143,9 @@ type QueueHealthCheckCommand struct {
 }
 
 type CommandResult struct {
-	State   CommandState
-	Code    HealthCode
-	Summary *HealthSummary
+	State   CommandState   `json:"state"`
+	Code    HealthCode     `json:"code,omitempty"`
+	Summary *HealthSummary `json:"summary,omitempty"`
 }
 
 type Command struct {
@@ -175,8 +180,9 @@ type InstanceFilter struct {
 }
 
 type InstancePage struct {
-	Items []Instance
-	Total int
+	Items      []Instance
+	Total      int
+	ServerTime time.Time
 }
 
 func CanTransition(from, to CommandState) bool {
@@ -200,7 +206,8 @@ func validatePrincipal(value DevicePrincipal) error {
 }
 
 func validateHeartbeat(value Heartbeat) error {
-	if !boundedText(value.DisplayName, 100) || !boundedText(value.ClientVersion, 64) {
+	if !boundedText(value.DisplayName, 100) || !boundedText(value.ClientVersion, 64) ||
+		value.UptimeSeconds < 0 || value.UptimeSeconds > 7*24*60*60 || len(value.Capabilities) > 8 {
 		return ErrInvalidInput
 	}
 	if value.Platform != "darwin" && value.Platform != "windows" && value.Platform != "linux" {
@@ -294,4 +301,58 @@ var serviceSubjectPattern = regexp.MustCompile(`^[a-z][a-z0-9._-]{2,63}$`)
 
 func boundedText(value string, limit int) bool {
 	return value == strings.TrimSpace(value) && value != "" && len(value) <= limit && !strings.ContainsAny(value, "\r\n\x00")
+}
+
+func (value *Heartbeat) UnmarshalJSON(data []byte) error {
+	type heartbeatWire Heartbeat
+	var decoded heartbeatWire
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errors.New("desktop heartbeat contains multiple JSON values")
+		}
+		return err
+	}
+	*value = Heartbeat(decoded)
+	return nil
+}
+
+func (value *HealthSummary) UnmarshalJSON(data []byte) error {
+	type healthSummaryWire HealthSummary
+	var decoded healthSummaryWire
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errors.New("health summary contains multiple JSON values")
+		}
+		return err
+	}
+	*value = HealthSummary(decoded)
+	return nil
+}
+
+func (value *CommandResult) UnmarshalJSON(data []byte) error {
+	type commandResultWire CommandResult
+	var decoded commandResultWire
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errors.New("command result contains multiple JSON values")
+		}
+		return err
+	}
+	*value = CommandResult(decoded)
+	return nil
 }
