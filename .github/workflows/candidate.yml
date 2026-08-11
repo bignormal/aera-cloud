@@ -175,13 +175,20 @@ jobs:
           AERA_RELEASE_WORKFLOW: ${{ github.workflow }}
           AERA_RELEASE_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           AERA_RELEASE_SCHEMA_MIN: "17"
-          AERA_RELEASE_SCHEMA_MAX: "21"
-          AERA_RELEASE_HIGHEST_MIGRATION: "21"
           AERA_RELEASE_EXPECTED_SHA: ${{ inputs.source_sha }}
           AERA_RELEASE_CERTIFICATE_OIDC_ISSUER: https://token.actions.githubusercontent.com
         run: |
           set -euo pipefail
           evidence="$RUNNER_TEMP/cloud-candidate"
+          migration_highest=$(
+            printf '%s\n' migrations/[0-9]*_*.sql |
+              sed -E 's#^.*/0*([0-9]+)_.*#\1#' |
+              sort -n |
+              tail -n 1
+          )
+          [[ $migration_highest =~ ^[1-9][0-9]*$ ]]
+          export AERA_RELEASE_SCHEMA_MAX="$migration_highest"
+          export AERA_RELEASE_HIGHEST_MIGRATION="$migration_highest"
           export AERA_RELEASE_CERTIFICATE_IDENTITY_REGEXP="^https://github\\.com/bignormal/aera-cloud/\\.github/workflows/candidate\\.yml@${GITHUB_REF}$"
           export AERA_RELEASE_SBOM_DIGEST="sha256:$(sha256sum "$evidence/sbom.spdx.json" | cut -d' ' -f1)"
           export AERA_RELEASE_PROVENANCE_DIGEST="sha256:$(sha256sum "$evidence/provenance.json" | cut -d' ' -f1)"
