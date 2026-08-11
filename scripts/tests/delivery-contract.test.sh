@@ -48,10 +48,13 @@ for file in \
   scripts/check-secrets.sh \
   scripts/release/build-provenance.sh \
   scripts/release/build-manifest.sh \
+  scripts/release/resolve-schema-maximum.sh \
   scripts/release/verify-manifest.sh \
   scripts/release/deploy-by-digest.sh \
   scripts/release/rollback-by-digest.sh \
   scripts/tests/runtime-update-mirror.test.sh \
+  scripts/tests/schema-23-compatibility.test.sh \
+  scripts/tests/schema-maximum-policy.test.sh \
   .github/workflows/candidate.yml \
   .github/workflows/deploy-staging.yml \
   .github/workflows/promote-production.yml \
@@ -166,11 +169,21 @@ require_text .github/workflows/candidate.yml 'verify-manifest\.sh'
 require_text .github/workflows/candidate.yml 'encrypted-backup-minio'
 require_text .github/workflows/candidate.yml 'migration_highest=\$\('
 require_text .github/workflows/candidate.yml 'migrations/\[0-9\]\*_\*\.sql'
-require_text .github/workflows/candidate.yml 'AERA_RELEASE_SCHEMA_MAX="\$migration_highest"'
+require_text .github/workflows/candidate.yml 'resolve-schema-maximum\.sh'
+require_text .github/workflows/candidate.yml 'ref=\$GITHUB_SHA'
+require_text .github/workflows/candidate.yml 'AERA_RELEASE_SCHEMA_MAX="\$schema_maximum"'
 require_text .github/workflows/candidate.yml 'AERA_RELEASE_HIGHEST_MIGRATION="\$migration_highest"'
+forbid_text .github/workflows/candidate.yml 'inputs\.schema(_maximum|Maximum|max)?'
 forbid_text .github/workflows/candidate.yml 'highest-migration\.sh'
 forbid_text .github/workflows/candidate.yml 'AERA_RELEASE_SCHEMA_MAX: "[0-9]+"'
 forbid_text .github/workflows/candidate.yml 'AERA_RELEASE_HIGHEST_MIGRATION: "[0-9]+"'
+require_text scripts/release/resolve-schema-maximum.sh '0bf56678c772c918e08423f0ad1c3aeb868cdc7e:22'
+require_text scripts/release/resolve-schema-maximum.sh 'printf.*23'
+require_text .github/workflows/ci.yml 'schema-maximum-policy\.test\.sh'
+require_text .github/workflows/ci.yml 'schema-23-compatibility\.test\.sh'
+require_text .github/workflows/ci.yml '0bf56678c772c918e08423f0ad1c3aeb868cdc7e'
+require_text .github/workflows/ci.yml 'AERA_SCHEMA23_BRIDGE_ROOT'
+require_text .github/workflows/ci.yml 'AERA_SCHEMA23_MIGRATION_FILE'
 migration_highest=$(printf '%s\n' migrations/[0-9]*_*.sql | sed -E 's#^.*/0*([0-9]+)_.*#\1#' | sort -n | tail -n 1)
 [[ $migration_highest == 23 ]] ||
   fail 'highest embedded migration must be 23 for the desktop-control release'

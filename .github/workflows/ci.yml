@@ -36,6 +36,7 @@ jobs:
           bash scripts/tests/check-secrets.test.sh
           bash scripts/tests/delivery-contract.test.sh
           bash scripts/tests/runtime-update-mirror.test.sh
+          bash scripts/tests/schema-maximum-policy.test.sh
           ./scripts/check-secrets.sh
           bash -n deploy/backup.sh deploy/restore-verify.sh scripts/smoke-auth.sh
 
@@ -81,6 +82,22 @@ jobs:
           AERA_INTEGRATION_TESTS=1 go test -count=1 -p 1 ./...
           AERA_INTEGRATION_TESTS=1 go test -count=1 -tags e2e ./cmd/aera-cloud-e2e
           AERA_SMOKE_USE_EXISTING_STACK=1 AERA_SMOKE_ALLOW_DATABASE_RESET=1 ./scripts/smoke-auth.sh
+
+      - name: Prove deployed bridge compatibility with schema 23
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AERA_SCHEMA23_BRIDGE_SOURCE_SHA: 0bf56678c772c918e08423f0ad1c3aeb868cdc7e
+        run: |
+          set -euo pipefail
+          bridge_root=$(mktemp -d "${RUNNER_TEMP}/aera-schema23-bridge.XXXXXX")
+          trap 'rm -rf "$bridge_root"' EXIT
+          gh repo clone bignormal/aera-cloud "$bridge_root" -- --no-checkout
+          git -C "$bridge_root" checkout --detach "$AERA_SCHEMA23_BRIDGE_SOURCE_SHA"
+          test "$(git -C "$bridge_root" rev-parse HEAD)" = "$AERA_SCHEMA23_BRIDGE_SOURCE_SHA"
+          test -z "$(git -C "$bridge_root" status --porcelain=v1)"
+          AERA_SCHEMA23_BRIDGE_ROOT="$bridge_root" \
+          AERA_SCHEMA23_MIGRATION_FILE="$GITHUB_WORKSPACE/migrations/000023_desktop_control_v1.sql" \
+            bash scripts/tests/schema-23-compatibility.test.sh
 
       - name: Verify encrypted backup and disposable restore
         run: |
