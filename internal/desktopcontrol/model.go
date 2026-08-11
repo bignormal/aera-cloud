@@ -271,7 +271,7 @@ func validateResult(value CommandResult) error {
 }
 
 func validHealthSummary(value HealthSummary) bool {
-	if value.DurationMS < 0 || value.DurationMS > 120000 || !validHealthCode(value.Code) {
+	if value.DurationMS < 0 || value.DurationMS > int64(2*time.Minute/time.Millisecond) || !validHealthCode(value.Code) {
 		return false
 	}
 	for _, status := range []string{value.DesktopStatus, value.RuntimeStatus, value.GatewayStatus} {
