@@ -154,7 +154,12 @@ cat >"$tmp/bin/verify" <<'SH'
 #!/bin/sh
 set -eu
 manifest=$1
-printf 'verify %s\n' "$(jq -r '.image.digest' "$manifest")" >>"$AERA_INTERNAL_BETA_TEST_LOG"
+image_digest=$(jq -r '.image.digest' "$manifest")
+printf 'verify %s\n' "$image_digest" >>"$AERA_INTERNAL_BETA_TEST_LOG"
+if test -n "${AERA_INTERNAL_BETA_VERIFY_FAIL_DIGEST:-}" &&
+  test "$image_digest" = "$AERA_INTERNAL_BETA_VERIFY_FAIL_DIGEST"; then
+  exit 41
+fi
 cosign verify "$(jq -r '.image.reference' "$manifest")"
 test "$(jq -r '.commitSha' "$manifest")" = "$AERA_RELEASE_EXPECTED_SHA"
 printf 'candidate verified\n'
@@ -285,9 +290,22 @@ jq -e '.features.publicRegistration == true and .features.registrationMode == "v
   "$state_file" >/dev/null
 unset AERA_INTERNAL_BETA_REGISTRATION_MODE
 
+# A recorded-current verification failure must stop before any candidate image
+# reaches Docker, even though the verifier runs inside command substitution.
+export AERA_INTERNAL_BETA_EXPECTED_SHA="$sha_b"
+export AERA_INTERNAL_BETA_VERIFY_FAIL_DIGEST="$digest_a"
+if "$deploy_script" deploy "$tmp/evidence/b/manifest.json" \
+  >"$tmp/recorded-verify.out" 2>"$tmp/recorded-verify.err"; then
+  fail 'recorded-current verification failure unexpectedly deployed'
+fi
+unset AERA_INTERNAL_BETA_VERIFY_FAIL_DIGEST
+jq -e --arg digest "$digest_a" '.current.imageDigest == $digest' "$state_file" >/dev/null
+if grep -q "docker image=$reference_b" "$command_log"; then
+  fail 'Docker received the candidate after recorded-current verification failed'
+fi
+
 # A failed update may roll back only to the manifest already recorded as
 # current. State remains on A and every feature is disabled after the failure.
-export AERA_INTERNAL_BETA_EXPECTED_SHA="$sha_b"
 export AERA_INTERNAL_BETA_FAIL_IMAGE="$reference_b"
 if "$deploy_script" deploy "$tmp/evidence/b/manifest.json" \
   >"$tmp/update.out" 2>"$tmp/update.err"; then

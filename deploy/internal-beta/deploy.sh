@@ -96,7 +96,8 @@ verify_candidate() {
   local manifest=$1
   local expected_sha=$2
   validate_manifest_identity "$manifest"
-  AERA_RELEASE_EXPECTED_SHA="$expected_sha" "$verify_command" "$manifest" >/dev/null
+  AERA_RELEASE_EXPECTED_SHA="$expected_sha" "$verify_command" "$manifest" >/dev/null ||
+    fail 'candidate manifest verification failed'
 }
 
 candidate_relative_path() {
