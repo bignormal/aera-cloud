@@ -34,15 +34,19 @@ type BrowserSessionPort interface {
 }
 
 type HTTPConfig struct {
-	Devices         HTTPService
-	AccessTokens    AccessAuthenticator
-	BrowserSessions BrowserSessionPort
+	Devices               HTTPService
+	DesktopControl        DesktopControlHTTPService
+	DesktopControlLimiter DesktopControlRequestLimiter
+	AccessTokens          AccessAuthenticator
+	BrowserSessions       BrowserSessionPort
 }
 
 type httpHandler struct {
-	devices         HTTPService
-	accessTokens    AccessAuthenticator
-	browserSessions BrowserSessionPort
+	devices               HTTPService
+	desktopControl        DesktopControlHTTPService
+	desktopControlLimiter DesktopControlRequestLimiter
+	accessTokens          AccessAuthenticator
+	browserSessions       BrowserSessionPort
 }
 
 type requestPrincipal struct {
@@ -52,13 +56,16 @@ type requestPrincipal struct {
 
 func NewHandler(config HTTPConfig) http.Handler {
 	handler := &httpHandler{
-		devices: config.Devices, accessTokens: config.AccessTokens, browserSessions: config.BrowserSessions,
+		devices: config.Devices, desktopControl: config.DesktopControl, desktopControlLimiter: config.DesktopControlLimiter,
+		accessTokens: config.AccessTokens, browserSessions: config.BrowserSessions,
 	}
 	router := chi.NewRouter()
 	router.Get("/api/v1/devices", handler.list)
 	router.Delete("/api/v1/devices/{deviceID}", handler.revoke)
 	router.Post("/api/v1/devices/current/logout", handler.logoutCurrent)
 	router.Post("/api/v1/devices/self-revoke", handler.selfRevoke)
+	router.Post("/api/v1/devices/current/desktop-control/heartbeat", handler.desktopHeartbeat)
+	router.Post("/api/v1/devices/current/desktop-control/commands/{commandID}/result", handler.desktopCommandResult)
 	return router
 }
 

@@ -12,6 +12,7 @@ import (
 	"github.com/bignormal/aera-cloud/internal/adminapi"
 	"github.com/bignormal/aera-cloud/internal/agentcontrol"
 	"github.com/bignormal/aera-cloud/internal/config"
+	"github.com/bignormal/aera-cloud/internal/desktopcontrol"
 	"github.com/bignormal/aera-cloud/internal/officialquality"
 	"github.com/bignormal/aera-cloud/internal/secure"
 	"github.com/bignormal/aera-cloud/internal/store"
@@ -29,6 +30,17 @@ func buildInternalAdmin(
 	cfg config.Config,
 	postgres *pgxpool.Pool,
 	redisStore *store.RedisStore,
+	platformServices ...agentcontrol.PlatformService,
+) (http.Handler, *tls.Config, error) {
+	desktopControl := desktopcontrol.NewService(desktopcontrol.NewPostgresRepository(postgres))
+	return buildInternalAdminWithDesktopControl(cfg, postgres, redisStore, desktopControl, platformServices...)
+}
+
+func buildInternalAdminWithDesktopControl(
+	cfg config.Config,
+	postgres *pgxpool.Pool,
+	redisStore *store.RedisStore,
+	desktopControl adminapi.DesktopControlAdminService,
 	platformServices ...agentcontrol.PlatformService,
 ) (http.Handler, *tls.Config, error) {
 	if !cfg.InternalAdmin.Enabled {
@@ -86,8 +98,12 @@ func buildInternalAdmin(
 	if cfg.OfficialQuality.Enabled && platform == nil {
 		return nil, nil, errors.New("official quality platform service is unavailable")
 	}
+	if desktopControl == nil {
+		return nil, nil, errors.New("Desktop control service is unavailable")
+	}
 	handlerConfig := adminapi.HandlerConfig{
 		Service: service, Auth: authenticator, PostgreSQL: postgres, Redis: redisStore, Clock: time.Now,
+		DesktopControl: desktopControl,
 	}
 	if platform != nil {
 		handlerConfig.OfficialAgents = platform

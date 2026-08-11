@@ -261,6 +261,9 @@ func TestBuildInternalAdminServesAuthenticatedTLSHealth(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer postgres.Close()
+	if err := store.ApplyMigrations(ctx, postgres); err != nil {
+		t.Fatalf("ApplyMigrations() error = %v", err)
+	}
 	redisStore, err := store.OpenRedis(ctx, store.RedisOptions{
 		Addr: services.RedisAddr, Username: services.RedisUsername,
 		Password: services.RedisPassword, DB: services.RedisDB,
@@ -313,6 +316,23 @@ func TestBuildInternalAdminServesAuthenticatedTLSHealth(t *testing.T) {
 	var body map[string]string
 	if err := json.NewDecoder(response.Body).Decode(&body); err != nil || body["status"] != "ok" || len(body) != 1 {
 		t.Fatalf("internal health body = %v / %v", body, err)
+	}
+
+	desktopRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/internal/admin/v1/desktop-control/instances?limit=25&offset=0", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desktopRequest.Header.Set("Authorization", "Bearer "+signInternalAdminTestActorToken(
+		t, certificates.jwtPrivateKey, time.Now().UTC(), adminapi.ScopeDesktopControlRead,
+		"019f0000-0000-7000-8000-000000000077", "auditor",
+	))
+	desktopResponse, err := client.Do(desktopRequest)
+	if err != nil {
+		t.Fatalf("Desktop control request error = %v", err)
+	}
+	defer desktopResponse.Body.Close()
+	if desktopResponse.StatusCode != http.StatusOK {
+		t.Fatalf("Desktop control status = %d", desktopResponse.StatusCode)
 	}
 }
 

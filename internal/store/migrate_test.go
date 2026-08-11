@@ -21,8 +21,8 @@ func TestEmbeddedMigrationsIncludeInternalBetaDirectRegistration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadMigrations() error = %v", err)
 	}
-	if len(loaded) != 22 {
-		t.Fatalf("embedded migration count = %d, want 22", len(loaded))
+	if len(loaded) != 23 {
+		t.Fatalf("embedded migration count = %d, want 23", len(loaded))
 	}
 	directRegistration := loaded[18]
 	if directRegistration.version != 19 || directRegistration.name != "000019_internal_beta_direct_registration.sql" {
@@ -59,6 +59,23 @@ func TestEmbeddedMigrationsIncludeInternalBetaDirectRegistration(t *testing.T) {
 	organizationExperience := loaded[21]
 	if organizationExperience.version != 22 || organizationExperience.name != "000022_organization_experience_candidates.sql" {
 		t.Fatalf("migration 22 = %d/%s", organizationExperience.version, organizationExperience.name)
+	}
+
+	desktopControl := loaded[22]
+	if desktopControl.version != 23 || desktopControl.name != "000023_desktop_control_v1.sql" {
+		t.Fatalf("migration 23 = %d/%s", desktopControl.version, desktopControl.name)
+	}
+	for _, required := range []string{
+		"CREATE TABLE desktop_control_instances",
+		"CREATE TABLE desktop_control_commands",
+		"UNIQUE (device_id, idempotency_key_hash)",
+		"diagnostics.health.read",
+		"health_check",
+		"enforce_desktop_control_command_transition",
+	} {
+		if !strings.Contains(string(desktopControl.contents), required) {
+			t.Fatalf("migration 23 is missing %q", required)
+		}
 	}
 	for _, required := range []string{
 		"ADD CONSTRAINT agent_definitions_organization_id_id_key UNIQUE (organization_id, id)",
@@ -152,6 +169,8 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 		"encrypted_backup_chunks",
 		"encrypted_backup_key_envelopes",
 		"encrypted_backup_operations",
+		"desktop_control_instances",
+		"desktop_control_commands",
 	}
 	for _, table := range tables {
 		var exists bool
@@ -183,6 +202,7 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	assertUniqueConstraint(t, ctx, postgres, "official_quality_consent_receipts", "official_quality_consent_receipts_user_purpose_revision_key", []string{"user_id", "purpose", "revision"})
 	assertUniqueConstraint(t, ctx, postgres, "official_quality_proposals", "official_quality_proposals_platform_id_id_key", []string{"platform_id", "id"})
 	assertUniqueConstraint(t, ctx, postgres, "official_quality_proposal_reviews", "official_quality_proposal_reviews_proposal_key", []string{"proposal_id"})
+	assertUniqueConstraint(t, ctx, postgres, "desktop_control_commands", "desktop_control_commands_device_id_idempotency_key_hash_key", []string{"device_id", "idempotency_key_hash"})
 	assertCheckConstraintContains(t, ctx, postgres, "agent_versions", "agent_versions_content_digest_length_check", "octet_length(content_digest) = 32")
 	assertCheckConstraintContains(t, ctx, postgres, "agent_versions", "agent_versions_signature_length_check", "octet_length(signature) = 64")
 	assertCheckConstraintContains(t, ctx, postgres, "policy_snapshots", "policy_snapshots_content_digest_length_check", "octet_length(content_digest) = 32")
@@ -206,6 +226,10 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	assertCheckConstraintContains(t, ctx, postgres, "encrypted_profile_backups", "encrypted_profile_backups_state_check", "deleting")
 	assertCheckConstraintContains(t, ctx, postgres, "encrypted_profile_backups", "encrypted_profile_backups_cipher_suite_check", "HPKE-X25519-HKDF-SHA256-AES256GCM")
 	assertCheckConstraintContains(t, ctx, postgres, "backup_devices", "backup_devices_public_key_length_check", "octet_length(public_key) = 32")
+	assertCheckConstraintContains(t, ctx, postgres, "desktop_control_instances", "desktop_control_instances_health_status_check", "unknown")
+	assertCheckConstraintContains(t, ctx, postgres, "desktop_control_commands", "desktop_control_commands_state_check", "expired")
+	assertCheckConstraintContains(t, ctx, postgres, "desktop_control_commands", "desktop_control_commands_result_code_check", "CLIENT_INTERRUPTED")
+	assertTriggerExists(t, ctx, postgres, "desktop_control_commands", "desktop_control_commands_transition_trigger")
 	assertCheckConstraintExcludes(t, ctx, postgres, "installations", "installations_lifecycle_check", "policy_snapshot_id IS NULL")
 	assertCheckConstraintContains(t, ctx, postgres, "installations", "installations_status_check", "pending")
 	assertCheckConstraintContains(t, ctx, postgres, "installations", "installations_update_policy_check", "manual")
@@ -507,8 +531,8 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	if err := postgres.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if applied != 22 {
-		t.Fatalf("applied migration count = %d, want 22", applied)
+	if applied != 23 {
+		t.Fatalf("applied migration count = %d, want 23", applied)
 	}
 	var receiptConsumedColumn bool
 	if err := postgres.QueryRow(ctx, `

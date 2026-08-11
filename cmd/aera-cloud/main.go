@@ -20,6 +20,7 @@ import (
 	"github.com/bignormal/aera-cloud/internal/audit"
 	"github.com/bignormal/aera-cloud/internal/browser"
 	"github.com/bignormal/aera-cloud/internal/config"
+	"github.com/bignormal/aera-cloud/internal/desktopcontrol"
 	"github.com/bignormal/aera-cloud/internal/device"
 	"github.com/bignormal/aera-cloud/internal/encryptedbackup"
 	"github.com/bignormal/aera-cloud/internal/entitlement"
@@ -103,7 +104,18 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 	if err != nil {
 		return err
 	}
-	deviceHandler, err := buildDeviceHandler(cfg, postgres, redisStore.Client())
+	desktopControlClock, err := desktopControlClockFromEnvironment(cfg.Environment, lookup, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	desktopControl := desktopcontrol.NewService(desktopcontrol.NewPostgresRepository(postgres), desktopControlClock)
+	desktopControlLimiter, err := desktopcontrol.NewRedisLimiter(redisStore.Client(), desktopcontrol.DefaultLimitPolicies())
+	if err != nil {
+		return err
+	}
+	deviceHandler, err := buildDeviceHandlerWithDesktopControl(
+		cfg, postgres, redisStore.Client(), desktopControl, desktopControlLimiter,
+	)
 	if err != nil {
 		return err
 	}
@@ -164,7 +176,9 @@ func run(ctx context.Context, lookup config.LookupEnv) error {
 	var internalHandler http.Handler
 	var internalTLS *tls.Config
 	if cfg.InternalAdmin.Enabled {
-		internalHandler, internalTLS, err = buildInternalAdmin(cfg, postgres, redisStore, platformService)
+		internalHandler, internalTLS, err = buildInternalAdminWithDesktopControl(
+			cfg, postgres, redisStore, desktopControl, platformService,
+		)
 		if err != nil {
 			return err
 		}
@@ -654,6 +668,21 @@ func buildDeviceHandler(
 	postgres *pgxpool.Pool,
 	redisClient redis.UniversalClient,
 ) (http.Handler, error) {
+	desktopControl := desktopcontrol.NewService(desktopcontrol.NewPostgresRepository(postgres))
+	desktopControlLimiter, err := desktopcontrol.NewRedisLimiter(redisClient, desktopcontrol.DefaultLimitPolicies())
+	if err != nil {
+		return nil, err
+	}
+	return buildDeviceHandlerWithDesktopControl(cfg, postgres, redisClient, desktopControl, desktopControlLimiter)
+}
+
+func buildDeviceHandlerWithDesktopControl(
+	cfg config.Config,
+	postgres *pgxpool.Pool,
+	redisClient redis.UniversalClient,
+	desktopControl device.DesktopControlHTTPService,
+	desktopControlLimiter device.DesktopControlRequestLimiter,
+) (http.Handler, error) {
 	accessAuthenticator, err := buildAccessAuthenticator(cfg, postgres, redisClient)
 	if err != nil {
 		return nil, err
@@ -669,7 +698,8 @@ func buildDeviceHandler(
 		return nil, err
 	}
 	return device.NewHandler(device.HTTPConfig{
-		Devices: devices, AccessTokens: accessAuthenticator, BrowserSessions: browserSessions,
+		Devices: devices, DesktopControl: desktopControl, DesktopControlLimiter: desktopControlLimiter,
+		AccessTokens: accessAuthenticator, BrowserSessions: browserSessions,
 	}), nil
 }
 

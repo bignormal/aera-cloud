@@ -32,6 +32,8 @@ const (
 	ScopeOfficialQualityPropose = "official_quality:propose"
 	ScopeOfficialQualityReview  = "official_quality:review"
 	ScopeOfficialQualityClone   = "official_quality:clone"
+	ScopeDesktopControlRead     = "desktop_control:read"
+	ScopeDesktopControlCommand  = "desktop_control:command"
 
 	serviceJWTAudience       = "aera-cloud-admin"
 	maximumServiceTokenBytes = 8192
@@ -57,6 +59,8 @@ var (
 		ScopeOfficialQualityPropose: {},
 		ScopeOfficialQualityReview:  {},
 		ScopeOfficialQualityClone:   {},
+		ScopeDesktopControlRead:     {},
+		ScopeDesktopControlCommand:  {},
 	}
 	allowedOfficialRoles = map[string]struct{}{
 		"super_admin": {}, "developer": {}, "operator": {},

@@ -404,6 +404,14 @@ func TestBuildDeviceHandlerWiresPublicSelfRevocationRoute(t *testing.T) {
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"invalid_request"`) {
 		t.Fatalf("response = %d %q", response.Code, response.Body.String())
 	}
+
+	heartbeat := httptest.NewRequest(http.MethodPost, "/api/v1/devices/current/desktop-control/heartbeat", strings.NewReader(`{}`))
+	heartbeat.Header.Set("Content-Type", "application/json")
+	heartbeatResponse := httptest.NewRecorder()
+	handler.ServeHTTP(heartbeatResponse, heartbeat)
+	if heartbeatResponse.Code != http.StatusUnauthorized || !strings.Contains(heartbeatResponse.Body.String(), `"code":"session_revoked"`) {
+		t.Fatalf("Desktop control response = %d %q", heartbeatResponse.Code, heartbeatResponse.Body.String())
+	}
 }
 
 func TestBuildAgentControlHandlerWiresAccessTokenOnlyRoute(t *testing.T) {
