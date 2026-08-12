@@ -211,10 +211,12 @@ func TestOfficialAgentMutationRejectsBodyActorMismatchBeforeService(t *testing.T
 
 func TestOfficialMutationOperationCanBeReconciledAfterAmbiguousRead(t *testing.T) {
 	now := time.Date(2026, 7, 22, 15, 0, 0, 0, time.UTC)
+	targetID := uuid.New()
 	service := newHandlerServiceStub(now)
 	service.operation = admin.Operation{
 		ID: authOperationID, Status: admin.OperationSucceeded,
-		AdministrativeRevision: 1, UpdatedAt: now,
+		AdministrativeRevision: 1, TargetType: "platform_definition", TargetID: targetID.String(),
+		UpdatedAt: now,
 	}
 	service.getOperationErr = admin.ErrUnavailable
 	handler := &handler{service: service}
@@ -230,7 +232,9 @@ func TestOfficialMutationOperationCanBeReconciledAfterAmbiguousRead(t *testing.T
 	reconciled := httptest.NewRecorder()
 	handler.writeOfficialOperationResult(reconciled, request, authOperationID.String())
 	if reconciled.Code != http.StatusOK ||
-		!bytes.Contains(reconciled.Body.Bytes(), []byte(`"operation_id":"`+authOperationID.String()+`"`)) {
+		!bytes.Contains(reconciled.Body.Bytes(), []byte(`"operation_id":"`+authOperationID.String()+`"`)) ||
+		!bytes.Contains(reconciled.Body.Bytes(), []byte(`"target_type":"platform_definition"`)) ||
+		!bytes.Contains(reconciled.Body.Bytes(), []byte(`"target_id":"`+targetID.String()+`"`)) {
 		t.Fatalf("reconciled result = %d body=%s", reconciled.Code, reconciled.Body.String())
 	}
 }

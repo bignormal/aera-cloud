@@ -742,7 +742,8 @@ func (r *ControlRepository) findOperation(
 ) (storedOperation, bool, error) {
 	stored, err := scanStoredOperation(tx.QueryRow(ctx, `
 		SELECT idempotency_key_id, request_fingerprint, operation_id, status,
-		       COALESCE(error_code, ''), COALESCE(result_revision, 0), updated_at
+		       COALESCE(error_code, ''), COALESCE(result_revision, 0),
+		       target_type, target_id::text, updated_at
 		FROM admin_operations
 		WHERE operation_id = $1
 	`, operationID))
@@ -755,7 +756,8 @@ func (r *ControlRepository) findOperation(
 	for _, digest := range digests {
 		stored, err = scanStoredOperation(tx.QueryRow(ctx, `
 			SELECT idempotency_key_id, request_fingerprint, operation_id, status,
-			       COALESCE(error_code, ''), COALESCE(result_revision, 0), updated_at
+			       COALESCE(error_code, ''), COALESCE(result_revision, 0),
+			       target_type, target_id::text, updated_at
 			FROM admin_operations
 			WHERE idempotency_key_id = $1 AND idempotency_key_hmac = $2
 		`, digest.KeyID, digest.Sum))
@@ -955,7 +957,14 @@ func (r *ControlRepository) finishRejected(
 	if now.IsZero() {
 		return Operation{}, ErrUnavailable
 	}
-	operation := Operation{ID: command.OperationID, Status: status, ErrorCode: code, UpdatedAt: now}
+	targetType, targetOK := controlTargetType(action)
+	if !targetOK {
+		return Operation{}, ErrUnavailable
+	}
+	operation := Operation{
+		ID: command.OperationID, Status: status, ErrorCode: code,
+		TargetType: targetType, TargetID: targetID.String(), UpdatedAt: now,
+	}
 	if err := r.insertControlAudit(ctx, tx, action, targetID, command, mutation, "denied", now); err != nil {
 		return Operation{}, err
 	}
@@ -987,8 +996,10 @@ func (r *ControlRepository) finishSucceeded(
 	}
 	operation := Operation{
 		ID: command.OperationID, Status: OperationSucceeded,
-		AdministrativeRevision: mutation.AfterRevision, UpdatedAt: now,
+		AdministrativeRevision: mutation.AfterRevision,
 	}
+	operation.TargetType, _ = controlTargetType(action)
+	operation.TargetID, operation.UpdatedAt = targetID.String(), now
 	if err := r.insertControlAudit(ctx, tx, action, targetID, command, mutation, "success", now); err != nil {
 		return Operation{}, err
 	}
@@ -1116,6 +1127,8 @@ func scanStoredOperation(scanner controlRowScanner) (storedOperation, error) {
 		&status,
 		&stored.Operation.ErrorCode,
 		&stored.Operation.AdministrativeRevision,
+		&stored.Operation.TargetType,
+		&stored.Operation.TargetID,
 		&stored.Operation.UpdatedAt,
 	); err != nil {
 		return storedOperation{}, err

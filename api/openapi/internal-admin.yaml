@@ -1902,6 +1902,9 @@ components:
         status: { enum: [queued, executing, succeeded, failed, conflict] }
         error_code: { type: string, pattern: '^[A-Z][A-Z0-9_]{2,99}$' }
         administrative_revision: { type: integer, minimum: 1 }
+        target_type:
+          enum: [device, session, user, platform_definition, platform_draft, platform_submission, official_release, official_quality_proposal]
+        target_id: { type: string, format: uuid }
         updated_at: { type: string, format: date-time }
     ErrorEnvelope:
       type: object
