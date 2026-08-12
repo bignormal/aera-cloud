@@ -2900,6 +2900,37 @@ paths:
           $ref: '#/components/responses/OfficialAgentError'
         '503':
           $ref: '#/components/responses/OfficialAgentError'
+  /api/v1/official-agent-delivery-verifications:
+    post:
+      operationId: recordOfficialAgentDeliveryVerification
+      description: Records one content-free Desktop verification stage for an installed official Agent. User and device identities are derived from the access token; prompts, bundles, local paths, credentials, logs, conversations, and user files are rejected as unknown fields.
+      security:
+        - desktopAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOfficialAgentDeliveryVerificationRequest'
+      responses:
+        '201':
+          description: Verification accepted or exactly replayed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OfficialAgentDeliveryVerificationReceipt'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/SessionRevoked'
+        '404':
+          $ref: '#/components/responses/AgentNotFound'
+        '409':
+          $ref: '#/components/responses/AgentConflict'
+        '413':
+          $ref: '#/components/responses/InvalidRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /api/v1/official-agent-quality/events:
     post:
       operationId: submitOfficialAgentQualityEvent
@@ -5839,6 +5870,55 @@ components:
         update_state:
           type: string
           enum: [current, update_available]
+    OfficialAgentDeliveryVerificationStatus:
+      type: string
+      enum: [catalog_visible, signature_verified, compatible, installed, activated, failed]
+    OfficialAgentDeliveryVerificationErrorCode:
+      type: string
+      enum:
+        - catalog_unavailable
+        - invalid_response
+        - signature_verification_failed
+        - runtime_incompatible
+        - content_digest_mismatch
+        - installation_failed
+        - activation_failed
+        - cloud_unavailable
+    CreateOfficialAgentDeliveryVerificationRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - definition_id
+        - version_id
+        - release_revision_id
+        - content_digest
+        - verification_status
+        - runtime_version
+        - desktop_version
+        - occurred_at
+        - request_id
+      properties:
+        definition_id: { type: string, format: uuid }
+        version_id: { type: string, format: uuid }
+        release_revision_id: { type: string, format: uuid }
+        content_digest:
+          $ref: '#/components/schemas/SHA256Digest'
+        verification_status:
+          $ref: '#/components/schemas/OfficialAgentDeliveryVerificationStatus'
+        error_code:
+          $ref: '#/components/schemas/OfficialAgentDeliveryVerificationErrorCode'
+        runtime_version: { type: string, minLength: 5, maxLength: 128 }
+        desktop_version: { type: string, minLength: 5, maxLength: 128 }
+        occurred_at: { type: string, format: date-time }
+        request_id: { type: string, format: uuid }
+    OfficialAgentDeliveryVerificationReceipt:
+      type: object
+      additionalProperties: false
+      required: [request_id, status, received_at]
+      properties:
+        request_id: { type: string, format: uuid }
+        status: { type: string, enum: [accepted, replayed] }
+        received_at: { type: string, format: date-time }
     OfficialAgentListResponse:
       type: object
       additionalProperties: false

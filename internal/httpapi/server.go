@@ -74,6 +74,7 @@ func New(dependencies Dependencies) http.Handler {
 	if dependencies.AgentControl != nil {
 		router.Handle("/api/v1/official-agents", dependencies.AgentControl)
 		router.Handle("/api/v1/official-agents/*", dependencies.AgentControl)
+		router.Handle("/api/v1/official-agent-delivery-verifications", dependencies.AgentControl)
 		router.Handle("/api/v1/agent-definitions", dependencies.AgentControl)
 		router.Handle("/api/v1/agent-definitions/*", dependencies.AgentControl)
 		router.Handle("/api/v1/agent-versions/*", dependencies.AgentControl)

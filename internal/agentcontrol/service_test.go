@@ -655,6 +655,17 @@ func TestServiceArchiveAndBindingUseMetadataOnlyCommands(t *testing.T) {
 	if err != nil || stored.ID != binding.BindingID || persisted.Audit.EventID == uuid.Nil || persisted.CreatedAt.IsZero() {
 		t.Fatalf("RecordRuntimeBinding() = %+v persisted=%+v error=%v", stored, persisted, err)
 	}
+
+	_, err = fixture.service.RecordOfficialAgentDeliveryVerification(context.Background(), fixture.principal,
+		OfficialAgentDeliveryVerificationCommand{
+			RequestID: uuid.New(), DefinitionID: uuid.New(), VersionID: uuid.New(), ReleaseRevisionID: uuid.New(),
+			ContentDigest: sha256.Sum256([]byte("official Agent")), Status: OfficialDeliveryFailed,
+			ErrorCode: "raw: /Users/alice/private/prompt.txt", RuntimeVersion: "v0.18.2-agentera.1",
+			DesktopVersion: "v0.24.0", OccurredAt: fixture.now,
+		})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("RecordOfficialAgentDeliveryVerification(raw error) error = %v", err)
+	}
 }
 
 func policyVersionFixture(t *testing.T, definitionID uuid.UUID, versionID uuid.UUID, number int64) Version {
@@ -761,46 +772,47 @@ func newAgentControlServiceFixture(t *testing.T) *agentControlServiceFixture {
 }
 
 type stubServiceRepository struct {
-	publishInitial                        func(context.Context, Principal, InitialPublicationCommand) (Publication, error)
-	publishNext                           func(context.Context, Principal, NextPublicationCommand) (Publication, error)
-	publishWorkspaceInitial               func(context.Context, Principal, uuid.UUID, InitialPublicationCommand) (Publication, error)
-	publishWorkspaceNext                  func(context.Context, Principal, uuid.UUID, NextPublicationCommand) (Publication, error)
-	findDefinition                        func(context.Context, Principal, uuid.UUID) (Definition, bool, error)
-	findWorkspaceDefinition               func(context.Context, Principal, uuid.UUID, uuid.UUID) (Definition, bool, error)
-	findOrganizationDefinition            func(context.Context, Principal, uuid.UUID, uuid.UUID) (Definition, bool, error)
-	findVersion                           func(context.Context, Principal, uuid.UUID) (Version, bool, error)
-	findPolicySnapshot                    func(context.Context, Principal, uuid.UUID) (PolicySnapshot, bool, error)
-	listDefinitions                       func(context.Context, Principal) ([]Definition, error)
-	listVersions                          func(context.Context, Principal, uuid.UUID) ([]Version, error)
-	listWorkspaceDefinitions              func(context.Context, Principal, uuid.UUID) ([]Definition, error)
-	listWorkspaceVersions                 func(context.Context, Principal, uuid.UUID, uuid.UUID) ([]Version, error)
-	listOrganizationDefinitions           func(context.Context, Principal, uuid.UUID) ([]Definition, error)
-	listOrganizationVersions              func(context.Context, Principal, uuid.UUID, uuid.UUID) ([]Version, error)
-	appendRevocation                      func(context.Context, Principal, VersionRevocationCommand) (VersionRevocation, error)
-	recordDenied                          func(context.Context, Principal, DeniedAuditCommand) error
-	createPendingInstallation             func(context.Context, Principal, CreateInstallationCommand) (InstallationCreation, error)
-	findInstallation                      func(context.Context, Principal, uuid.UUID) (Installation, bool, error)
-	loadActivationContext                 func(context.Context, Principal, uuid.UUID) (InstallationActivationContext, bool, error)
-	activateInstallation                  func(context.Context, Principal, ActivationCommand) (Installation, error)
-	selectInstallationVersion             func(context.Context, Principal, VersionSelectionCommand) (Installation, error)
-	applyManagedOfficialSelection         func(context.Context, Principal, ManagedOfficialSelectionCommand) (Installation, error)
-	archiveInstallation                   func(context.Context, Principal, ArchiveInstallationCommand) (Installation, error)
-	insertRuntimeBinding                  func(context.Context, Principal, PersistRuntimeBindingCommand) (RuntimeBindingRecord, error)
-	submitExperienceCandidate             func(context.Context, Principal, SubmitExperienceCandidateCommand) (ExperienceCandidate, bool, error)
-	listOwnCandidates                     func(context.Context, Principal, uuid.UUID) ([]ExperienceCandidate, error)
-	listWorkspaceCandidates               func(context.Context, Principal, uuid.UUID) ([]ExperienceCandidate, error)
-	findExperienceCandidate               func(context.Context, Principal, uuid.UUID, uuid.UUID, AuditEvidence, time.Time) (ExperienceCandidate, bool, error)
-	reviewExperienceCandidate             func(context.Context, Principal, ReviewExperienceCandidateCommand) (ExperienceCandidate, bool, error)
-	submitOrganizationExperienceCandidate func(context.Context, Principal, SubmitOrganizationExperienceCandidateCommand) (OrganizationExperienceCandidate, bool, error)
-	listOwnOrganizationCandidates         func(context.Context, Principal, uuid.UUID) ([]OrganizationExperienceCandidate, error)
-	listOrganizationCandidates            func(context.Context, Principal, uuid.UUID) ([]OrganizationExperienceCandidate, error)
-	findOrganizationExperienceCandidate   func(context.Context, Principal, uuid.UUID, uuid.UUID, AuditEvidence, time.Time) (OrganizationExperienceCandidate, bool, error)
-	reviewOrganizationExperienceCandidate func(context.Context, Principal, ReviewOrganizationExperienceCandidateCommand) (OrganizationExperienceCandidate, bool, error)
-	submitOrganizationAgent               func(context.Context, SubmitOrganizationAgentCommand) (OrganizationAgentSubmission, error)
-	listOrganizationSubmissions           func(context.Context, Principal, uuid.UUID) ([]OrganizationAgentSubmission, error)
-	findOrganizationSubmission            func(context.Context, Principal, uuid.UUID, uuid.UUID) (OrganizationAgentSubmission, bool, error)
-	withdrawOrganizationSubmission        func(context.Context, WithdrawOrganizationAgentCommand) (OrganizationAgentSubmission, error)
-	reviewOrganizationSubmission          func(context.Context, ReviewOrganizationAgentCommand) (OrganizationAgentSubmission, error)
+	publishInitial                          func(context.Context, Principal, InitialPublicationCommand) (Publication, error)
+	publishNext                             func(context.Context, Principal, NextPublicationCommand) (Publication, error)
+	publishWorkspaceInitial                 func(context.Context, Principal, uuid.UUID, InitialPublicationCommand) (Publication, error)
+	publishWorkspaceNext                    func(context.Context, Principal, uuid.UUID, NextPublicationCommand) (Publication, error)
+	findDefinition                          func(context.Context, Principal, uuid.UUID) (Definition, bool, error)
+	findWorkspaceDefinition                 func(context.Context, Principal, uuid.UUID, uuid.UUID) (Definition, bool, error)
+	findOrganizationDefinition              func(context.Context, Principal, uuid.UUID, uuid.UUID) (Definition, bool, error)
+	findVersion                             func(context.Context, Principal, uuid.UUID) (Version, bool, error)
+	findPolicySnapshot                      func(context.Context, Principal, uuid.UUID) (PolicySnapshot, bool, error)
+	listDefinitions                         func(context.Context, Principal) ([]Definition, error)
+	listVersions                            func(context.Context, Principal, uuid.UUID) ([]Version, error)
+	listWorkspaceDefinitions                func(context.Context, Principal, uuid.UUID) ([]Definition, error)
+	listWorkspaceVersions                   func(context.Context, Principal, uuid.UUID, uuid.UUID) ([]Version, error)
+	listOrganizationDefinitions             func(context.Context, Principal, uuid.UUID) ([]Definition, error)
+	listOrganizationVersions                func(context.Context, Principal, uuid.UUID, uuid.UUID) ([]Version, error)
+	appendRevocation                        func(context.Context, Principal, VersionRevocationCommand) (VersionRevocation, error)
+	recordDenied                            func(context.Context, Principal, DeniedAuditCommand) error
+	createPendingInstallation               func(context.Context, Principal, CreateInstallationCommand) (InstallationCreation, error)
+	findInstallation                        func(context.Context, Principal, uuid.UUID) (Installation, bool, error)
+	loadActivationContext                   func(context.Context, Principal, uuid.UUID) (InstallationActivationContext, bool, error)
+	activateInstallation                    func(context.Context, Principal, ActivationCommand) (Installation, error)
+	selectInstallationVersion               func(context.Context, Principal, VersionSelectionCommand) (Installation, error)
+	applyManagedOfficialSelection           func(context.Context, Principal, ManagedOfficialSelectionCommand) (Installation, error)
+	archiveInstallation                     func(context.Context, Principal, ArchiveInstallationCommand) (Installation, error)
+	insertRuntimeBinding                    func(context.Context, Principal, PersistRuntimeBindingCommand) (RuntimeBindingRecord, error)
+	insertOfficialAgentDeliveryVerification func(context.Context, Principal, PersistOfficialAgentDeliveryVerificationCommand) (OfficialAgentDeliveryVerification, error)
+	submitExperienceCandidate               func(context.Context, Principal, SubmitExperienceCandidateCommand) (ExperienceCandidate, bool, error)
+	listOwnCandidates                       func(context.Context, Principal, uuid.UUID) ([]ExperienceCandidate, error)
+	listWorkspaceCandidates                 func(context.Context, Principal, uuid.UUID) ([]ExperienceCandidate, error)
+	findExperienceCandidate                 func(context.Context, Principal, uuid.UUID, uuid.UUID, AuditEvidence, time.Time) (ExperienceCandidate, bool, error)
+	reviewExperienceCandidate               func(context.Context, Principal, ReviewExperienceCandidateCommand) (ExperienceCandidate, bool, error)
+	submitOrganizationExperienceCandidate   func(context.Context, Principal, SubmitOrganizationExperienceCandidateCommand) (OrganizationExperienceCandidate, bool, error)
+	listOwnOrganizationCandidates           func(context.Context, Principal, uuid.UUID) ([]OrganizationExperienceCandidate, error)
+	listOrganizationCandidates              func(context.Context, Principal, uuid.UUID) ([]OrganizationExperienceCandidate, error)
+	findOrganizationExperienceCandidate     func(context.Context, Principal, uuid.UUID, uuid.UUID, AuditEvidence, time.Time) (OrganizationExperienceCandidate, bool, error)
+	reviewOrganizationExperienceCandidate   func(context.Context, Principal, ReviewOrganizationExperienceCandidateCommand) (OrganizationExperienceCandidate, bool, error)
+	submitOrganizationAgent                 func(context.Context, SubmitOrganizationAgentCommand) (OrganizationAgentSubmission, error)
+	listOrganizationSubmissions             func(context.Context, Principal, uuid.UUID) ([]OrganizationAgentSubmission, error)
+	findOrganizationSubmission              func(context.Context, Principal, uuid.UUID, uuid.UUID) (OrganizationAgentSubmission, bool, error)
+	withdrawOrganizationSubmission          func(context.Context, WithdrawOrganizationAgentCommand) (OrganizationAgentSubmission, error)
+	reviewOrganizationSubmission            func(context.Context, ReviewOrganizationAgentCommand) (OrganizationAgentSubmission, error)
 }
 
 func (s *stubServiceRepository) PublishInitial(ctx context.Context, principal Principal, command InitialPublicationCommand) (Publication, error) {
@@ -1014,6 +1026,13 @@ func (s *stubServiceRepository) InsertRuntimeBinding(ctx context.Context, princi
 		return RuntimeBindingRecord{}, errors.New("unexpected InsertRuntimeBinding call")
 	}
 	return s.insertRuntimeBinding(ctx, principal, command)
+}
+
+func (s *stubServiceRepository) InsertOfficialAgentDeliveryVerification(ctx context.Context, principal Principal, command PersistOfficialAgentDeliveryVerificationCommand) (OfficialAgentDeliveryVerification, error) {
+	if s.insertOfficialAgentDeliveryVerification == nil {
+		return OfficialAgentDeliveryVerification{}, errors.New("unexpected InsertOfficialAgentDeliveryVerification call")
+	}
+	return s.insertOfficialAgentDeliveryVerification(ctx, principal, command)
 }
 
 func (s *stubServiceRepository) SubmitExperienceCandidate(

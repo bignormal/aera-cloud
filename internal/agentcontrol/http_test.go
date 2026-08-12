@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -381,6 +382,75 @@ func newAgentControlHTTPFixture(t *testing.T) *agentControlHTTPFixture {
 	}
 }
 
+func TestHTTPRecordsOfficialAgentDeliveryVerificationWithoutContent(t *testing.T) {
+	fixture := newAgentControlHTTPFixture(t)
+	requestID := uuid.New()
+	body := fmt.Sprintf(`{
+		"definition_id":%q,
+		"version_id":%q,
+		"release_revision_id":%q,
+		"content_digest":%q,
+		"verification_status":"activated",
+		"runtime_version":"v0.18.2-agentera.1",
+		"desktop_version":"v0.24.0",
+		"occurred_at":"2026-07-19T14:00:00.000Z",
+		"request_id":%q
+	}`, fixture.definitionID, fixture.versionID, uuid.New(), hex.EncodeToString(fixture.digest[:]), requestID)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/official-agent-delivery-verifications", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer access-token")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("delivery verification response = %d %q", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), requestID.String()) || !strings.Contains(response.Body.String(), `"status":"accepted"`) {
+		t.Fatalf("delivery verification body = %q", response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/official-agent-delivery-verifications", strings.NewReader(strings.TrimSuffix(body, "\n\t}")+`,"local_path":"/private/prompt.txt"}`))
+	request.Header.Set("Authorization", "Bearer access-token")
+	request.Header.Set("Content-Type", "application/json")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("content-bearing delivery verification response = %d %q", response.Code, response.Body.String())
+	}
+
+	for _, occurredAt := range []string{
+		"2026-07-19T14:00:00Z",
+		"2026-07-19T14:00:00.123Z",
+	} {
+		candidateBody := strings.Replace(body, "2026-07-19T14:00:00.000Z", occurredAt, 1)
+		candidateBody = strings.Replace(candidateBody, requestID.String(), uuid.NewString(), 1)
+		request = httptest.NewRequest(http.MethodPost, "/api/v1/official-agent-delivery-verifications", strings.NewReader(candidateBody))
+		request.Header.Set("Authorization", "Bearer access-token")
+		request.Header.Set("Content-Type", "application/json")
+		response = httptest.NewRecorder()
+		fixture.handler.ServeHTTP(response, request)
+		if response.Code != http.StatusCreated {
+			t.Fatalf("canonical UTC delivery verification %q response = %d %q", occurredAt, response.Code, response.Body.String())
+		}
+	}
+
+	for _, occurredAt := range []string{
+		"2026-07-19T22:00:00+08:00",
+		"2026-07-19T14:00:00.00Z",
+	} {
+		invalidBody := strings.Replace(body, "2026-07-19T14:00:00.000Z", occurredAt, 1)
+		invalidBody = strings.Replace(invalidBody, requestID.String(), uuid.NewString(), 1)
+		request = httptest.NewRequest(http.MethodPost, "/api/v1/official-agent-delivery-verifications", strings.NewReader(invalidBody))
+		request.Header.Set("Authorization", "Bearer access-token")
+		request.Header.Set("Content-Type", "application/json")
+		response = httptest.NewRecorder()
+		fixture.handler.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("noncanonical delivery verification %q response = %d %q", occurredAt, response.Code, response.Body.String())
+		}
+	}
+}
+
 type stubAgentControlHTTPService struct {
 	lastPrincipal                        Principal
 	lastWorkspaceID                      uuid.UUID
@@ -423,6 +493,7 @@ type stubAgentControlHTTPService struct {
 	lastManagedUpdateRequest             GetManagedOfficialUpdateRequest
 	lastManagedApplyRequest              ManagedUpdateRequest
 	lastBindingCommand                   RuntimeBindingRecordCommand
+	lastDeliveryVerification             OfficialAgentDeliveryVerificationCommand
 }
 
 func (s *stubAgentControlHTTPService) ListDefinitions(_ context.Context, principal Principal) ([]Definition, error) {
@@ -654,6 +725,16 @@ func (s *stubAgentControlHTTPService) RecordRuntimeBinding(_ context.Context, pr
 	s.lastPrincipal = principal
 	s.lastBindingCommand = command
 	return s.binding, s.err
+}
+
+func (s *stubAgentControlHTTPService) RecordOfficialAgentDeliveryVerification(_ context.Context, principal Principal, command OfficialAgentDeliveryVerificationCommand) (OfficialAgentDeliveryVerification, error) {
+	s.lastPrincipal = principal
+	s.lastDeliveryVerification = command
+	return OfficialAgentDeliveryVerification{
+		OfficialAgentDeliveryVerificationCommand: command,
+		InstallationID:                           s.installation.ID, DeviceID: principal.DeviceID,
+		ReceivedAt: time.Date(2026, 7, 19, 14, 0, 1, 0, time.UTC),
+	}, s.err
 }
 
 func (s *stubAgentControlHTTPService) SubmitExperienceCandidate(

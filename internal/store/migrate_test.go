@@ -94,6 +94,31 @@ func TestEmbeddedMigrationsIncludeInternalBetaDirectRegistration(t *testing.T) {
 			t.Fatalf("migration 22 is missing %q", required)
 		}
 	}
+
+	deliveryVerification := loaded[22]
+	if deliveryVerification.version != 23 || deliveryVerification.name != "000023_official_agent_delivery_verification.sql" {
+		t.Fatalf("migration 23 = %d/%s", deliveryVerification.version, deliveryVerification.name)
+	}
+	for _, required := range []string{
+		"CREATE TABLE official_agent_delivery_verifications",
+		"verification_status IN ('catalog_visible', 'signature_verified', 'compatible', 'installed', 'activated', 'failed')",
+		"CONSTRAINT official_delivery_verification_error_code_check CHECK",
+		"'catalog_unavailable'",
+		"'invalid_response'",
+		"'signature_verification_failed'",
+		"'runtime_incompatible'",
+		"'content_digest_mismatch'",
+		"'installation_failed'",
+		"'activation_failed'",
+		"'cloud_unavailable'",
+		"request_id UUID PRIMARY KEY",
+		"CREATE TRIGGER official_agent_delivery_verification_immutable_trigger",
+		"EXECUTE FUNCTION reject_agent_control_immutable_mutation()",
+	} {
+		if !strings.Contains(string(deliveryVerification.contents), required) {
+			t.Fatalf("migration 23 is missing %q", required)
+		}
+	}
 }
 
 func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
