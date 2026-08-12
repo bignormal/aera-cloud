@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 policy="$repo_root/scripts/release/resolve-schema-maximum.sh"
 bridge_sha=0bf56678c772c918e08423f0ad1c3aeb868cdc7e
-current_sha=87631f0b40d6551c2cafd3f3d11b222f1e02d271
+schema23_sha=87631f0b40d6551c2cafd3f3d11b222f1e02d271
 ordinary_sha=1111111111111111111111111111111111111111
 
 fail() {
@@ -15,8 +15,10 @@ fail() {
 [[ -x "$policy" ]] || fail 'policy resolver is missing or not executable'
 [[ $("$policy" "$bridge_sha" 22) == 23 ]] ||
   fail 'verified schema 22 bridge must declare compatibility through schema 23'
-[[ $("$policy" "$current_sha" 23) == 23 ]] ||
-  fail 'current schema 23 source must retain schema maximum 23'
+[[ $("$policy" "$schema23_sha" 23) == 23 ]] ||
+  fail 'schema 23 source must retain schema maximum 23'
+[[ $("$policy" "$ordinary_sha" 24) == 24 ]] ||
+  fail 'current schema 24 source must retain schema maximum 24'
 [[ $("$policy" "$ordinary_sha" 22) == 22 ]] ||
   fail 'unverified schema 22 source must not gain forward-schema compatibility'
 
