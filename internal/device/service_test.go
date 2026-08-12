@@ -197,6 +197,7 @@ func TestAuthorizeRejectsCrossOwnerTransferWithOwnerBoundBackupState(t *testing.
 	`, uuid.New(), firstUser, created.ID, bytes.Repeat([]byte{124}, 32), bytes.Repeat([]byte{24}, 64), fixture.now); err != nil {
 		t.Fatalf("seed owner-bound backup state: %v", err)
 	}
+	seedDesktopControlState(t, fixture, created.ID, firstUser, 24)
 	if err := fixture.service.Revoke(fixture.ctx, firstUser, created.ID); err != nil {
 		t.Fatalf("Revoke(first) error = %v", err)
 	}
@@ -206,11 +207,111 @@ func TestAuthorizeRejectsCrossOwnerTransferWithOwnerBoundBackupState(t *testing.
 		t.Fatalf("Authorize(backup-bound transfer) error = %v", err)
 	}
 	var storedUserID uuid.UUID
-	if err := fixture.postgres.QueryRow(fixture.ctx, `SELECT user_id FROM devices WHERE id = $1`, created.ID).Scan(&storedUserID); err != nil {
-		t.Fatalf("read backup-bound device owner: %v", err)
+	var backupDevices, instances, commands int64
+	if err := fixture.postgres.QueryRow(fixture.ctx, `
+		SELECT
+			(SELECT user_id FROM devices WHERE id = $1),
+			(SELECT count(*) FROM backup_devices WHERE device_id = $1),
+			(SELECT count(*) FROM desktop_control_instances WHERE device_id = $1),
+			(SELECT count(*) FROM desktop_control_commands WHERE device_id = $1)
+	`, created.ID).Scan(&storedUserID, &backupDevices, &instances, &commands); err != nil {
+		t.Fatalf("read backup-bound device state: %v", err)
 	}
-	if storedUserID != firstUser {
-		t.Fatalf("backup-bound device owner = %s, want %s", storedUserID, firstUser)
+	if storedUserID != firstUser || backupDevices != 1 || instances != 1 || commands != 1 {
+		t.Fatalf(
+			"backup-bound state owner=%s backups=%d instances=%d commands=%d, want %s/1/1/1",
+			storedUserID, backupDevices, instances, commands, firstUser,
+		)
+	}
+}
+
+func TestAuthorizeRejectsCrossOwnerTransferWithEncryptedProfileBackup(t *testing.T) {
+	fixture := newDeviceFixture(t)
+	firstUser := fixture.user(t)
+	secondUser := fixture.user(t)
+	command := deviceCommand(firstUser, 25)
+	created, err := fixture.service.Authorize(fixture.ctx, command)
+	if err != nil {
+		t.Fatalf("Authorize(first) error = %v", err)
+	}
+	seedEncryptedProfileBackup(t, fixture, created.ID, firstUser)
+	if err := fixture.service.Revoke(fixture.ctx, firstUser, created.ID); err != nil {
+		t.Fatalf("Revoke(first) error = %v", err)
+	}
+
+	command.UserID = secondUser
+	if _, err := fixture.service.Authorize(fixture.ctx, command); !errors.Is(err, ErrDeviceConflict) {
+		t.Fatalf("Authorize(encrypted-backup-bound transfer) error = %v", err)
+	}
+	var storedUserID uuid.UUID
+	var backups int64
+	if err := fixture.postgres.QueryRow(fixture.ctx, `
+		SELECT
+			(SELECT user_id FROM devices WHERE id = $1),
+			(SELECT count(*) FROM encrypted_profile_backups WHERE source_device_id = $1)
+	`, created.ID).Scan(&storedUserID, &backups); err != nil {
+		t.Fatalf("read encrypted-backup-bound device state: %v", err)
+	}
+	if storedUserID != firstUser || backups != 1 {
+		t.Fatalf("encrypted-backup-bound state owner=%s backups=%d, want %s/1", storedUserID, backups, firstUser)
+	}
+}
+
+func seedEncryptedProfileBackup(t *testing.T, fixture *deviceFixture, deviceID, userID uuid.UUID) {
+	t.Helper()
+	spaceID := uuid.New()
+	definitionID := uuid.New()
+	versionID := uuid.New()
+	installationID := uuid.New()
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		INSERT INTO personal_spaces (id, owner_user_id, display_name, status, created_at, updated_at)
+		VALUES ($1, $2, 'Device transfer backup', 'active', $3, $3)
+	`, spaceID, userID, fixture.now); err != nil {
+		t.Fatalf("seed encrypted backup personal space: %v", err)
+	}
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		INSERT INTO agent_definitions (
+			id, tenant_id, owner_scope, owner_id, display_name, status, created_by, created_at, updated_at
+		) VALUES ($1, $2, 'USER', $3, 'Device transfer backup Agent', 'active', $3, $4, $4)
+	`, definitionID, spaceID, userID, fixture.now); err != nil {
+		t.Fatalf("seed encrypted backup Agent definition: %v", err)
+	}
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		INSERT INTO agent_versions (
+			id, definition_id, tenant_id, owner_scope, owner_id, version_number,
+			canonical_manifest, bundle, content_digest, signing_key_id, signature,
+			runtime_minimum_version, published_by, published_at
+		) VALUES (
+			$1, $2, $3, 'USER', $4, 1, '{"schema_version":1}'::jsonb, '{"assets":[]}'::jsonb,
+			$5, 'device-transfer-backup', $6, '0.18.2-agentera.1', $4, $7
+		)
+	`, versionID, definitionID, spaceID, userID, bytes.Repeat([]byte{0x25}, 32), bytes.Repeat([]byte{0x26}, 64), fixture.now); err != nil {
+		t.Fatalf("seed encrypted backup Agent version: %v", err)
+	}
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		INSERT INTO installations (
+			id, tenant_id, owner_scope, owner_id, device_id, device_installation_id,
+			definition_id, selected_version_id, update_policy, status, created_by, created_at, updated_at
+		) VALUES ($1, $2, 'USER', $3, $4, $5, $6, $7, 'manual', 'pending', $3, $8, $8)
+	`, installationID, spaceID, userID, deviceID, uuid.New(), definitionID, versionID, fixture.now); err != nil {
+		t.Fatalf("seed encrypted backup Installation: %v", err)
+	}
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		INSERT INTO encrypted_profile_backups (
+			id, user_id, source_device_id, source_installation_id, source_definition_id,
+			source_version_id, profile_lineage_id, format_version, cipher_suite, state,
+			chunk_count, total_ciphertext_size, public_envelope_digest, public_signature,
+			recovery_salt, recovery_memory_kib, recovery_iterations, recovery_parallelism,
+			recovery_root_key_envelope, wrapped_data_key, created_at, updated_at, upload_expires_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, 1,
+			'HPKE-X25519-HKDF-SHA256-AES256GCM+ARGON2ID+AES256GCM', 'initiated',
+			1, 64, $8, $9, $10, 65536, 3, 1, $11, $12, $13, $13, $14
+		)
+	`, uuid.New(), userID, deviceID, installationID, definitionID, versionID, uuid.New(),
+		bytes.Repeat([]byte{0x27}, 32), bytes.Repeat([]byte{0x28}, 64), bytes.Repeat([]byte{0x29}, 16),
+		bytes.Repeat([]byte{0x2a}, 64), bytes.Repeat([]byte{0x2b}, 64), fixture.now, fixture.now.Add(24*time.Hour)); err != nil {
+		t.Fatalf("seed encrypted Profile backup: %v", err)
 	}
 }
 

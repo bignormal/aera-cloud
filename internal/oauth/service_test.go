@@ -168,6 +168,30 @@ func TestExchangePreservesDeviceServiceUnavailable(t *testing.T) {
 	}
 }
 
+func TestExchangePreservesDeviceConflict(t *testing.T) {
+	fixture := newOAuthFixture(t)
+	request := fixture.beginRequest()
+	started, err := fixture.service.Begin(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Begin() error = %v", err)
+	}
+	fixture.repository.userID = uuid.New()
+	fixture.repository.personalSpaceID = uuid.New()
+	approved, err := fixture.service.Approve(context.Background(), started.RequestID, fixture.repository.userID)
+	if err != nil {
+		t.Fatalf("Approve() error = %v", err)
+	}
+	parsed, _ := url.Parse(approved.RedirectURI)
+	fixture.devices.err = device.ErrDeviceConflict
+
+	if _, err := fixture.service.Exchange(context.Background(), fixture.exchangeRequest(parsed.Query().Get("code"))); !errors.Is(err, ErrDeviceConflict) {
+		t.Fatalf("Exchange(device conflict) error = %v", err)
+	}
+	if fixture.repository.consumed {
+		t.Fatal("device ownership conflict consumed the authorization code")
+	}
+}
+
 func TestAuthorizationCodeIsSingleUse(t *testing.T) {
 	services := testkit.IntegrationServices(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -401,6 +425,132 @@ func TestFailedExchangeRollsBackDeviceAndLeavesAuthorizationRetryable(t *testing
 	}
 	if devices != 0 || consumed != 0 {
 		t.Fatalf("failed exchange left devices=%d consumed_codes=%d", devices, consumed)
+	}
+}
+
+func TestFailedExchangeRollsBackCrossOwnerDeviceTransferAndLeavesAuthorizationRetryable(t *testing.T) {
+	services := testkit.IntegrationServices(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	postgres, err := store.OpenPostgres(ctx, services.DatabaseURL)
+	if err != nil {
+		t.Fatalf("OpenPostgres() error = %v", err)
+	}
+	defer postgres.Close()
+	if err := store.ApplyMigrations(ctx, postgres); err != nil {
+		t.Fatalf("ApplyMigrations() error = %v", err)
+	}
+	if _, err := postgres.Exec(ctx, `
+		TRUNCATE authorization_codes, oauth_requests, audit_events, sessions, devices, personal_spaces, users CASCADE
+	`); err != nil {
+		t.Fatalf("truncate OAuth transfer tables: %v", err)
+	}
+	now := time.Date(2026, 8, 13, 2, 0, 0, 0, time.UTC)
+	oldUserID := uuid.New()
+	newUserID := uuid.New()
+	newPersonalSpaceID := uuid.New()
+	if _, err := postgres.Exec(ctx, `
+		INSERT INTO users (id, status, created_at, updated_at)
+		VALUES ($1, 'active', $3, $3), ($2, 'active', $3, $3)
+	`, oldUserID, newUserID, now); err != nil {
+		t.Fatalf("insert OAuth transfer users: %v", err)
+	}
+	if _, err := postgres.Exec(ctx, `
+		INSERT INTO personal_spaces (id, owner_user_id, status, created_at, updated_at)
+		VALUES ($1, $2, 'active', $3, $3)
+	`, newPersonalSpaceID, newUserID, now); err != nil {
+		t.Fatalf("insert OAuth transfer personal space: %v", err)
+	}
+	deviceService, err := device.NewService(device.ServiceConfig{
+		Repository: device.NewPostgresRepository(postgres), ActiveLimit: 5, Clock: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("device.NewService() error = %v", err)
+	}
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	installationID := uuid.New()
+	storedDevice, err := deviceService.Authorize(ctx, device.AuthorizeCommand{
+		UserID: oldUserID, InstallationID: installationID, PublicKey: publicKey,
+		DisplayName: "Old owner PC", Platform: "windows", AppVersion: "0.7.4",
+	})
+	if err != nil {
+		t.Fatalf("Authorize(old owner) error = %v", err)
+	}
+	if err := deviceService.Revoke(ctx, oldUserID, storedDevice.ID); err != nil {
+		t.Fatalf("Revoke(old owner) error = %v", err)
+	}
+	if _, err := postgres.Exec(ctx, `
+		INSERT INTO desktop_control_instances (
+			device_id, user_id, display_name, instance_type, client_version, platform, arch,
+			capabilities, last_heartbeat_at, health_status, created_at, updated_at
+		) VALUES ($1, $2, 'Old owner PC', 'desktop', '0.7.4', 'windows', 'x64',
+			'["diagnostics.health.read"]'::jsonb, $3, 'unknown', $3, $3)
+	`, storedDevice.ID, oldUserID, now); err != nil {
+		t.Fatalf("seed old-owner Desktop control instance: %v", err)
+	}
+	if _, err := postgres.Exec(ctx, `
+		INSERT INTO desktop_control_commands (
+			id, device_id, type, required_capability, idempotency_key_hash, state,
+			expires_at, created_by_admin_id, request_id, created_at, updated_at
+		) VALUES ($1, $2, 'health_check', 'diagnostics.health.read', $3, 'queued',
+			$4::timestamptz + INTERVAL '10 minutes', $5, 'rollback-health-check', $4, $4)
+	`, uuid.New(), storedDevice.ID, bytes.Repeat([]byte{0x31}, 32), now, uuid.New()); err != nil {
+		t.Fatalf("seed old-owner Desktop control command: %v", err)
+	}
+	oauthService, err := NewService(ServiceConfig{
+		Repository: NewPostgresRepository(postgres), Devices: deviceService, Sessions: failingSessionStarter{},
+		ActiveStateKeyID: "oauth-state-v1", StateEncryptionKeys: map[string][]byte{"oauth-state-v1": bytes.Repeat([]byte{5}, 32)},
+		StateHMACKey: bytes.Repeat([]byte{6}, 32), Clock: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	verifier := strings.Repeat("x", 64)
+	challenge := sha256.Sum256([]byte(verifier))
+	started, err := oauthService.Begin(ctx, BeginRequest{
+		ClientID: DesktopClientID, RedirectURI: "http://127.0.0.1:43123/agentera/oauth/callback",
+		CodeChallenge: base64.RawURLEncoding.EncodeToString(challenge[:]), CodeChallengeMethod: "S256",
+		State: strings.Repeat("r", 48), InstallationID: installationID, DevicePublicKey: publicKey,
+		DeviceDisplayName: "New owner PC", DevicePlatform: "windows", AppVersion: "0.7.4",
+	})
+	if err != nil {
+		t.Fatalf("Begin() error = %v", err)
+	}
+	approved, err := oauthService.Approve(ctx, started.RequestID, newUserID)
+	if err != nil {
+		t.Fatalf("Approve() error = %v", err)
+	}
+	redirect, _ := url.Parse(approved.RedirectURI)
+	code := redirect.Query().Get("code")
+	exchange := ExchangeRequest{
+		AuthorizationCode: code, CodeVerifier: verifier, InstallationID: installationID,
+		DeviceProof: signDeviceProof(t, privateKey, code, verifier, installationID),
+	}
+	if _, err := oauthService.Exchange(ctx, exchange); !errors.Is(err, session.ErrUnavailable) {
+		t.Fatalf("Exchange() error = %v", err)
+	}
+
+	var storedUserID uuid.UUID
+	var status string
+	var instances, commands, consumedCodes int64
+	if err := postgres.QueryRow(ctx, `
+		SELECT
+			(SELECT user_id FROM devices WHERE id = $1),
+			(SELECT status FROM devices WHERE id = $1),
+			(SELECT count(*) FROM desktop_control_instances WHERE device_id = $1),
+			(SELECT count(*) FROM desktop_control_commands WHERE device_id = $1),
+			(SELECT count(*) FROM authorization_codes WHERE consumed_at IS NOT NULL)
+	`, storedDevice.ID).Scan(&storedUserID, &status, &instances, &commands, &consumedCodes); err != nil {
+		t.Fatalf("read rolled-back OAuth transfer state: %v", err)
+	}
+	if storedUserID != oldUserID || status != "revoked" || instances != 1 || commands != 1 || consumedCodes != 0 {
+		t.Fatalf(
+			"rolled-back transfer owner=%s status=%s instances=%d commands=%d consumed_codes=%d, want %s/revoked/1/1/0",
+			storedUserID, status, instances, commands, consumedCodes, oldUserID,
+		)
 	}
 }
 

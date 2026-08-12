@@ -7730,6 +7730,7 @@ components:
         - identity_conflict
         - invalid_credentials
         - device_limit_reached
+        - device_conflict
         - authorization_expired
         - authorization_replayed
         - session_revoked
