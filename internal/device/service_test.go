@@ -107,6 +107,148 @@ func TestAuthorizeTransfersOnlyARevokedInstallationToAnotherOwnerWithTheSameKey(
 	}
 }
 
+func TestAuthorizeTransfersRevokedInstallationWithoutInheritingDesktopControlState(t *testing.T) {
+	fixture := newDeviceFixture(t)
+	firstUser := fixture.user(t)
+	secondUser := fixture.user(t)
+	command := deviceCommand(firstUser, 22)
+	created, err := fixture.service.Authorize(fixture.ctx, command)
+	if err != nil {
+		t.Fatalf("Authorize(first) error = %v", err)
+	}
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		INSERT INTO desktop_control_instances (
+			device_id, user_id, display_name, instance_type, client_version, platform, arch,
+			capabilities, last_heartbeat_at, health_status, created_at, updated_at
+		) VALUES ($1, $2, 'Old owner PC', 'desktop', '0.7.4', 'windows', 'x64',
+			'["diagnostics.health.read"]'::jsonb, $3, 'unknown', $3, $3)
+	`, created.ID, firstUser, fixture.now); err != nil {
+		t.Fatalf("seed old Desktop control instance: %v", err)
+	}
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		INSERT INTO desktop_control_commands (
+			id, device_id, type, required_capability, idempotency_key_hash, state,
+			expires_at, created_by_admin_id, request_id, created_at, updated_at
+		) VALUES ($1, $2, 'health_check', 'diagnostics.health.read', $3, 'queued',
+			$4::timestamptz + INTERVAL '10 minutes', $5, 'old-owner-health-check', $4, $4)
+	`, uuid.New(), created.ID, bytes.Repeat([]byte{22}, 32), fixture.now, uuid.New()); err != nil {
+		t.Fatalf("seed old Desktop control command: %v", err)
+	}
+	if err := fixture.service.Revoke(fixture.ctx, firstUser, created.ID); err != nil {
+		t.Fatalf("Revoke(first) error = %v", err)
+	}
+
+	command.UserID = secondUser
+	transferred, err := fixture.service.Authorize(fixture.ctx, command)
+	if err != nil {
+		t.Fatalf("Authorize(transferred) error = %v", err)
+	}
+	if transferred.ID != created.ID || transferred.UserID != secondUser || transferred.Status != "active" {
+		t.Fatalf("Authorize(transferred) = %+v", transferred)
+	}
+
+	var instances, commands int64
+	if err := fixture.postgres.QueryRow(fixture.ctx, `
+		SELECT
+			(SELECT count(*) FROM desktop_control_instances WHERE device_id = $1),
+			(SELECT count(*) FROM desktop_control_commands WHERE device_id = $1)
+	`, created.ID).Scan(&instances, &commands); err != nil {
+		t.Fatalf("count old Desktop control state: %v", err)
+	}
+	if instances != 0 || commands != 0 {
+		t.Fatalf("old Desktop control state instances=%d commands=%d, want 0/0", instances, commands)
+	}
+}
+
+func TestAuthorizePreservesDesktopControlStateForSameOwner(t *testing.T) {
+	fixture := newDeviceFixture(t)
+	userID := fixture.user(t)
+	command := deviceCommand(userID, 23)
+	created, err := fixture.service.Authorize(fixture.ctx, command)
+	if err != nil {
+		t.Fatalf("Authorize(first) error = %v", err)
+	}
+	seedDesktopControlState(t, fixture, created.ID, userID, 23)
+
+	command.DisplayName = "Renamed same-owner PC"
+	if _, err := fixture.service.Authorize(fixture.ctx, command); err != nil {
+		t.Fatalf("Authorize(same owner) error = %v", err)
+	}
+	instances, commands := desktopControlStateCounts(t, fixture, created.ID)
+	if instances != 1 || commands != 1 {
+		t.Fatalf("same-owner Desktop control state instances=%d commands=%d, want 1/1", instances, commands)
+	}
+}
+
+func TestAuthorizeRejectsCrossOwnerTransferWithOwnerBoundBackupState(t *testing.T) {
+	fixture := newDeviceFixture(t)
+	firstUser := fixture.user(t)
+	secondUser := fixture.user(t)
+	command := deviceCommand(firstUser, 24)
+	created, err := fixture.service.Authorize(fixture.ctx, command)
+	if err != nil {
+		t.Fatalf("Authorize(first) error = %v", err)
+	}
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		INSERT INTO backup_devices (
+			id, user_id, device_id, key_epoch, public_key, registration_signature,
+			revision, status, created_at, updated_at
+		) VALUES ($1, $2, $3, 1, $4, $5, 1, 'active', $6, $6)
+	`, uuid.New(), firstUser, created.ID, bytes.Repeat([]byte{124}, 32), bytes.Repeat([]byte{24}, 64), fixture.now); err != nil {
+		t.Fatalf("seed owner-bound backup state: %v", err)
+	}
+	if err := fixture.service.Revoke(fixture.ctx, firstUser, created.ID); err != nil {
+		t.Fatalf("Revoke(first) error = %v", err)
+	}
+
+	command.UserID = secondUser
+	if _, err := fixture.service.Authorize(fixture.ctx, command); !errors.Is(err, ErrDeviceConflict) {
+		t.Fatalf("Authorize(backup-bound transfer) error = %v", err)
+	}
+	var storedUserID uuid.UUID
+	if err := fixture.postgres.QueryRow(fixture.ctx, `SELECT user_id FROM devices WHERE id = $1`, created.ID).Scan(&storedUserID); err != nil {
+		t.Fatalf("read backup-bound device owner: %v", err)
+	}
+	if storedUserID != firstUser {
+		t.Fatalf("backup-bound device owner = %s, want %s", storedUserID, firstUser)
+	}
+}
+
+func seedDesktopControlState(t *testing.T, fixture *deviceFixture, deviceID, userID uuid.UUID, marker byte) {
+	t.Helper()
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		INSERT INTO desktop_control_instances (
+			device_id, user_id, display_name, instance_type, client_version, platform, arch,
+			capabilities, last_heartbeat_at, health_status, created_at, updated_at
+		) VALUES ($1, $2, 'Stored PC', 'desktop', '0.7.4', 'windows', 'x64',
+			'["diagnostics.health.read"]'::jsonb, $3, 'unknown', $3, $3)
+	`, deviceID, userID, fixture.now); err != nil {
+		t.Fatalf("seed Desktop control instance: %v", err)
+	}
+	if _, err := fixture.postgres.Exec(fixture.ctx, `
+		INSERT INTO desktop_control_commands (
+			id, device_id, type, required_capability, idempotency_key_hash, state,
+			expires_at, created_by_admin_id, request_id, created_at, updated_at
+		) VALUES ($1, $2, 'health_check', 'diagnostics.health.read', $3, 'queued',
+			$4::timestamptz + INTERVAL '10 minutes', $5, 'stored-health-check', $4, $4)
+	`, uuid.New(), deviceID, bytes.Repeat([]byte{marker}, 32), fixture.now, uuid.New()); err != nil {
+		t.Fatalf("seed Desktop control command: %v", err)
+	}
+}
+
+func desktopControlStateCounts(t *testing.T, fixture *deviceFixture, deviceID uuid.UUID) (int64, int64) {
+	t.Helper()
+	var instances, commands int64
+	if err := fixture.postgres.QueryRow(fixture.ctx, `
+		SELECT
+			(SELECT count(*) FROM desktop_control_instances WHERE device_id = $1),
+			(SELECT count(*) FROM desktop_control_commands WHERE device_id = $1)
+	`, deviceID).Scan(&instances, &commands); err != nil {
+		t.Fatalf("count Desktop control state: %v", err)
+	}
+	return instances, commands
+}
+
 type deviceFixture struct {
 	ctx      context.Context
 	postgres *pgxpool.Pool

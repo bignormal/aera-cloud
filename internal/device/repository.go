@@ -89,6 +89,18 @@ func (r *PostgresRepository) AuthorizeInTx(
 				return Device{}, ErrDeviceLimitReached
 			}
 		}
+		if existing.UserID != record.UserID {
+			hasBackupState, err := hasOwnerBoundBackupState(ctx, tx, existing.ID)
+			if err != nil {
+				return Device{}, err
+			}
+			if hasBackupState {
+				return Device{}, ErrDeviceConflict
+			}
+			if err := clearDesktopControlState(ctx, tx, existing.ID); err != nil {
+				return Device{}, err
+			}
+		}
 		_, err := tx.Exec(ctx, `
 			UPDATE devices
 			SET user_id = $2, display_name = $3, platform = $4, app_version = $5,
@@ -135,6 +147,28 @@ func (r *PostgresRepository) AuthorizeInTx(
 		PublicKey: append([]byte(nil), record.PublicKey...), DisplayName: record.DisplayName,
 		Platform: record.Platform, AppVersion: record.AppVersion, Status: "active", LastSeenAt: record.AuthorizedAt,
 	}, nil
+}
+
+func hasOwnerBoundBackupState(ctx context.Context, tx pgx.Tx, deviceID uuid.UUID) (bool, error) {
+	var found bool
+	if err := tx.QueryRow(ctx, `
+		SELECT
+			EXISTS(SELECT 1 FROM backup_devices WHERE device_id = $1)
+			OR EXISTS(SELECT 1 FROM encrypted_profile_backups WHERE source_device_id = $1)
+	`, deviceID).Scan(&found); err != nil {
+		return false, ErrUnavailable
+	}
+	return found, nil
+}
+
+func clearDesktopControlState(ctx context.Context, tx pgx.Tx, deviceID uuid.UUID) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM desktop_control_commands WHERE device_id = $1`, deviceID); err != nil {
+		return ErrUnavailable
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM desktop_control_instances WHERE device_id = $1`, deviceID); err != nil {
+		return ErrUnavailable
+	}
+	return nil
 }
 
 func (r *PostgresRepository) Revoke(
