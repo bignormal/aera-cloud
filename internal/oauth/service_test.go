@@ -144,6 +144,30 @@ func TestExchangeRequiresPKCEAndDeviceProofAndConsumesCodeOnce(t *testing.T) {
 	}
 }
 
+func TestExchangePreservesDeviceServiceUnavailable(t *testing.T) {
+	fixture := newOAuthFixture(t)
+	request := fixture.beginRequest()
+	started, err := fixture.service.Begin(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Begin() error = %v", err)
+	}
+	fixture.repository.userID = uuid.New()
+	fixture.repository.personalSpaceID = uuid.New()
+	approved, err := fixture.service.Approve(context.Background(), started.RequestID, fixture.repository.userID)
+	if err != nil {
+		t.Fatalf("Approve() error = %v", err)
+	}
+	parsed, _ := url.Parse(approved.RedirectURI)
+	fixture.devices.err = device.ErrUnavailable
+
+	if _, err := fixture.service.Exchange(context.Background(), fixture.exchangeRequest(parsed.Query().Get("code"))); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Exchange(device unavailable) error = %v", err)
+	}
+	if fixture.repository.consumed {
+		t.Fatal("device storage failure consumed the authorization code")
+	}
+}
+
 func TestAuthorizationCodeIsSingleUse(t *testing.T) {
 	services := testkit.IntegrationServices(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -635,10 +659,14 @@ func (f *fakeOAuthRepository) Exchange(
 
 type fakeDeviceAuthorizer struct {
 	last device.AuthorizeCommand
+	err  error
 }
 
 func (f *fakeDeviceAuthorizer) AuthorizeInTx(_ context.Context, _ pgx.Tx, command device.AuthorizeCommand) (device.Device, error) {
 	f.last = command
+	if f.err != nil {
+		return device.Device{}, f.err
+	}
 	return device.Device{ID: uuid.New(), UserID: command.UserID, InstallationID: command.InstallationID}, nil
 }
 
