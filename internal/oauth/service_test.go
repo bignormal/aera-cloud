@@ -168,6 +168,30 @@ func TestExchangePreservesDeviceServiceUnavailable(t *testing.T) {
 	}
 }
 
+func TestExchangePreservesDeviceConflict(t *testing.T) {
+	fixture := newOAuthFixture(t)
+	request := fixture.beginRequest()
+	started, err := fixture.service.Begin(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Begin() error = %v", err)
+	}
+	fixture.repository.userID = uuid.New()
+	fixture.repository.personalSpaceID = uuid.New()
+	approved, err := fixture.service.Approve(context.Background(), started.RequestID, fixture.repository.userID)
+	if err != nil {
+		t.Fatalf("Approve() error = %v", err)
+	}
+	parsed, _ := url.Parse(approved.RedirectURI)
+	fixture.devices.err = device.ErrDeviceConflict
+
+	if _, err := fixture.service.Exchange(context.Background(), fixture.exchangeRequest(parsed.Query().Get("code"))); !errors.Is(err, ErrDeviceConflict) {
+		t.Fatalf("Exchange(device conflict) error = %v", err)
+	}
+	if fixture.repository.consumed {
+		t.Fatal("device ownership conflict consumed the authorization code")
+	}
+}
+
 func TestAuthorizationCodeIsSingleUse(t *testing.T) {
 	services := testkit.IntegrationServices(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

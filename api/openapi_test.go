@@ -54,7 +54,7 @@ func TestOpenAPIContainsTaskFourAccountContract(t *testing.T) {
 	}
 	for _, code := range []string{
 		"invalid_request", "verification_required", "identity_conflict", "invalid_credentials",
-		"device_limit_reached", "authorization_expired", "authorization_replayed", "session_revoked",
+		"device_limit_reached", "device_conflict", "authorization_expired", "authorization_replayed", "session_revoked",
 		"account_pending_deletion", "account_disabled", "service_unavailable",
 	} {
 		if !strings.Contains(document, "- "+code) {

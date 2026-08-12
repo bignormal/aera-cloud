@@ -14,6 +14,7 @@ var (
 	ErrInvalidAuthorization  = errors.New("OAuth authorization is invalid or expired")
 	ErrAuthorizationReplayed = errors.New("OAuth authorization was already consumed")
 	ErrDeviceLimitReached    = errors.New("active device limit reached")
+	ErrDeviceConflict        = errors.New("device identity conflicts with another owner")
 	ErrUnavailable           = errors.New("OAuth service is unavailable")
 )
 

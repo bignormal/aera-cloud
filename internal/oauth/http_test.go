@@ -223,6 +223,8 @@ func TestHTTPMapsOAuthReplayDeviceLimitAndSessionRevocation(t *testing.T) {
 		status     int
 		code       string
 	}{
+		{oauthErr: ErrUnavailable, path: "/api/v1/oauth/token", body: validTokenBody(), status: http.StatusServiceUnavailable, code: "service_unavailable"},
+		{oauthErr: ErrDeviceConflict, path: "/api/v1/oauth/token", body: validTokenBody(), status: http.StatusConflict, code: "device_conflict"},
 		{oauthErr: ErrAuthorizationReplayed, path: "/api/v1/oauth/token", body: validTokenBody(), status: http.StatusConflict, code: "authorization_replayed"},
 		{oauthErr: ErrDeviceLimitReached, path: "/api/v1/oauth/token", body: validTokenBody(), status: http.StatusConflict, code: "device_limit_reached"},
 		{sessionErr: session.ErrSessionRevoked, path: "/api/v1/oauth/refresh", body: `{"refresh_token":"opaque"}`, status: http.StatusUnauthorized, code: "session_revoked"},

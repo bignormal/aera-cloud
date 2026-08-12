@@ -262,6 +262,8 @@ func writeMappedOAuthError(response http.ResponseWriter, err error) {
 		writeOAuthError(response, http.StatusConflict, "authorization_replayed")
 	case errors.Is(err, ErrDeviceLimitReached):
 		writeOAuthError(response, http.StatusConflict, "device_limit_reached")
+	case errors.Is(err, ErrDeviceConflict):
+		writeOAuthError(response, http.StatusConflict, "device_conflict")
 	case errors.Is(err, session.ErrSessionRevoked):
 		writeOAuthError(response, http.StatusUnauthorized, "session_revoked")
 	case errors.Is(err, session.ErrAccountPendingDeletion):

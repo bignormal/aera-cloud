@@ -181,6 +181,9 @@ func (s *Service) Exchange(ctx context.Context, request ExchangeRequest) (sessio
 			if errors.Is(err, device.ErrDeviceLimitReached) {
 				return session.TokenSet{}, ErrDeviceLimitReached
 			}
+			if errors.Is(err, device.ErrDeviceConflict) {
+				return session.TokenSet{}, ErrDeviceConflict
+			}
 			if errors.Is(err, device.ErrUnavailable) {
 				return session.TokenSet{}, ErrUnavailable
 			}
