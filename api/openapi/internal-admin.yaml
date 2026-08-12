@@ -403,6 +403,18 @@ paths:
         '403': { $ref: '#/components/responses/PermissionDenied' }
         '404': { $ref: '#/components/responses/OfficialAgentNotFound' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/official-agent-submissions/{submissionID}/delivery-target:
+    get:
+      operationId: getOfficialAgentDeliveryTarget
+      description: Resolves one approved submission to its immutable Version and current Release heads without content or identity fields.
+      parameters: [{ $ref: '#/components/parameters/SubmissionID' }]
+      responses:
+        '200': { $ref: '#/components/responses/OfficialDeliveryTarget' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '404': { $ref: '#/components/responses/OfficialAgentNotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /internal/admin/v1/official-agent-submissions/{submissionID}/withdraw:
     post:
       operationId: withdrawOfficialAgentSubmission
@@ -467,6 +479,18 @@ paths:
       parameters: [{ $ref: '#/components/parameters/ReleaseID' }]
       responses:
         '200': { $ref: '#/components/responses/OfficialRelease' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthenticationRequired' }
+        '403': { $ref: '#/components/responses/PermissionDenied' }
+        '404': { $ref: '#/components/responses/OfficialAgentNotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /internal/admin/v1/official-agent-releases/{releaseID}/delivery-verifications:
+    get:
+      operationId: getOfficialAgentDeliveryVerificationSummary
+      description: Returns current-release delivery stages aggregated by verification status. It excludes Cloud user, device, Installation, tenant, owner, Desktop path, content, credential, log, conversation, and file identifiers.
+      parameters: [{ $ref: '#/components/parameters/ReleaseID' }]
+      responses:
+        '200': { $ref: '#/components/responses/OfficialDeliveryVerificationSummary' }
         '400': { $ref: '#/components/responses/InvalidRequest' }
         '401': { $ref: '#/components/responses/AuthenticationRequired' }
         '403': { $ref: '#/components/responses/PermissionDenied' }
@@ -767,6 +791,9 @@ components:
     OfficialSubmissionPage:
       description: Official Agent submission page
       content: { application/json: { schema: { $ref: '#/components/schemas/OfficialSubmissionPage' } } }
+    OfficialDeliveryTarget:
+      description: Immutable publication target for one approved submission without content or identity fields
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialDeliveryTarget' } } }
     OfficialVersion:
       description: Published immutable official Agent version without signing material
       content: { application/json: { schema: { $ref: '#/components/schemas/OfficialVersion' } } }
@@ -779,6 +806,9 @@ components:
     OfficialReleasePage:
       description: Official Agent release page
       content: { application/json: { schema: { $ref: '#/components/schemas/OfficialReleasePage' } } }
+    OfficialDeliveryVerificationSummary:
+      description: Current official release delivery verification summary without user or raw device identities
+      content: { application/json: { schema: { $ref: '#/components/schemas/OfficialDeliveryVerificationSummary' } } }
     OfficialAuditPage:
       description: Rebuilt safe official Agent audit page
       content: { application/json: { schema: { $ref: '#/components/schemas/OfficialAuditPage' } } }
@@ -1671,6 +1701,29 @@ components:
       properties:
         items: { type: array, items: { $ref: '#/components/schemas/OfficialSubmission' } }
         next_cursor: { type: string, format: uuid }
+    OfficialDeliveryTarget:
+      type: object
+      additionalProperties: false
+      required: [submission_id, definition_id, version_id, content_digest, releases]
+      properties:
+        submission_id: { type: string, format: uuid }
+        definition_id: { type: string, format: uuid }
+        version_id: { type: string, format: uuid }
+        content_digest: { $ref: '#/components/schemas/SHA256Digest' }
+        releases:
+          type: array
+          maxItems: 2
+          items: { $ref: '#/components/schemas/OfficialDeliveryTargetRelease' }
+    OfficialDeliveryTargetRelease:
+      type: object
+      additionalProperties: false
+      required: [release_id, current_revision_id, version_id, channel, state]
+      properties:
+        release_id: { type: string, format: uuid }
+        current_revision_id: { type: string, format: uuid }
+        version_id: { type: string, format: uuid }
+        channel: { enum: [internal, stable] }
+        state: { enum: [active, paused] }
     OfficialVersion:
       type: object
       additionalProperties: false
@@ -1750,6 +1803,46 @@ components:
       properties:
         items: { type: array, items: { $ref: '#/components/schemas/OfficialRelease' } }
         next_cursor: { type: string, format: uuid }
+    OfficialDeliveryVerificationSummary:
+      type: object
+      additionalProperties: false
+      required: [release_id, stages]
+      properties:
+        release_id: { type: string, format: uuid }
+        stages:
+          type: array
+          maxItems: 6
+          items: { $ref: '#/components/schemas/OfficialDeliveryVerificationStage' }
+    OfficialDeliveryVerificationStage:
+      type: object
+      additionalProperties: false
+      required:
+        - verification_status
+        - release_revision_id
+        - definition_id
+        - version_id
+        - content_digest
+        - device_count
+        - runtime_version
+        - desktop_version
+        - occurred_at
+        - received_at
+        - request_id
+      properties:
+        verification_status:
+          enum: [catalog_visible, signature_verified, compatible, installed, activated, failed]
+        error_code:
+          enum: [catalog_unavailable, invalid_response, signature_verification_failed, runtime_incompatible, content_digest_mismatch, installation_failed, activation_failed, cloud_unavailable]
+        release_revision_id: { type: string, format: uuid }
+        definition_id: { type: string, format: uuid }
+        version_id: { type: string, format: uuid }
+        content_digest: { $ref: '#/components/schemas/SHA256Digest' }
+        device_count: { type: integer, minimum: 1 }
+        runtime_version: { type: string, minLength: 5, maxLength: 128 }
+        desktop_version: { type: string, minLength: 5, maxLength: 128 }
+        occurred_at: { type: string, format: date-time }
+        received_at: { type: string, format: date-time }
+        request_id: { type: string, format: uuid }
     OfficialAuditEvent:
       type: object
       additionalProperties: false

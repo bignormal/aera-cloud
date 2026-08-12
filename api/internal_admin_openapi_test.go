@@ -17,8 +17,8 @@ func TestInternalAdminOpenAPIRequiresDualAuthenticationAndOfficialAgentRoutes(t 
 		!strings.Contains(document, "serviceJWT: { type: http, scheme: bearer, bearerFormat: JWT }") {
 		t.Fatal("Internal Admin OpenAPI does not require the approved dual authentication")
 	}
-	if got := strings.Count(document, "  /internal/admin/v1/"); got != 47 {
-		t.Fatalf("Internal Admin route count = %d, want 47", got)
+	if got := strings.Count(document, "  /internal/admin/v1/"); got != 49 {
+		t.Fatalf("Internal Admin route count = %d, want 49", got)
 	}
 	if got := strings.Count(document, "'200': { $ref: '#/components/responses/Operation' }"); got != 22 {
 		t.Fatalf("operation response count = %d, want 22 including quality mutations", got)
@@ -27,6 +27,8 @@ func TestInternalAdminOpenAPIRequiresDualAuthenticationAndOfficialAgentRoutes(t 
 		"/official-agent-definitions:", "/official-agent-drafts:",
 		"/official-agent-submissions:", "/official-agent-versions:",
 		"/official-agent-releases:", "/official-agent-audit-events:",
+		"/official-agent-releases/{releaseID}/delivery-verifications:",
+		"/official-agent-submissions/{submissionID}/delivery-target:",
 		"/official-agent-releases/{releaseID}/rollback:",
 	} {
 		if !strings.Contains(document, path) {
@@ -62,7 +64,11 @@ func TestInternalAdminOpenAPIRequiresDualAuthenticationAndOfficialAgentRoutes(t 
 			t.Fatalf("Internal Admin contract exposes public route prefix %q", privatePath)
 		}
 	}
-	for _, schema := range []string{"OfficialDraft", "OfficialSubmission", "OfficialVersion", "OfficialRelease"} {
+	for _, schema := range []string{
+		"OfficialDraft", "OfficialSubmission", "OfficialVersion", "OfficialRelease",
+		"OfficialDeliveryVerificationSummary", "OfficialDeliveryVerificationStage",
+		"OfficialDeliveryTarget", "OfficialDeliveryTargetRelease",
+	} {
 		block := internalAdminSchemaBlock(t, document, schema)
 		if !strings.Contains(block, "additionalProperties: false") {
 			t.Fatalf("%s schema is not closed", schema)
@@ -77,6 +83,21 @@ func TestInternalAdminOpenAPIRequiresDualAuthenticationAndOfficialAgentRoutes(t 
 	releaseBlock := internalAdminSchemaBlock(t, document, "OfficialRelease")
 	if strings.Contains(releaseBlock, "allowlisted_user_ids") || !strings.Contains(releaseBlock, "audience_count") {
 		t.Fatal("OfficialRelease must expose audience_count without raw allowlist IDs")
+	}
+	deliveryBlock := internalAdminSchemaBlock(t, document, "OfficialDeliveryVerificationStage")
+	for _, required := range []string{
+		"verification_status", "release_revision_id", "definition_id", "version_id",
+		"content_digest", "device_count", "runtime_version", "desktop_version",
+		"occurred_at", "received_at", "request_id",
+	} {
+		if !strings.Contains(deliveryBlock, required+":") {
+			t.Fatalf("OfficialDeliveryVerificationStage is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"user_id", "device_id", "installation_id", "tenant_id", "owner_id"} {
+		if strings.Contains(deliveryBlock, forbidden) {
+			t.Fatalf("OfficialDeliveryVerificationStage exposes %q", forbidden)
+		}
 	}
 	for _, forbidden := range []string{"password_hash", "refresh_token_hash", "public_key", "family_id"} {
 		if strings.Contains(document, forbidden) {

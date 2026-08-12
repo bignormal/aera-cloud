@@ -39,6 +39,7 @@ var (
 		"official_release_id": {}, "official_release_revision_id": {},
 		"product_context_scope":   {},
 		"experience_candidate_id": {}, "decision": {}, "reason_code": {},
+		"verification_status": {},
 	}
 	workspaceMetadataKeys = map[string]struct{}{
 		"workspace_id": {}, "membership_user_id": {}, "invitation_id": {},
@@ -204,6 +205,12 @@ func validMetadata(eventType string, metadata map[string]string, organizationID 
 	_, hasOfficialReleaseRevisionID := metadata["official_release_revision_id"]
 	productContextScope, hasProductContextScope := metadata["product_context_scope"]
 	hasOfficialProvenance := hasPlatformID || hasOfficialReleaseID || hasOfficialReleaseRevisionID || hasProductContextScope
+	isOfficialDeliveryVerification := eventType == "agent_official_delivery_verification_recorded"
+	if isOfficialDeliveryVerification &&
+		(ownerScope != "USER" || !hasOfficialReleaseRevisionID || hasPlatformID || hasOfficialReleaseID ||
+			hasProductContextScope || hasSourceOwnerScope || hasSourceWorkspaceID || hasSourceOrganizationID) {
+		return false
+	}
 	if hasWorkspaceID && (!hasOwnerScope || ownerScope != "WORKSPACE" || hasTenantID || hasOwnerID) {
 		return false
 	}
@@ -254,7 +261,7 @@ func validMetadata(eventType string, metadata map[string]string, organizationID 
 		default:
 			return false
 		}
-	} else if hasOfficialProvenance {
+	} else if hasOfficialProvenance && !isOfficialDeliveryVerification {
 		return false
 	}
 	for key, value := range metadata {
@@ -281,6 +288,13 @@ func validMetadata(eventType string, metadata map[string]string, organizationID 
 			continue
 		case "reason_code":
 			if !strings.HasPrefix(eventType, "agent_experience_candidate_") || !namePattern.MatchString(value) {
+				return false
+			}
+			continue
+		case "verification_status":
+			if eventType != "agent_official_delivery_verification_recorded" ||
+				(value != "catalog_visible" && value != "signature_verified" && value != "compatible" &&
+					value != "installed" && value != "activated" && value != "failed") {
 				return false
 			}
 			continue

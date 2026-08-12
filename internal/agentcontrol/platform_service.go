@@ -335,6 +335,48 @@ type OfficialReleasePage struct {
 	Next  uuid.UUID
 }
 
+// OfficialDeliveryVerificationSummary contains only the operator-safe delivery
+// view for the current revision of one official release.
+type OfficialDeliveryVerificationSummary struct {
+	ReleaseID uuid.UUID
+	Stages    []OfficialDeliveryVerificationStage
+}
+
+// OfficialDeliveryTarget binds one approved submission to its immutable Version
+// and the current Release revisions that still reference that Version.
+type OfficialDeliveryTarget struct {
+	SubmissionID  uuid.UUID
+	DefinitionID  uuid.UUID
+	VersionID     uuid.UUID
+	ContentDigest [sha256.Size]byte
+	Releases      []OfficialDeliveryTargetRelease
+}
+
+type OfficialDeliveryTargetRelease struct {
+	ID                uuid.UUID
+	CurrentRevisionID uuid.UUID
+	VersionID         uuid.UUID
+	Channel           OfficialChannel
+	State             OfficialReleaseState
+}
+
+// OfficialDeliveryVerificationStage aggregates one verification stage without
+// retaining a Cloud user, device, Installation, or Desktop-local identifier.
+type OfficialDeliveryVerificationStage struct {
+	Status            OfficialAgentDeliveryVerificationStatus
+	ErrorCode         string
+	ReleaseRevisionID uuid.UUID
+	DefinitionID      uuid.UUID
+	VersionID         uuid.UUID
+	ContentDigest     [sha256.Size]byte
+	DeviceCount       int
+	RuntimeVersion    string
+	DesktopVersion    string
+	OccurredAt        time.Time
+	ReceivedAt        time.Time
+	RequestID         uuid.UUID
+}
+
 type ReservePlatformDefinitionCommand struct {
 	DisplayName    string
 	IconMediaType  string
@@ -499,6 +541,8 @@ type PlatformRepository interface {
 	AppendOfficialReleaseRevision(context.Context, OfficialReleaseMutationRepositoryCommand) (OfficialRelease, error)
 	GetOfficialRelease(context.Context, uuid.UUID, uuid.UUID) (OfficialRelease, bool, error)
 	ListOfficialReleases(context.Context, uuid.UUID, PageRequest) (OfficialReleasePage, error)
+	GetOfficialDeliveryTarget(context.Context, uuid.UUID, uuid.UUID) (OfficialDeliveryTarget, bool, error)
+	GetOfficialDeliveryVerificationSummary(context.Context, uuid.UUID, uuid.UUID) (OfficialDeliveryVerificationSummary, error)
 	ListOfficialReleaseIDs(context.Context, uuid.UUID, OfficialChannel) ([]uuid.UUID, error)
 	FindOfficialReleaseID(context.Context, uuid.UUID, uuid.UUID, OfficialChannel) (uuid.UUID, bool, error)
 	FindOfficialInstallation(context.Context, Principal, uuid.UUID) (Installation, bool, error)
@@ -524,6 +568,8 @@ type PlatformService interface {
 	GetVersion(context.Context, PlatformAdminActor, uuid.UUID) (Version, error)
 	ListReleases(context.Context, PlatformAdminActor, PageRequest) (OfficialReleasePage, error)
 	GetRelease(context.Context, PlatformAdminActor, uuid.UUID) (OfficialRelease, error)
+	GetDeliveryTarget(context.Context, PlatformAdminActor, uuid.UUID) (OfficialDeliveryTarget, error)
+	GetDeliveryVerificationSummary(context.Context, PlatformAdminActor, uuid.UUID) (OfficialDeliveryVerificationSummary, error)
 	ActivateOfficialRelease(context.Context, PlatformAdminActor, ActivateOfficialReleaseCommand) (OfficialRelease, error)
 	UpdateOfficialRollout(context.Context, PlatformAdminActor, UpdateOfficialRolloutCommand) (OfficialRelease, error)
 	PauseOfficialRelease(context.Context, PlatformAdminActor, ChangeOfficialReleaseStateCommand) (OfficialRelease, error)
@@ -1089,6 +1135,44 @@ func (s *platformService) GetRelease(
 		return OfficialRelease{}, ErrNotFound
 	}
 	return cloneOfficialRelease(value), nil
+}
+
+func (s *platformService) GetDeliveryVerificationSummary(
+	ctx context.Context,
+	actor PlatformAdminActor,
+	releaseID uuid.UUID,
+) (OfficialDeliveryVerificationSummary, error) {
+	if !s.authorized(actor, platformActionApprovedRead) || releaseID == uuid.Nil {
+		return OfficialDeliveryVerificationSummary{}, platformRequestError(actor, platformActionApprovedRead)
+	}
+	if _, found, err := s.repository.GetOfficialRelease(ctx, s.platformID, releaseID); err != nil {
+		return OfficialDeliveryVerificationSummary{}, err
+	} else if !found {
+		return OfficialDeliveryVerificationSummary{}, ErrNotFound
+	}
+	value, err := s.repository.GetOfficialDeliveryVerificationSummary(ctx, s.platformID, releaseID)
+	if err != nil {
+		return OfficialDeliveryVerificationSummary{}, err
+	}
+	return cloneOfficialDeliveryVerificationSummary(value), nil
+}
+
+func (s *platformService) GetDeliveryTarget(
+	ctx context.Context,
+	actor PlatformAdminActor,
+	submissionID uuid.UUID,
+) (OfficialDeliveryTarget, error) {
+	if !s.authorized(actor, platformActionApprovedRead) || submissionID == uuid.Nil {
+		return OfficialDeliveryTarget{}, platformRequestError(actor, platformActionApprovedRead)
+	}
+	value, found, err := s.repository.GetOfficialDeliveryTarget(ctx, s.platformID, submissionID)
+	if err != nil {
+		return OfficialDeliveryTarget{}, err
+	}
+	if !found {
+		return OfficialDeliveryTarget{}, ErrNotFound
+	}
+	return cloneOfficialDeliveryTarget(value), nil
 }
 
 func (s *platformService) ActivateOfficialRelease(
@@ -1809,5 +1893,17 @@ func cloneOfficialReleasePage(value OfficialReleasePage) OfficialReleasePage {
 		items[index] = cloneOfficialRelease(value.Items[index])
 	}
 	value.Items = items
+	return value
+}
+
+func cloneOfficialDeliveryVerificationSummary(
+	value OfficialDeliveryVerificationSummary,
+) OfficialDeliveryVerificationSummary {
+	value.Stages = slices.Clone(value.Stages)
+	return value
+}
+
+func cloneOfficialDeliveryTarget(value OfficialDeliveryTarget) OfficialDeliveryTarget {
+	value.Releases = slices.Clone(value.Releases)
 	return value
 }

@@ -2015,12 +2015,12 @@ func (r *PostgresRepository) InsertOfficialAgentDeliveryVerification(
 		return existing, commitTransaction(ctx, tx)
 	}
 	if err := recordAudit(ctx, tx, principal, command.Audit,
-		"official_agent_delivery_verification_recorded", "official_agent_delivery_verification",
+		"agent_official_delivery_verification_recorded", "official_agent_delivery_verification",
 		command.RequestID, command.ReceivedAt, map[string]string{
-			"agent_definition_id": command.DefinitionID.String(),
-			"agent_version_id":    command.VersionID.String(),
-			"release_revision_id": command.ReleaseRevisionID.String(),
-			"verification_status": string(command.Status),
+			"agent_definition_id":          command.DefinitionID.String(),
+			"agent_version_id":             command.VersionID.String(),
+			"official_release_revision_id": command.ReleaseRevisionID.String(),
+			"verification_status":          string(command.Status),
 		}); err != nil {
 		return OfficialAgentDeliveryVerification{}, err
 	}
@@ -2992,6 +2992,16 @@ func validOfficialDeliveryErrorCode(status OfficialAgentDeliveryVerificationStat
 	default:
 		return false
 	}
+}
+
+func validOfficialDeliveryVerificationStage(stage OfficialDeliveryVerificationStage) bool {
+	statusOK := stage.Status == OfficialDeliveryCatalogVisible || stage.Status == OfficialDeliverySignatureVerified ||
+		stage.Status == OfficialDeliveryCompatible || stage.Status == OfficialDeliveryInstalled ||
+		stage.Status == OfficialDeliveryActivated || stage.Status == OfficialDeliveryFailed
+	return statusOK && stage.ReleaseRevisionID != uuid.Nil && stage.DefinitionID != uuid.Nil && stage.VersionID != uuid.Nil &&
+		!zeroDigest(stage.ContentDigest) && stage.DeviceCount > 0 && validOfficialDeliveryErrorCode(stage.Status, stage.ErrorCode) &&
+		validToken(stage.RuntimeVersion, 128) && validToken(stage.DesktopVersion, 128) &&
+		!stage.OccurredAt.IsZero() && !stage.ReceivedAt.IsZero() && stage.RequestID != uuid.Nil
 }
 
 func validVersionRevocation(command VersionRevocationCommand) bool {

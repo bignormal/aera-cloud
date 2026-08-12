@@ -142,6 +142,23 @@ func TestOfficialInstallationRepositoryRemainsUserOwnedAndBindsRuntimeProvenance
 	if err != nil || verification.InstallationID != created.Installation.ID || verification.Replayed {
 		t.Fatalf("official delivery verification = %+v, %v", verification, err)
 	}
+	summary, err := platformService.GetDeliveryVerificationSummary(
+		fixture.ctx,
+		PlatformAdminActor{AdminID: uuid.New(), Role: "auditor", RequestID: "delivery-verification-summary"},
+		release.ID,
+	)
+	if err != nil || summary.ReleaseID != release.ID || len(summary.Stages) != 1 {
+		t.Fatalf("delivery verification summary = %+v, %v", summary, err)
+	}
+	stage := summary.Stages[0]
+	if stage.Status != OfficialDeliveryActivated || stage.ReleaseRevisionID != revisionID ||
+		stage.DefinitionID != release.DefinitionID || stage.VersionID != versionID ||
+		stage.ContentDigest != downloaded.ContentDigest || stage.DeviceCount != 1 ||
+		stage.RuntimeVersion != verificationCommand.RuntimeVersion ||
+		stage.DesktopVersion != verificationCommand.DesktopVersion ||
+		stage.RequestID != verificationCommand.RequestID || !stage.OccurredAt.Equal(verificationCommand.OccurredAt) {
+		t.Fatalf("delivery verification stage = %+v", stage)
+	}
 	replayed, err := fixture.repository.InsertOfficialAgentDeliveryVerification(fixture.ctx, principal, verificationCommand)
 	if err != nil || !replayed.Replayed || replayed.RequestID != verification.RequestID {
 		t.Fatalf("official delivery verification replay = %+v, %v", replayed, err)

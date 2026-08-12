@@ -292,18 +292,19 @@ func newPlatformServiceFixture(t *testing.T) *platformServiceFixture {
 }
 
 type stubPlatformRepository struct {
-	createDraft              func(context.Context, CreatePlatformDraftRepositoryCommand) (PlatformAgentDraft, error)
-	submitDraft              func(context.Context, SubmitPlatformDraftRepositoryCommand) (PlatformAgentSubmission, error)
-	reviewSubmission         func(context.Context, ReviewPlatformSubmissionRepositoryCommand) (PlatformAgentSubmission, error)
-	appendRelease            func(context.Context, OfficialReleaseMutationRepositoryCommand) (OfficialRelease, error)
-	eligibility              func(context.Context, uuid.UUID, uuid.UUID, Principal, OfficialEligibilityContext) (OfficialEligibilityRecord, bool, error)
-	listOfficialReleaseIDs   func(context.Context, uuid.UUID, OfficialChannel) ([]uuid.UUID, error)
-	findOfficialReleaseID    func(context.Context, uuid.UUID, uuid.UUID, OfficialChannel) (uuid.UUID, bool, error)
-	getPlatformDefinition    func(context.Context, uuid.UUID, uuid.UUID) (PlatformDefinitionDetail, bool, error)
-	getPlatformVersion       func(context.Context, uuid.UUID, uuid.UUID) (Version, bool, error)
-	findOfficialInstallation func(context.Context, Principal, uuid.UUID) (Installation, bool, error)
-	lastMutation             OfficialReleaseMutationRepositoryCommand
-	lastInitialReleases      []InitialOfficialRelease
+	createDraft               func(context.Context, CreatePlatformDraftRepositoryCommand) (PlatformAgentDraft, error)
+	submitDraft               func(context.Context, SubmitPlatformDraftRepositoryCommand) (PlatformAgentSubmission, error)
+	reviewSubmission          func(context.Context, ReviewPlatformSubmissionRepositoryCommand) (PlatformAgentSubmission, error)
+	appendRelease             func(context.Context, OfficialReleaseMutationRepositoryCommand) (OfficialRelease, error)
+	eligibility               func(context.Context, uuid.UUID, uuid.UUID, Principal, OfficialEligibilityContext) (OfficialEligibilityRecord, bool, error)
+	listOfficialReleaseIDs    func(context.Context, uuid.UUID, OfficialChannel) ([]uuid.UUID, error)
+	findOfficialReleaseID     func(context.Context, uuid.UUID, uuid.UUID, OfficialChannel) (uuid.UUID, bool, error)
+	getPlatformDefinition     func(context.Context, uuid.UUID, uuid.UUID) (PlatformDefinitionDetail, bool, error)
+	getPlatformVersion        func(context.Context, uuid.UUID, uuid.UUID) (Version, bool, error)
+	findOfficialInstallation  func(context.Context, Principal, uuid.UUID) (Installation, bool, error)
+	getOfficialDeliveryTarget func(context.Context, uuid.UUID, uuid.UUID) (OfficialDeliveryTarget, bool, error)
+	lastMutation              OfficialReleaseMutationRepositoryCommand
+	lastInitialReleases       []InitialOfficialRelease
 }
 
 func (s *stubPlatformRepository) EnsurePlatform(context.Context, EnsurePlatformCommand) (PlatformPolicySnapshot, error) {
@@ -417,6 +418,21 @@ func (s *stubPlatformRepository) GetOfficialRelease(context.Context, uuid.UUID, 
 
 func (s *stubPlatformRepository) ListOfficialReleases(context.Context, uuid.UUID, PageRequest) (OfficialReleasePage, error) {
 	return OfficialReleasePage{}, errors.New("unexpected ListOfficialReleases call")
+}
+
+func (s *stubPlatformRepository) GetOfficialDeliveryVerificationSummary(context.Context, uuid.UUID, uuid.UUID) (OfficialDeliveryVerificationSummary, error) {
+	return OfficialDeliveryVerificationSummary{}, errors.New("unexpected GetOfficialDeliveryVerificationSummary call")
+}
+
+func (s *stubPlatformRepository) GetOfficialDeliveryTarget(
+	ctx context.Context,
+	platformID uuid.UUID,
+	submissionID uuid.UUID,
+) (OfficialDeliveryTarget, bool, error) {
+	if s.getOfficialDeliveryTarget == nil {
+		return OfficialDeliveryTarget{}, false, errors.New("unexpected GetOfficialDeliveryTarget call")
+	}
+	return s.getOfficialDeliveryTarget(ctx, platformID, submissionID)
 }
 
 func (s *stubPlatformRepository) GetOfficialEligibility(ctx context.Context, platformID uuid.UUID, releaseID uuid.UUID, principal Principal, eligibilityContext OfficialEligibilityContext) (OfficialEligibilityRecord, bool, error) {

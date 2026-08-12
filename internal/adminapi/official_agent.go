@@ -215,6 +215,42 @@ type officialReleaseResponse struct {
 	Replayed              bool                               `json:"replayed,omitempty"`
 }
 
+type officialDeliveryVerificationStageResponse struct {
+	VerificationStatus agentcontrol.OfficialAgentDeliveryVerificationStatus `json:"verification_status"`
+	ErrorCode          string                                               `json:"error_code,omitempty"`
+	ReleaseRevisionID  uuid.UUID                                            `json:"release_revision_id"`
+	DefinitionID       uuid.UUID                                            `json:"definition_id"`
+	VersionID          uuid.UUID                                            `json:"version_id"`
+	ContentDigest      string                                               `json:"content_digest"`
+	DeviceCount        int                                                  `json:"device_count"`
+	RuntimeVersion     string                                               `json:"runtime_version"`
+	DesktopVersion     string                                               `json:"desktop_version"`
+	OccurredAt         time.Time                                            `json:"occurred_at"`
+	ReceivedAt         time.Time                                            `json:"received_at"`
+	RequestID          uuid.UUID                                            `json:"request_id"`
+}
+
+type officialDeliveryVerificationSummaryResponse struct {
+	ReleaseID uuid.UUID                                   `json:"release_id"`
+	Stages    []officialDeliveryVerificationStageResponse `json:"stages"`
+}
+
+type officialDeliveryTargetReleaseResponse struct {
+	ReleaseID         uuid.UUID                         `json:"release_id"`
+	CurrentRevisionID uuid.UUID                         `json:"current_revision_id"`
+	VersionID         uuid.UUID                         `json:"version_id"`
+	Channel           agentcontrol.OfficialChannel      `json:"channel"`
+	State             agentcontrol.OfficialReleaseState `json:"state"`
+}
+
+type officialDeliveryTargetResponse struct {
+	SubmissionID  uuid.UUID                               `json:"submission_id"`
+	DefinitionID  uuid.UUID                               `json:"definition_id"`
+	VersionID     uuid.UUID                               `json:"version_id"`
+	ContentDigest string                                  `json:"content_digest"`
+	Releases      []officialDeliveryTargetReleaseResponse `json:"releases"`
+}
+
 type officialPageResponse[T any] struct {
 	Items      []T    `json:"items"`
 	NextCursor string `json:"next_cursor,omitempty"`
@@ -229,10 +265,12 @@ func registerOfficialAgentRoutes(router chi.Router, auth *Authenticator, h *hand
 		read.Get("/official-agent-drafts/{draftID}", h.getOfficialDraft)
 		read.Get("/official-agent-submissions", h.listOfficialSubmissions)
 		read.Get("/official-agent-submissions/{submissionID}", h.getOfficialSubmission)
+		read.Get("/official-agent-submissions/{submissionID}/delivery-target", h.getOfficialDeliveryTarget)
 		read.Get("/official-agent-versions", h.listOfficialVersions)
 		read.Get("/official-agent-versions/{versionID}", h.getOfficialVersion)
 		read.Get("/official-agent-releases", h.listOfficialReleases)
 		read.Get("/official-agent-releases/{releaseID}", h.getOfficialRelease)
+		read.Get("/official-agent-releases/{releaseID}/delivery-verifications", h.getOfficialDeliveryVerificationSummary)
 	})
 	router.Group(func(validate chi.Router) {
 		validate.Use(auth.RequireOfficialScope(ScopeOfficialDraftsWrite, OfficialActorRead))
@@ -659,6 +697,36 @@ func (h *handler) getOfficialRelease(response http.ResponseWriter, request *http
 	writeJSON(response, http.StatusOK, officialReleaseFromDomain(value))
 }
 
+func (h *handler) getOfficialDeliveryVerificationSummary(response http.ResponseWriter, request *http.Request) {
+	id, ok := officialPathUUID(request, "releaseID")
+	actor, actorOK := officialPlatformActor(request)
+	if !ok || !actorOK || !hasNoQuery(request.URL) {
+		writeErrorResponse(response, request, http.StatusBadRequest, "INVALID_REQUEST")
+		return
+	}
+	value, err := h.officialAgents.GetDeliveryVerificationSummary(request.Context(), actor, id)
+	if err != nil {
+		writeOfficialAgentError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, officialDeliveryVerificationSummaryFromDomain(value))
+}
+
+func (h *handler) getOfficialDeliveryTarget(response http.ResponseWriter, request *http.Request) {
+	id, ok := officialPathUUID(request, "submissionID")
+	actor, actorOK := officialPlatformActor(request)
+	if !ok || !actorOK || !hasNoQuery(request.URL) {
+		writeErrorResponse(response, request, http.StatusBadRequest, "INVALID_REQUEST")
+		return
+	}
+	value, err := h.officialAgents.GetDeliveryTarget(request.Context(), actor, id)
+	if err != nil {
+		writeOfficialAgentError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, officialDeliveryTargetFromDomain(value))
+}
+
 func (h *handler) activateOfficialRelease(response http.ResponseWriter, request *http.Request) {
 	releaseID, ok := officialPathUUID(request, "releaseID")
 	var envelope officialMutationEnvelope[activateOfficialReleasePayload]
@@ -994,6 +1062,39 @@ func officialReleaseFromDomain(value agentcontrol.OfficialRelease) officialRelea
 		ReasonCode: revision.ReasonCode, TicketReference: revision.TicketReference,
 		AudienceCount: len(revision.AllowlistedUserIDs), CreatedAt: value.CreatedAt.UTC(),
 		UpdatedAt: value.UpdatedAt.UTC(), Replayed: value.Replayed,
+	}
+}
+
+func officialDeliveryVerificationSummaryFromDomain(
+	value agentcontrol.OfficialDeliveryVerificationSummary,
+) officialDeliveryVerificationSummaryResponse {
+	stages := make([]officialDeliveryVerificationStageResponse, len(value.Stages))
+	for index := range value.Stages {
+		stage := value.Stages[index]
+		stages[index] = officialDeliveryVerificationStageResponse{
+			VerificationStatus: stage.Status, ErrorCode: stage.ErrorCode,
+			ReleaseRevisionID: stage.ReleaseRevisionID, DefinitionID: stage.DefinitionID,
+			VersionID: stage.VersionID, ContentDigest: digestString(stage.ContentDigest),
+			DeviceCount: stage.DeviceCount, RuntimeVersion: stage.RuntimeVersion,
+			DesktopVersion: stage.DesktopVersion, OccurredAt: stage.OccurredAt.UTC(),
+			ReceivedAt: stage.ReceivedAt.UTC(), RequestID: stage.RequestID,
+		}
+	}
+	return officialDeliveryVerificationSummaryResponse{ReleaseID: value.ReleaseID, Stages: stages}
+}
+
+func officialDeliveryTargetFromDomain(value agentcontrol.OfficialDeliveryTarget) officialDeliveryTargetResponse {
+	releases := make([]officialDeliveryTargetReleaseResponse, len(value.Releases))
+	for index := range value.Releases {
+		release := value.Releases[index]
+		releases[index] = officialDeliveryTargetReleaseResponse{
+			ReleaseID: release.ID, CurrentRevisionID: release.CurrentRevisionID, VersionID: release.VersionID,
+			Channel: release.Channel, State: release.State,
+		}
+	}
+	return officialDeliveryTargetResponse{
+		SubmissionID: value.SubmissionID, DefinitionID: value.DefinitionID, VersionID: value.VersionID,
+		ContentDigest: digestString(value.ContentDigest), Releases: releases,
 	}
 }
 
