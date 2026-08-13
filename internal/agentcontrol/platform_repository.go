@@ -1028,6 +1028,133 @@ func (r *PostgresRepository) ListOfficialReleases(
 	return result, nil
 }
 
+func (r *PostgresRepository) GetOfficialDeliveryTarget(
+	ctx context.Context,
+	platformID uuid.UUID,
+	submissionID uuid.UUID,
+) (OfficialDeliveryTarget, bool, error) {
+	if r == nil || r.postgres == nil || platformID == uuid.Nil || submissionID == uuid.Nil {
+		return OfficialDeliveryTarget{}, false, ErrInvalidRepositoryCommand
+	}
+	result := OfficialDeliveryTarget{SubmissionID: submissionID, Releases: make([]OfficialDeliveryTargetRelease, 0, 2)}
+	var digest []byte
+	err := r.postgres.QueryRow(ctx, `
+		SELECT version.definition_id, version.id, version.content_digest
+		FROM agent_versions version
+		JOIN platform_agent_submissions submission
+		  ON submission.id = version.platform_submission_id
+		 AND submission.platform_id = version.platform_id
+		WHERE version.platform_id = $1 AND version.platform_submission_id = $2
+		  AND version.owner_scope = 'PLATFORM' AND submission.status = 'approved'
+	`, platformID, submissionID).Scan(&result.DefinitionID, &result.VersionID, &digest)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return OfficialDeliveryTarget{}, false, nil
+	}
+	if err != nil || len(digest) != sha256.Size {
+		return OfficialDeliveryTarget{}, false, ErrServiceUnavailable
+	}
+	copy(result.ContentDigest[:], digest)
+	rows, err := r.postgres.Query(ctx, `
+		SELECT release.id, release.current_release_revision_id, release.channel, revision.agent_version_id, revision.state
+		FROM official_releases release
+		JOIN official_release_revisions revision ON revision.id = release.current_release_revision_id
+		WHERE release.platform_id = $1 AND release.definition_id = $2 AND revision.agent_version_id = $3
+		ORDER BY CASE release.channel WHEN 'internal' THEN 1 WHEN 'stable' THEN 2 ELSE 3 END
+	`, platformID, result.DefinitionID, result.VersionID)
+	if err != nil {
+		return OfficialDeliveryTarget{}, false, ErrServiceUnavailable
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var release OfficialDeliveryTargetRelease
+		if err := rows.Scan(&release.ID, &release.CurrentRevisionID, &release.Channel, &release.VersionID, &release.State); err != nil ||
+			release.ID == uuid.Nil || release.CurrentRevisionID == uuid.Nil || release.VersionID != result.VersionID ||
+			(release.Channel != OfficialChannelInternal && release.Channel != OfficialChannelStable) ||
+			(release.State != OfficialReleaseStateActive && release.State != OfficialReleaseStatePaused) {
+			return OfficialDeliveryTarget{}, false, ErrServiceUnavailable
+		}
+		result.Releases = append(result.Releases, release)
+	}
+	if rows.Err() != nil {
+		return OfficialDeliveryTarget{}, false, ErrServiceUnavailable
+	}
+	return result, true, nil
+}
+
+func (r *PostgresRepository) GetOfficialDeliveryVerificationSummary(
+	ctx context.Context,
+	platformID uuid.UUID,
+	releaseID uuid.UUID,
+) (OfficialDeliveryVerificationSummary, error) {
+	if r == nil || r.postgres == nil || platformID == uuid.Nil || releaseID == uuid.Nil {
+		return OfficialDeliveryVerificationSummary{}, ErrInvalidRepositoryCommand
+	}
+	rows, err := r.postgres.Query(ctx, `
+		WITH current_release AS (
+			SELECT release.id, release.current_release_revision_id
+			FROM official_releases release
+			WHERE release.platform_id = $1 AND release.id = $2
+		), grouped AS (
+			SELECT verification.verification_status, COUNT(DISTINCT verification.device_id)::integer AS device_count
+			FROM official_agent_delivery_verifications verification
+			JOIN current_release current ON current.current_release_revision_id = verification.release_revision_id
+			GROUP BY verification.verification_status
+		)
+		SELECT latest.verification_status, COALESCE(latest.error_code, ''), latest.release_revision_id,
+		       latest.definition_id, latest.version_id, latest.content_digest, grouped.device_count,
+		       latest.runtime_version, latest.desktop_version, latest.occurred_at, latest.received_at,
+		       latest.request_id
+		FROM grouped
+		JOIN LATERAL (
+			SELECT verification.verification_status, verification.error_code, verification.release_revision_id,
+			       verification.definition_id, verification.version_id, verification.content_digest,
+			       verification.runtime_version, verification.desktop_version, verification.occurred_at,
+			       verification.received_at, verification.request_id
+			FROM official_agent_delivery_verifications verification
+			JOIN current_release current ON current.current_release_revision_id = verification.release_revision_id
+			WHERE verification.verification_status = grouped.verification_status
+			ORDER BY verification.occurred_at DESC, verification.request_id DESC
+			LIMIT 1
+		) latest ON TRUE
+		ORDER BY CASE latest.verification_status
+			WHEN 'catalog_visible' THEN 1
+			WHEN 'signature_verified' THEN 2
+			WHEN 'compatible' THEN 3
+			WHEN 'installed' THEN 4
+			WHEN 'activated' THEN 5
+			WHEN 'failed' THEN 6
+			ELSE 7
+		END
+	`, platformID, releaseID)
+	if err != nil {
+		return OfficialDeliveryVerificationSummary{}, ErrServiceUnavailable
+	}
+	defer rows.Close()
+	result := OfficialDeliveryVerificationSummary{ReleaseID: releaseID, Stages: make([]OfficialDeliveryVerificationStage, 0, 6)}
+	for rows.Next() {
+		var stage OfficialDeliveryVerificationStage
+		var digest []byte
+		if err := rows.Scan(
+			&stage.Status, &stage.ErrorCode, &stage.ReleaseRevisionID, &stage.DefinitionID,
+			&stage.VersionID, &digest, &stage.DeviceCount, &stage.RuntimeVersion,
+			&stage.DesktopVersion, &stage.OccurredAt, &stage.ReceivedAt, &stage.RequestID,
+		); err != nil || len(digest) != sha256.Size {
+			return OfficialDeliveryVerificationSummary{}, ErrServiceUnavailable
+		}
+		copy(stage.ContentDigest[:], digest)
+		stage.OccurredAt = stage.OccurredAt.UTC()
+		stage.ReceivedAt = stage.ReceivedAt.UTC()
+		if !validOfficialDeliveryVerificationStage(stage) {
+			return OfficialDeliveryVerificationSummary{}, ErrServiceUnavailable
+		}
+		result.Stages = append(result.Stages, stage)
+	}
+	if rows.Err() != nil {
+		return OfficialDeliveryVerificationSummary{}, ErrServiceUnavailable
+	}
+	return result, nil
+}
+
 func (r *PostgresRepository) ListOfficialReleaseIDs(
 	ctx context.Context,
 	platformID uuid.UUID,

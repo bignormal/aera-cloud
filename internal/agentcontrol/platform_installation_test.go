@@ -128,6 +128,52 @@ func TestOfficialInstallationRepositoryRemainsUserOwnedAndBindsRuntimeProvenance
 	if err != nil || record.OfficialReleaseRevisionID == nil || *record.OfficialReleaseRevisionID != revisionID {
 		t.Fatalf("official RuntimeBinding = %+v, %v", record, err)
 	}
+
+	verificationCommand := PersistOfficialAgentDeliveryVerificationCommand{
+		OfficialAgentDeliveryVerificationCommand: OfficialAgentDeliveryVerificationCommand{
+			RequestID: uuid.New(), DefinitionID: release.DefinitionID, VersionID: versionID,
+			ReleaseRevisionID: revisionID, ContentDigest: downloaded.ContentDigest,
+			Status: OfficialDeliveryActivated, RuntimeVersion: "v0.18.2-agentera.1",
+			DesktopVersion: "v1.0.0", OccurredAt: active.UpdatedAt.Add(4 * time.Minute),
+		},
+		Audit: fixture.auditEvidence(0xba), ReceivedAt: active.UpdatedAt.Add(5 * time.Minute),
+	}
+	verification, err := fixture.repository.InsertOfficialAgentDeliveryVerification(fixture.ctx, principal, verificationCommand)
+	if err != nil || verification.InstallationID != created.Installation.ID || verification.Replayed {
+		t.Fatalf("official delivery verification = %+v, %v", verification, err)
+	}
+	summary, err := platformService.GetDeliveryVerificationSummary(
+		fixture.ctx,
+		PlatformAdminActor{AdminID: uuid.New(), Role: "auditor", RequestID: "delivery-verification-summary"},
+		release.ID,
+	)
+	if err != nil || summary.ReleaseID != release.ID || len(summary.Stages) != 1 {
+		t.Fatalf("delivery verification summary = %+v, %v", summary, err)
+	}
+	stage := summary.Stages[0]
+	if stage.Status != OfficialDeliveryActivated || stage.ReleaseRevisionID != revisionID ||
+		stage.DefinitionID != release.DefinitionID || stage.VersionID != versionID ||
+		stage.ContentDigest != downloaded.ContentDigest || stage.DeviceCount != 1 ||
+		stage.RuntimeVersion != verificationCommand.RuntimeVersion ||
+		stage.DesktopVersion != verificationCommand.DesktopVersion ||
+		stage.RequestID != verificationCommand.RequestID || !stage.OccurredAt.Equal(verificationCommand.OccurredAt) {
+		t.Fatalf("delivery verification stage = %+v", stage)
+	}
+	replayed, err := fixture.repository.InsertOfficialAgentDeliveryVerification(fixture.ctx, principal, verificationCommand)
+	if err != nil || !replayed.Replayed || replayed.RequestID != verification.RequestID {
+		t.Fatalf("official delivery verification replay = %+v, %v", replayed, err)
+	}
+	conflict := verificationCommand
+	conflict.Status = OfficialDeliveryInstalled
+	if _, err := fixture.repository.InsertOfficialAgentDeliveryVerification(fixture.ctx, principal, conflict); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("official delivery verification conflict error = %v", err)
+	}
+	wrongDigest := verificationCommand
+	wrongDigest.RequestID = uuid.New()
+	wrongDigest.ContentDigest = [32]byte{9}
+	if _, err := fixture.repository.InsertOfficialAgentDeliveryVerification(fixture.ctx, principal, wrongDigest); !errors.Is(err, ErrOfficialReleaseRevisionConflict) {
+		t.Fatalf("official delivery verification digest mismatch error = %v", err)
+	}
 }
 
 func TestManagedOfficialSelectionAdvancesAndRollsBackWithoutChangingProfile(t *testing.T) {

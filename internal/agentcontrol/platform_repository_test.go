@@ -63,6 +63,21 @@ func TestPlatformRepositoryPublicationCreatesImmutableVersionAndLeavesExistingRe
 		policyID != fixture.policyID || publisherID != fixture.superAdmin.AdminID || versionNumber != 1 {
 		t.Fatalf("PLATFORM version linkage = %s %s %s %s %s %d", versionScope, platformID, submissionID, policyID, publisherID, versionNumber)
 	}
+	deliveryTarget, found, err := fixture.repository.GetOfficialDeliveryTarget(
+		fixture.ctx, fixture.platformID, submission.ID,
+	)
+	if err != nil || !found || deliveryTarget.SubmissionID != submission.ID ||
+		deliveryTarget.DefinitionID != reservation.ID || deliveryTarget.VersionID != firstVersionID ||
+		deliveryTarget.ContentDigest != submission.ContentDigest || len(deliveryTarget.Releases) != 2 {
+		t.Fatalf("official delivery target = %+v, found=%t, err=%v", deliveryTarget, found, err)
+	}
+	for _, release := range deliveryTarget.Releases {
+		if release.ID == uuid.Nil || release.CurrentRevisionID == uuid.Nil ||
+			release.VersionID != firstVersionID || release.State != OfficialReleaseStatePaused ||
+			(release.Channel != OfficialChannelInternal && release.Channel != OfficialChannelStable) {
+			t.Fatalf("official delivery target release = %+v", release)
+		}
+	}
 
 	var releaseCount, pausedCount int64
 	if err := fixture.postgres.QueryRow(fixture.ctx, `

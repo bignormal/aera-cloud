@@ -224,6 +224,7 @@ type ServiceRepository interface {
 	ApplyManagedOfficialSelection(context.Context, Principal, ManagedOfficialSelectionCommand) (Installation, error)
 	ArchiveInstallation(context.Context, Principal, ArchiveInstallationCommand) (Installation, error)
 	InsertRuntimeBinding(context.Context, Principal, PersistRuntimeBindingCommand) (RuntimeBindingRecord, error)
+	InsertOfficialAgentDeliveryVerification(context.Context, Principal, PersistOfficialAgentDeliveryVerificationCommand) (OfficialAgentDeliveryVerification, error)
 	SubmitExperienceCandidate(context.Context, Principal, SubmitExperienceCandidateCommand) (ExperienceCandidate, bool, error)
 	ListOwnExperienceCandidates(context.Context, Principal, uuid.UUID) ([]ExperienceCandidate, error)
 	ListWorkspaceExperienceCandidates(context.Context, Principal, uuid.UUID) ([]ExperienceCandidate, error)
@@ -1189,6 +1190,35 @@ func (s *Service) RecordRuntimeBinding(
 		return RuntimeBindingRecord{}, err
 	}
 	return record, nil
+}
+
+func (s *Service) RecordOfficialAgentDeliveryVerification(
+	ctx context.Context,
+	principal Principal,
+	command OfficialAgentDeliveryVerificationCommand,
+) (OfficialAgentDeliveryVerification, error) {
+	if s == nil || !validPrincipal(principal) || !validOfficialAgentDeliveryVerification(command) {
+		return OfficialAgentDeliveryVerification{}, ErrInvalidRequest
+	}
+	auditID := s.newID()
+	if auditID == uuid.Nil {
+		return OfficialAgentDeliveryVerification{}, ErrServiceUnavailable
+	}
+	verification, err := s.repository.InsertOfficialAgentDeliveryVerification(ctx, principal,
+		PersistOfficialAgentDeliveryVerificationCommand{
+			OfficialAgentDeliveryVerificationCommand: command,
+			Audit:                                    AuditEvidence{EventID: auditID, RequestID: command.RequestID.String()},
+			ReceivedAt:                               s.clock().UTC(),
+		})
+	if errors.Is(err, ErrNotFound) {
+		if auditErr := s.recordDenied(ctx, principal, "agent_installation", command.DefinitionID, command.RequestID.String()); auditErr != nil {
+			return OfficialAgentDeliveryVerification{}, auditErr
+		}
+	}
+	if err != nil {
+		return OfficialAgentDeliveryVerification{}, err
+	}
+	return verification, nil
 }
 
 func (s *Service) buildPolicy(

@@ -44,6 +44,7 @@ const (
 	operationPublishInitial                        = "publish_initial"
 	operationPublishNext                           = "publish_next"
 	operationCreateInstallation                    = "create_installation"
+	operationRecordOfficialDeliveryVerification    = "record_official_delivery_verification"
 	operationRevokeVersion                         = "revoke_version"
 	operationSubmitExperienceCandidate             = "submit_experience_candidate"
 	operationReviewExperienceCandidate             = "review_experience_candidate"
@@ -293,6 +294,44 @@ type RuntimeBindingRecord struct {
 	OfficialReleaseRevisionID *uuid.UUID
 	ToolPermissionDigest      [sha256.Size]byte
 	CreatedAt                 time.Time
+}
+
+type OfficialAgentDeliveryVerificationStatus string
+
+const (
+	OfficialDeliveryCatalogVisible    OfficialAgentDeliveryVerificationStatus = "catalog_visible"
+	OfficialDeliverySignatureVerified OfficialAgentDeliveryVerificationStatus = "signature_verified"
+	OfficialDeliveryCompatible        OfficialAgentDeliveryVerificationStatus = "compatible"
+	OfficialDeliveryInstalled         OfficialAgentDeliveryVerificationStatus = "installed"
+	OfficialDeliveryActivated         OfficialAgentDeliveryVerificationStatus = "activated"
+	OfficialDeliveryFailed            OfficialAgentDeliveryVerificationStatus = "failed"
+)
+
+type OfficialAgentDeliveryVerificationCommand struct {
+	RequestID         uuid.UUID
+	DefinitionID      uuid.UUID
+	VersionID         uuid.UUID
+	ReleaseRevisionID uuid.UUID
+	ContentDigest     [sha256.Size]byte
+	Status            OfficialAgentDeliveryVerificationStatus
+	ErrorCode         string
+	RuntimeVersion    string
+	DesktopVersion    string
+	OccurredAt        time.Time
+}
+
+type PersistOfficialAgentDeliveryVerificationCommand struct {
+	OfficialAgentDeliveryVerificationCommand
+	Audit      AuditEvidence
+	ReceivedAt time.Time
+}
+
+type OfficialAgentDeliveryVerification struct {
+	OfficialAgentDeliveryVerificationCommand
+	InstallationID uuid.UUID
+	DeviceID       uuid.UUID
+	ReceivedAt     time.Time
+	Replayed       bool
 }
 
 type VersionRevocationCommand struct {
@@ -1882,6 +1921,121 @@ func (r *PostgresRepository) InsertRuntimeBinding(
 	return record, nil
 }
 
+func (r *PostgresRepository) InsertOfficialAgentDeliveryVerification(
+	ctx context.Context,
+	principal Principal,
+	command PersistOfficialAgentDeliveryVerificationCommand,
+) (OfficialAgentDeliveryVerification, error) {
+	if r == nil || r.postgres == nil || !validPrincipal(principal) ||
+		!validOfficialAgentDeliveryVerification(command.OfficialAgentDeliveryVerificationCommand) ||
+		!validAuditEvidence(command.Audit) || command.ReceivedAt.IsZero() {
+		return OfficialAgentDeliveryVerification{}, ErrInvalidRepositoryCommand
+	}
+	tx, err := r.postgres.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return OfficialAgentDeliveryVerification{}, ErrServiceUnavailable
+	}
+	defer rollback(tx)
+
+	var installationID uuid.UUID
+	var storedDigest []byte
+	err = tx.QueryRow(ctx, `
+		SELECT installation.id, version.content_digest
+		FROM installations installation
+		JOIN devices device ON device.id = installation.device_id
+		JOIN agent_versions version ON version.id = installation.selected_version_id
+		JOIN official_release_revisions revision
+		  ON revision.id = installation.selected_release_revision_id
+		 AND revision.agent_version_id = installation.selected_version_id
+		WHERE installation.tenant_id = $1 AND installation.owner_scope = 'USER'
+		  AND installation.owner_id = $2 AND installation.device_id = $3
+		  AND installation.definition_id = $4 AND installation.selected_version_id = $5
+		  AND installation.selected_release_revision_id = $6
+		  AND installation.update_policy = 'managed'
+		  AND installation.status IN ('pending', 'active')
+		  AND device.user_id = $2 AND device.status = 'active'
+		  AND version.owner_scope = 'PLATFORM'
+	`, principal.PersonalSpaceID, principal.UserID, principal.DeviceID, command.DefinitionID,
+		command.VersionID, command.ReleaseRevisionID).Scan(&installationID, &storedDigest)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return OfficialAgentDeliveryVerification{}, ErrNotFound
+	}
+	if err != nil || len(storedDigest) != sha256.Size {
+		return OfficialAgentDeliveryVerification{}, ErrServiceUnavailable
+	}
+	if subtle.ConstantTimeCompare(storedDigest, command.ContentDigest[:]) != 1 {
+		return OfficialAgentDeliveryVerification{}, ErrOfficialReleaseRevisionConflict
+	}
+
+	result, err := tx.Exec(ctx, `
+		INSERT INTO official_agent_delivery_verifications (
+			request_id, tenant_id, owner_id, device_id, installation_id,
+			definition_id, version_id, release_revision_id, content_digest,
+			verification_status, error_code, runtime_version, desktop_version,
+			occurred_at, received_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''), $12, $13, $14, $15)
+		ON CONFLICT (request_id) DO NOTHING
+	`, command.RequestID, principal.PersonalSpaceID, principal.UserID, principal.DeviceID,
+		installationID, command.DefinitionID, command.VersionID, command.ReleaseRevisionID,
+		command.ContentDigest[:], command.Status, command.ErrorCode, command.RuntimeVersion,
+		command.DesktopVersion, command.OccurredAt.UTC(), command.ReceivedAt.UTC())
+	if err != nil {
+		return OfficialAgentDeliveryVerification{}, ErrServiceUnavailable
+	}
+	verification := OfficialAgentDeliveryVerification{
+		OfficialAgentDeliveryVerificationCommand: command.OfficialAgentDeliveryVerificationCommand,
+		InstallationID:                           installationID, DeviceID: principal.DeviceID, ReceivedAt: command.ReceivedAt.UTC(),
+	}
+	if result.RowsAffected() == 0 {
+		var existing OfficialAgentDeliveryVerification
+		var digest []byte
+		err := tx.QueryRow(ctx, `
+			SELECT installation_id, device_id, definition_id, version_id, release_revision_id,
+			       content_digest, verification_status, COALESCE(error_code, ''), runtime_version,
+			       desktop_version, occurred_at, received_at
+			FROM official_agent_delivery_verifications
+			WHERE request_id = $1 AND tenant_id = $2 AND owner_id = $3
+		`, command.RequestID, principal.PersonalSpaceID, principal.UserID).Scan(
+			&existing.InstallationID, &existing.DeviceID, &existing.DefinitionID, &existing.VersionID,
+			&existing.ReleaseRevisionID, &digest, &existing.Status, &existing.ErrorCode,
+			&existing.RuntimeVersion, &existing.DesktopVersion, &existing.OccurredAt, &existing.ReceivedAt,
+		)
+		existing.RequestID = command.RequestID
+		if errors.Is(err, pgx.ErrNoRows) {
+			return OfficialAgentDeliveryVerification{}, ErrIdempotencyConflict
+		}
+		if err != nil || len(digest) != sha256.Size {
+			return OfficialAgentDeliveryVerification{}, ErrServiceUnavailable
+		}
+		copy(existing.ContentDigest[:], digest)
+		if !sameOfficialAgentDeliveryVerification(existing, verification) {
+			return OfficialAgentDeliveryVerification{}, ErrIdempotencyConflict
+		}
+		existing.Replayed = true
+		return existing, commitTransaction(ctx, tx)
+	}
+	if err := recordAudit(ctx, tx, principal, command.Audit,
+		"agent_official_delivery_verification_recorded", "official_agent_delivery_verification",
+		command.RequestID, command.ReceivedAt, map[string]string{
+			"agent_definition_id":          command.DefinitionID.String(),
+			"agent_version_id":             command.VersionID.String(),
+			"official_release_revision_id": command.ReleaseRevisionID.String(),
+			"verification_status":          string(command.Status),
+		}); err != nil {
+		return OfficialAgentDeliveryVerification{}, err
+	}
+	return verification, commitTransaction(ctx, tx)
+}
+
+func sameOfficialAgentDeliveryVerification(left, right OfficialAgentDeliveryVerification) bool {
+	return left.RequestID == right.RequestID && left.InstallationID == right.InstallationID &&
+		left.DeviceID == right.DeviceID && left.DefinitionID == right.DefinitionID &&
+		left.VersionID == right.VersionID && left.ReleaseRevisionID == right.ReleaseRevisionID &&
+		left.ContentDigest == right.ContentDigest && left.Status == right.Status &&
+		left.ErrorCode == right.ErrorCode && left.RuntimeVersion == right.RuntimeVersion &&
+		left.DesktopVersion == right.DesktopVersion && left.OccurredAt.Equal(right.OccurredAt)
+}
+
 func (r *PostgresRepository) AppendVersionRevocation(
 	ctx context.Context,
 	principal Principal,
@@ -2814,6 +2968,40 @@ func validRuntimeBinding(command RuntimeBindingRecordCommand) bool {
 		command.RuntimeProfileID != uuid.Nil && command.PolicySnapshotID != uuid.Nil && !zeroDigest(command.ToolPermissionDigest) &&
 		validToken(command.RuntimeVersion, 128) &&
 		(command.OfficialReleaseRevisionID == nil || *command.OfficialReleaseRevisionID != uuid.Nil)
+}
+
+func validOfficialAgentDeliveryVerification(command OfficialAgentDeliveryVerificationCommand) bool {
+	statusOK := command.Status == OfficialDeliveryCatalogVisible || command.Status == OfficialDeliverySignatureVerified ||
+		command.Status == OfficialDeliveryCompatible || command.Status == OfficialDeliveryInstalled ||
+		command.Status == OfficialDeliveryActivated || command.Status == OfficialDeliveryFailed
+	return command.RequestID != uuid.Nil && command.DefinitionID != uuid.Nil && command.VersionID != uuid.Nil &&
+		command.ReleaseRevisionID != uuid.Nil && !zeroDigest(command.ContentDigest) && statusOK &&
+		validOfficialDeliveryErrorCode(command.Status, command.ErrorCode) &&
+		validToken(command.RuntimeVersion, 128) && validToken(command.DesktopVersion, 128) && !command.OccurredAt.IsZero()
+}
+
+func validOfficialDeliveryErrorCode(status OfficialAgentDeliveryVerificationStatus, code string) bool {
+	if status != OfficialDeliveryFailed {
+		return code == ""
+	}
+	switch code {
+	case "catalog_unavailable", "invalid_response", "signature_verification_failed",
+		"runtime_incompatible", "content_digest_mismatch", "installation_failed",
+		"activation_failed", "cloud_unavailable":
+		return true
+	default:
+		return false
+	}
+}
+
+func validOfficialDeliveryVerificationStage(stage OfficialDeliveryVerificationStage) bool {
+	statusOK := stage.Status == OfficialDeliveryCatalogVisible || stage.Status == OfficialDeliverySignatureVerified ||
+		stage.Status == OfficialDeliveryCompatible || stage.Status == OfficialDeliveryInstalled ||
+		stage.Status == OfficialDeliveryActivated || stage.Status == OfficialDeliveryFailed
+	return statusOK && stage.ReleaseRevisionID != uuid.Nil && stage.DefinitionID != uuid.Nil && stage.VersionID != uuid.Nil &&
+		!zeroDigest(stage.ContentDigest) && stage.DeviceCount > 0 && validOfficialDeliveryErrorCode(stage.Status, stage.ErrorCode) &&
+		validToken(stage.RuntimeVersion, 128) && validToken(stage.DesktopVersion, 128) &&
+		!stage.OccurredAt.IsZero() && !stage.ReceivedAt.IsZero() && stage.RequestID != uuid.Nil
 }
 
 func validVersionRevocation(command VersionRevocationCommand) bool {

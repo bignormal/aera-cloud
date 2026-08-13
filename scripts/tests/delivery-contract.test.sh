@@ -185,8 +185,8 @@ require_text .github/workflows/ci.yml '0bf56678c772c918e08423f0ad1c3aeb868cdc7e'
 require_text .github/workflows/ci.yml 'AERA_SCHEMA23_BRIDGE_ROOT'
 require_text .github/workflows/ci.yml 'AERA_SCHEMA23_MIGRATION_FILE'
 migration_highest=$(printf '%s\n' migrations/[0-9]*_*.sql | sed -E 's#^.*/0*([0-9]+)_.*#\1#' | sort -n | tail -n 1)
-[[ $migration_highest == 23 ]] ||
-  fail 'highest embedded migration must be 23 for the desktop-control release'
+[[ $migration_highest == 24 ]] ||
+  fail 'highest embedded migration must be 24 for official Agent delivery verification'
 require_text scripts/release/verify-manifest.sh 'cosign verify'
 require_text scripts/release/verify-manifest.sh 'verify-attestation'
 require_text scripts/release/verify-manifest.sh 'verify-blob'

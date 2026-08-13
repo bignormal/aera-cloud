@@ -372,6 +372,31 @@ func TestPostgresRecorderPersistsManagedPlatformSelectionMetadata(t *testing.T) 
 	}
 }
 
+func TestPostgresRecorderPersistsOfficialDeliveryVerificationMetadata(t *testing.T) {
+	executor := &fakeExecutor{}
+	recorder, err := NewRecorder(executor)
+	if err != nil {
+		t.Fatalf("NewRecorder() error = %v", err)
+	}
+	metadata := map[string]string{
+		"tenant_id":                    uuid.NewString(),
+		"owner_scope":                  "USER",
+		"owner_id":                     uuid.NewString(),
+		"agent_definition_id":          uuid.NewString(),
+		"agent_version_id":             uuid.NewString(),
+		"official_release_revision_id": uuid.NewString(),
+		"verification_status":          "activated",
+	}
+	if err := recorder.Record(context.Background(), Event{
+		EventType: "agent_official_delivery_verification_recorded", Outcome: OutcomeSuccess, Metadata: metadata,
+	}); err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+	if executor.calls != 1 {
+		t.Fatalf("Exec() calls = %d, want 1", executor.calls)
+	}
+}
+
 func TestPostgresRecorderRejectsUnsafeAgentMetadata(t *testing.T) {
 	tooMany := make(map[string]string, 13)
 	for index := range 13 {

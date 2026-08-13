@@ -191,6 +191,8 @@ type Operation struct {
 	Status                 OperationStatus `json:"status"`
 	ErrorCode              string          `json:"error_code,omitempty"`
 	AdministrativeRevision int64           `json:"administrative_revision,omitempty"`
+	TargetType             string          `json:"target_type,omitempty"`
+	TargetID               string          `json:"target_id,omitempty"`
 	UpdatedAt              time.Time       `json:"updated_at"`
 }
 
@@ -331,6 +333,14 @@ func validateOperation(operation Operation) error {
 	if operation.ID == uuid.Nil || operation.UpdatedAt.IsZero() {
 		return ErrUnavailable
 	}
+	if (operation.TargetType == "") != (operation.TargetID == "") {
+		return ErrUnavailable
+	}
+	if operation.TargetType != "" {
+		if _, err := uuid.Parse(operation.TargetID); err != nil || !validOperationTargetType(operation.TargetType) {
+			return ErrUnavailable
+		}
+	}
 	switch operation.Status {
 	case OperationExecuting:
 		if operation.ErrorCode != "" || operation.AdministrativeRevision != 0 {
@@ -348,6 +358,16 @@ func validateOperation(operation Operation) error {
 		return ErrUnavailable
 	}
 	return nil
+}
+
+func validOperationTargetType(value string) bool {
+	switch value {
+	case "device", "session", "user", "platform_definition", "platform_draft",
+		"platform_submission", "official_release", "official_quality_proposal":
+		return true
+	default:
+		return false
+	}
 }
 
 func validControlAction(action Action) bool {

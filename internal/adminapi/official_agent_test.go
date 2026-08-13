@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,10 +25,12 @@ func TestParseCanonicalUUIDListRejectsDuplicateAudienceMembers(t *testing.T) {
 
 type officialAgentServiceStub struct {
 	agentcontrol.PlatformService
-	calls       []string
-	actor       agentcontrol.PlatformAdminActor
-	reserve     agentcontrol.ReservePlatformDefinitionCommand
-	definitions agentcontrol.PlatformDefinitionPage
+	calls                 []string
+	actor                 agentcontrol.PlatformAdminActor
+	reserve               agentcontrol.ReservePlatformDefinitionCommand
+	definitions           agentcontrol.PlatformDefinitionPage
+	deliveryVerifications agentcontrol.OfficialDeliveryVerificationSummary
+	deliveryTarget        agentcontrol.OfficialDeliveryTarget
 }
 
 type officialAuditServiceStub struct{}
@@ -106,6 +109,25 @@ func (s *officialAgentServiceStub) ListReleases(context.Context, agentcontrol.Pl
 }
 func (s *officialAgentServiceStub) GetRelease(context.Context, agentcontrol.PlatformAdminActor, uuid.UUID) (agentcontrol.OfficialRelease, error) {
 	return agentcontrol.OfficialRelease{}, errOfficialRouteCanary
+}
+
+func (s *officialAgentServiceStub) GetDeliveryVerificationSummary(
+	_ context.Context,
+	actor agentcontrol.PlatformAdminActor,
+	_ uuid.UUID,
+) (agentcontrol.OfficialDeliveryVerificationSummary, error) {
+	s.calls = append(s.calls, "delivery_verifications")
+	s.actor = actor
+	return s.deliveryVerifications, nil
+}
+func (s *officialAgentServiceStub) GetDeliveryTarget(
+	_ context.Context,
+	actor agentcontrol.PlatformAdminActor,
+	_ uuid.UUID,
+) (agentcontrol.OfficialDeliveryTarget, error) {
+	s.calls = append(s.calls, "delivery_target")
+	s.actor = actor
+	return s.deliveryTarget, nil
 }
 func (s *officialAgentServiceStub) ActivateOfficialRelease(context.Context, agentcontrol.PlatformAdminActor, agentcontrol.ActivateOfficialReleaseCommand) (agentcontrol.OfficialRelease, error) {
 	return agentcontrol.OfficialRelease{}, errOfficialRouteCanary
@@ -211,10 +233,12 @@ func TestOfficialAgentMutationRejectsBodyActorMismatchBeforeService(t *testing.T
 
 func TestOfficialMutationOperationCanBeReconciledAfterAmbiguousRead(t *testing.T) {
 	now := time.Date(2026, 7, 22, 15, 0, 0, 0, time.UTC)
+	targetID := uuid.New()
 	service := newHandlerServiceStub(now)
 	service.operation = admin.Operation{
 		ID: authOperationID, Status: admin.OperationSucceeded,
-		AdministrativeRevision: 1, UpdatedAt: now,
+		AdministrativeRevision: 1, TargetType: "platform_definition", TargetID: targetID.String(),
+		UpdatedAt: now,
 	}
 	service.getOperationErr = admin.ErrUnavailable
 	handler := &handler{service: service}
@@ -230,7 +254,9 @@ func TestOfficialMutationOperationCanBeReconciledAfterAmbiguousRead(t *testing.T
 	reconciled := httptest.NewRecorder()
 	handler.writeOfficialOperationResult(reconciled, request, authOperationID.String())
 	if reconciled.Code != http.StatusOK ||
-		!bytes.Contains(reconciled.Body.Bytes(), []byte(`"operation_id":"`+authOperationID.String()+`"`)) {
+		!bytes.Contains(reconciled.Body.Bytes(), []byte(`"operation_id":"`+authOperationID.String()+`"`)) ||
+		!bytes.Contains(reconciled.Body.Bytes(), []byte(`"target_type":"platform_definition"`)) ||
+		!bytes.Contains(reconciled.Body.Bytes(), []byte(`"target_id":"`+targetID.String()+`"`)) {
 		t.Fatalf("reconciled result = %d body=%s", reconciled.Code, reconciled.Body.String())
 	}
 }
@@ -429,6 +455,83 @@ func TestOfficialAgentContractRoutesAreMountedWithActionSpecificClaims(t *testin
 				t.Fatalf("route rejected before service: %d %s", response.Code, response.Body.String())
 			}
 		})
+	}
+}
+
+func TestOfficialDeliveryVerificationSummaryReturnsOnlyAggregatedMetadata(t *testing.T) {
+	now := time.Date(2026, 7, 22, 15, 0, 0, 0, time.UTC)
+	releaseID, revisionID, definitionID, versionID, requestID := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	service := &officialAgentServiceStub{deliveryVerifications: agentcontrol.OfficialDeliveryVerificationSummary{
+		ReleaseID: releaseID,
+		Stages: []agentcontrol.OfficialDeliveryVerificationStage{{
+			Status: agentcontrol.OfficialDeliveryActivated, ReleaseRevisionID: revisionID,
+			DefinitionID: definitionID, VersionID: versionID, ContentDigest: [32]byte{0xab},
+			DeviceCount: 2, RuntimeVersion: "v0.18.2-agentera.1", DesktopVersion: "v0.24.0",
+			OccurredAt: now.Add(-time.Minute), ReceivedAt: now, RequestID: requestID,
+		}},
+	}}
+	handler, privateKey := newOfficialHandlerFixture(t, now, service)
+	request := officialHandlerRequest(t, privateKey, now, http.MethodGet,
+		"/internal/admin/v1/official-agent-releases/"+releaseID.String()+"/delivery-verifications", "",
+		validOfficialServiceClaims(now, ScopeOfficialAgentsRead, false, false))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("delivery verification status = %d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, required := range []string{
+		`"release_id":"` + releaseID.String() + `"`,
+		`"verification_status":"activated"`, `"device_count":2`,
+		`"content_digest":"ab000000`, `"request_id":"` + requestID.String() + `"`,
+	} {
+		if !strings.Contains(body, required) {
+			t.Fatalf("delivery verification body missing %q: %s", required, body)
+		}
+	}
+	if strings.Contains(body, "user_id") || strings.Contains(body, "device_id") {
+		t.Fatalf("delivery verification leaked identity fields: %s", body)
+	}
+}
+
+func TestOfficialDeliveryTargetReturnsOnlyImmutablePublicationMetadata(t *testing.T) {
+	now := time.Date(2026, 7, 22, 15, 0, 0, 0, time.UTC)
+	submissionID, definitionID, versionID := uuid.New(), uuid.New(), uuid.New()
+	releaseID, revisionID := uuid.New(), uuid.New()
+	service := &officialAgentServiceStub{deliveryTarget: agentcontrol.OfficialDeliveryTarget{
+		SubmissionID: submissionID, DefinitionID: definitionID, VersionID: versionID,
+		ContentDigest: [32]byte{0xab},
+		Releases: []agentcontrol.OfficialDeliveryTargetRelease{{
+			ID: releaseID, CurrentRevisionID: revisionID, VersionID: versionID,
+			Channel: agentcontrol.OfficialChannelInternal, State: agentcontrol.OfficialReleaseStateActive,
+		}},
+	}}
+	handler, privateKey := newOfficialHandlerFixture(t, now, service)
+	request := officialHandlerRequest(t, privateKey, now, http.MethodGet,
+		"/internal/admin/v1/official-agent-submissions/"+submissionID.String()+"/delivery-target", "",
+		validOfficialServiceClaims(now, ScopeOfficialAgentsRead, false, false))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("delivery target status = %d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, required := range []string{
+		`"submission_id":"` + submissionID.String() + `"`,
+		`"definition_id":"` + definitionID.String() + `"`,
+		`"version_id":"` + versionID.String() + `"`,
+		`"release_id":"` + releaseID.String() + `"`,
+		`"current_revision_id":"` + revisionID.String() + `"`,
+		`"content_digest":"ab000000`, `"channel":"internal"`, `"state":"active"`,
+	} {
+		if !strings.Contains(body, required) {
+			t.Fatalf("delivery target body missing %q: %s", required, body)
+		}
+	}
+	for _, forbidden := range []string{"user_id", "device_id", "installation_id", "prompt", "bundle", "path"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("delivery target leaked %q: %s", forbidden, body)
+		}
 	}
 }
 

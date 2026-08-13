@@ -54,6 +54,7 @@ type HTTPService interface {
 	ApplyManagedOfficialUpdate(context.Context, Principal, ManagedUpdateRequest) (Installation, error)
 	ArchiveInstallation(context.Context, Principal, ArchiveInstallationRequest) (Installation, error)
 	RecordRuntimeBinding(context.Context, Principal, RuntimeBindingRecordCommand, string) (RuntimeBindingRecord, error)
+	RecordOfficialAgentDeliveryVerification(context.Context, Principal, OfficialAgentDeliveryVerificationCommand) (OfficialAgentDeliveryVerification, error)
 	SubmitExperienceCandidate(context.Context, Principal, uuid.UUID, SubmitExperienceCandidateRequest) (ExperienceCandidate, error)
 	ListOwnExperienceCandidates(context.Context, Principal, uuid.UUID) ([]ExperienceCandidate, error)
 	ListWorkspaceExperienceCandidates(context.Context, Principal, uuid.UUID) ([]ExperienceCandidate, error)
@@ -93,6 +94,7 @@ func NewHandler(config HTTPConfig) http.Handler {
 	router.Get("/api/v1/official-agents", handler.listOfficialAgents)
 	router.Get("/api/v1/official-agents/{definitionID}", handler.getOfficialAgent)
 	router.Get("/api/v1/official-agents/{definitionID}/release", handler.getOfficialRelease)
+	router.Post("/api/v1/official-agent-delivery-verifications", handler.recordOfficialAgentDeliveryVerification)
 	router.Get("/api/v1/agent-definitions", handler.listDefinitions)
 	router.Post("/api/v1/agent-definitions", handler.publishInitial)
 	router.Get("/api/v1/agent-definitions/{definitionID}", handler.getDefinition)
@@ -687,6 +689,73 @@ func (h *httpHandler) recordRuntimeBinding(response http.ResponseWriter, request
 		return
 	}
 	writeAgentJSON(response, http.StatusCreated, publicRuntimeBinding(record))
+}
+
+func (h *httpHandler) recordOfficialAgentDeliveryVerification(response http.ResponseWriter, request *http.Request) {
+	principal, ok := h.authorize(response, request)
+	if !ok {
+		return
+	}
+	if request.URL.RawQuery != "" {
+		writeAgentError(response, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	var payload struct {
+		DefinitionID      string                                  `json:"definition_id"`
+		VersionID         string                                  `json:"version_id"`
+		ReleaseRevisionID string                                  `json:"release_revision_id"`
+		ContentDigest     string                                  `json:"content_digest"`
+		Status            OfficialAgentDeliveryVerificationStatus `json:"verification_status"`
+		ErrorCode         string                                  `json:"error_code,omitempty"`
+		RuntimeVersion    string                                  `json:"runtime_version"`
+		DesktopVersion    string                                  `json:"desktop_version"`
+		OccurredAt        string                                  `json:"occurred_at"`
+		RequestID         string                                  `json:"request_id"`
+	}
+	if !decodeAgentJSON(response, request, metadataRequestBodyLimit, &payload) {
+		return
+	}
+	definitionID, definitionOK := canonicalUUID(payload.DefinitionID)
+	versionID, versionOK := canonicalUUID(payload.VersionID)
+	revisionID, revisionOK := canonicalUUID(payload.ReleaseRevisionID)
+	requestID, requestOK := canonicalUUID(payload.RequestID)
+	digest, digestOK := decodeSHA256(payload.ContentDigest)
+	occurredAt, timestampOK := canonicalOfficialDeliveryTimestamp(payload.OccurredAt)
+	if !definitionOK || !versionOK || !revisionOK || !requestOK || !digestOK || !timestampOK ||
+		!validOfficialDeliveryErrorCode(payload.Status, payload.ErrorCode) {
+		writeAgentError(response, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	verification, err := h.service.RecordOfficialAgentDeliveryVerification(request.Context(), principal,
+		OfficialAgentDeliveryVerificationCommand{
+			RequestID: requestID, DefinitionID: definitionID, VersionID: versionID,
+			ReleaseRevisionID: revisionID, ContentDigest: digest, Status: payload.Status,
+			ErrorCode: payload.ErrorCode, RuntimeVersion: payload.RuntimeVersion,
+			DesktopVersion: payload.DesktopVersion, OccurredAt: occurredAt.UTC(),
+		})
+	if err != nil {
+		writeAgentServiceErrorWithRequestID(response, err, payload.RequestID)
+		return
+	}
+	writeAgentJSON(response, http.StatusCreated, struct {
+		RequestID  uuid.UUID `json:"request_id"`
+		Status     string    `json:"status"`
+		ReceivedAt time.Time `json:"received_at"`
+	}{RequestID: verification.RequestID, Status: map[bool]string{true: "replayed", false: "accepted"}[verification.Replayed], ReceivedAt: verification.ReceivedAt.UTC()})
+}
+
+func canonicalOfficialDeliveryTimestamp(value string) (time.Time, bool) {
+	if !strings.HasSuffix(value, "Z") {
+		return time.Time{}, false
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, false
+	}
+	utc := parsed.UTC()
+	return utc, value == utc.Format(time.RFC3339) ||
+		value == utc.Format("2006-01-02T15:04:05.000Z07:00") ||
+		value == utc.Format(time.RFC3339Nano)
 }
 
 func (h *httpHandler) authorize(response http.ResponseWriter, request *http.Request) (Principal, bool) {

@@ -21,8 +21,8 @@ func TestEmbeddedMigrationsIncludeInternalBetaDirectRegistration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadMigrations() error = %v", err)
 	}
-	if len(loaded) != 23 {
-		t.Fatalf("embedded migration count = %d, want 23", len(loaded))
+	if len(loaded) != 24 {
+		t.Fatalf("embedded migration count = %d, want 24", len(loaded))
 	}
 	directRegistration := loaded[18]
 	if directRegistration.version != 19 || directRegistration.name != "000019_internal_beta_direct_registration.sql" {
@@ -92,6 +92,31 @@ func TestEmbeddedMigrationsIncludeInternalBetaDirectRegistration(t *testing.T) {
 	} {
 		if !strings.Contains(string(organizationExperience.contents), required) {
 			t.Fatalf("migration 22 is missing %q", required)
+		}
+	}
+
+	deliveryVerification := loaded[23]
+	if deliveryVerification.version != 24 || deliveryVerification.name != "000024_official_agent_delivery_verification.sql" {
+		t.Fatalf("migration 24 = %d/%s", deliveryVerification.version, deliveryVerification.name)
+	}
+	for _, required := range []string{
+		"CREATE TABLE official_agent_delivery_verifications",
+		"verification_status IN ('catalog_visible', 'signature_verified', 'compatible', 'installed', 'activated', 'failed')",
+		"CONSTRAINT official_delivery_verification_error_code_check CHECK",
+		"'catalog_unavailable'",
+		"'invalid_response'",
+		"'signature_verification_failed'",
+		"'runtime_incompatible'",
+		"'content_digest_mismatch'",
+		"'installation_failed'",
+		"'activation_failed'",
+		"'cloud_unavailable'",
+		"request_id UUID PRIMARY KEY",
+		"CREATE TRIGGER official_agent_delivery_verification_immutable_trigger",
+		"EXECUTE FUNCTION reject_agent_control_immutable_mutation()",
+	} {
+		if !strings.Contains(string(deliveryVerification.contents), required) {
+			t.Fatalf("migration 24 is missing %q", required)
 		}
 	}
 }
@@ -171,6 +196,7 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 		"encrypted_backup_operations",
 		"desktop_control_instances",
 		"desktop_control_commands",
+		"official_agent_delivery_verifications",
 	}
 	for _, table := range tables {
 		var exists bool
@@ -531,8 +557,8 @@ func TestApplyMigrationsCreatesAuthSchemaAndIsIdempotent(t *testing.T) {
 	if err := postgres.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if applied != 23 {
-		t.Fatalf("applied migration count = %d, want 23", applied)
+	if applied != 24 {
+		t.Fatalf("applied migration count = %d, want 24", applied)
 	}
 	var receiptConsumedColumn bool
 	if err := postgres.QueryRow(ctx, `
